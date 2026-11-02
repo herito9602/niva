@@ -15,3 +15,15 @@ Setup: openWakeWord `hey_jarvis` (placeholder), faster-whisper on CPU (int8), ed
 - STT moves to a cloud streaming API; local CPU Whisper is too slow on typical PCs.
 - Replace energy endpointing with a real VAD (Silero).
 - Stream TTS playback from the first audio chunk.
+
+## S2 TTS comparison (2026-11-02, `compare_tts.py`)
+
+| Voice | First audio | Total |
+|---|---|---|
+| edge-tts es-AR-ElenaNeural | 0.98 s | 1.30 s |
+| Piper es_AR-daniela-high (CPU, first run) | — | 1.10 s |
+| edge-tts en-US-AriaNeural | 0.89 s | 1.55 s |
+| Piper en_US-lessac-medium (CPU) | — | 0.18 s |
+
+Owner listened to both and chose **edge-tts as the default voice**; Piper stays the automatic fallback (offline, errors).
+Note: edge-tts first-audio (~0.9 s) is above the 400 ms TTS slot in the latency budget.

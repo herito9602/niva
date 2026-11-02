@@ -3,3 +3,5 @@ target
 dist
 .venv
 .atl/
+spikes/voice/models/
+spikes/voice/samples/
