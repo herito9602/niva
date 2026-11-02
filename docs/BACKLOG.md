@@ -66,3 +66,9 @@ Closest competitor found: voice-first Windows companion with an island, sold as 
 - [ ] **Windows notification listener**: likely needs package identity (MSIX) and user permission; needs its own spike. WhatsApp has no API to reply.
 - [ ] **Sending WhatsApp messages**: there is no official API for personal accounts (the Business API is for companies); automating WhatsApp Desktop's UI is fragile and may break its terms. Needs research before promising it.
 - [ ] **"Dev mode"**: monitor AI coding agents (Claude Code hooks), TwoCode-style.
+
+## From slice 0 (E1/S1, 2026-11-02)
+- [ ] **Reduce unrequested risky calls** ("me voy a dormir" -> sleep with qwen3.5:4b): prompt wording, fewer power synonyms in the tool description, or few-shot negatives; re-run E1.
+- [ ] **Validate STT with the owner's real microphone and noise** (S1 used synthetic edge-tts audio); watch negations like "no apagues".
+- [ ] **Measure VAD hangover** (400 ms target) and STT overlapped with LLM generation.
+- [ ] **E1 non-determinism**: results vary between runs at temperature 0; run E1 3x and report the spread before final gates.

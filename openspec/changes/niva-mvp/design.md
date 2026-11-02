@@ -272,3 +272,15 @@ Source: `docs/external-review-2026-11-02.md` (advisory). Decisions recorded here
 - Owner decisions after external review round 2 (2026-11-02): proposal claim replaced by "your voice and your commands never leave your PC" (R2.1 option 2); D1 kept local, justified by cost + latency (R2.1); default TTS voice (edge-tts vs Piper) to be chosen by the owner by ear in spike S2 (R2.1 option 3 deferred).
 - S2 voice choice (2026-11-02): owner chose **edge-tts as default TTS** by ear; Piper remains the runtime fallback (D7). Measured edge-tts first audio ~0.9 s (es/en), above the 400 ms TTS budget slot: the action-path latency budget must be re-checked in S1/E1 (see spikes/voice/RESULTS.md).
 - S3 pass rule amended (2026-11-02): pre-registered queries in spikes/search/QUERIES.md, owner-judged answers (R2.2). All external-review owner decisions are now settled except the slice 0 (E1/S1/S4) and §10 questions.
+
+## Slice 0 results and decisions (2026-11-02)
+
+Measured on the owner's laptop (RTX 3060 Laptop 6 GB). Evidence: `eval/commands.yaml`, `spikes/eval/` (E1), `spikes/voice/S1_RESULTS.md` (S1), `spikes/voice/RESULTS.md` (S2).
+
+**Owner decisions**
+- **D3 product LLM: `qwen3.5:4b-q4_K_M`** (Ollama). E1 (51 cases): correct tool 96.1%, reply language 100%, 1 unrequested risky call ("me voy a dormir" -> `power_action sleep`, blocked by the SafetyGate in production), LLM latency mean ~760-776 ms, p95 ~1.1-1.2 s. `qwen3.5:2b` failed accuracy (84-86%); `llama3.2:3b` was discarded (72.5%, 7 unrequested risky calls incl. shutdown on "no apagues la PC").
+- **D1 STT model: faster-whisper `small`, float16 on CUDA.** S1: p95 190-203 ms including the es/en detection pass, language ID 20/20 (synthetic audio), ~755 MiB, co-resident with the LLM at 4.5/6.1 GB, 100% GPU, no LLM slowdown. `large-v3-turbo` failed (p95 573-710 ms, 5.9/6.1 GB, slowed the LLM ~45%).
+- **Latency gate re-derived (stated openly, not loosened):** the owner requirement stays "< 2.5 s mean, end of speech to start of reply, action path". The old per-stage gate "LLM p95 <= 700 ms" came from the pre-measurement budget (STT 400 ms, TTS 400 ms) and is replaced by the measured end-to-end budget: VAD 400 ms (target, unmeasured) + STT ~180 ms + LLM ~760 ms + tool ~100 ms + edge-tts first audio ~900 ms = **~2.34 s mean** (margin ~160 ms). New E1 latency gate: LLM tool-choice **mean <= 800 ms** on the action path; re-check end to end in slice 3 with real audio.
+- **Unrequested risky gate:** stays a tracked metric (target 0). Accepted for v1 because the SafetyGate blocks every risky call without confirmation; follow-up items in docs/BACKLOG.md.
+
+**Known gaps:** all S1 audio was synthetic (edge-tts); `small` misheard "No apagues la PC" as "No apais la PC" (power restart/shutdown are click-only, so not dangerous); VAD hangover not yet measured; STT overlapped with LLM generation not measured.
