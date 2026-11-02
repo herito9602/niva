@@ -1,0 +1,53 @@
+schema: spec-driven
+
+context: |
+  Project: niva. Jarvis-style personal voice assistant for Windows 11 with an animated floating "island" UI.
+  Target user v1: the owner plus a few friends (no accounts, payments or licensing). Pre-product: no product codebase and no git repo yet.
+  Stack validated by spikes (throwaway, under spikes/): Tauri 2 (Rust) + React + TypeScript + Vite desktop app;
+  Python 3.12 via `uv run` for voice/LLM spikes; Ollama local LLM (qwen3.5:2b) behind a provider port; openWakeWord.
+  Open decisions: Rust-only vs Python sidecar, product LLM, cloud STT. See docs/BACKLOG.md and spikes/*/RESULTS.md.
+  Env rule: run Rust/cargo from PowerShell, never Git Bash (Git's `link` shadows MSVC link.exe).
+  Artifacts are written in English.
+
+strict_tdd: false
+
+testing:
+  strict_tdd: false
+  reason: "No product code and no test runner configured yet. Spikes have no tests."
+  runner:
+    command: null
+    framework: null
+  layers:
+    unit: false
+    integration: false
+    e2e: false
+  coverage:
+    available: false
+    command: null
+  quality:
+    linter: false
+    type_checker: "tsc (available only inside spikes/island via TypeScript devDependency; not a product setup)"
+    formatter: false
+  candidates:
+    - "Rust: cargo test (built-in)"
+    - "TypeScript: vitest"
+    - "Python: pytest"
+
+rules:
+  proposal:
+    - Reference BACKLOG.md items and spike findings when scoping.
+    - Keep the first slice small; list non-goals explicitly.
+  specs:
+    - Use Given/When/Then scenarios with RFC 2119 keywords.
+  design:
+    - Keep the LLM behind a swappable provider port (hexagonal).
+    - Risky tool actions require confirmation enforced in code, not in the prompt.
+  tasks:
+    - Forecast review workload against the 400-line budget.
+  apply:
+    - Run cargo only from PowerShell.
+    - Standard mode until a test runner exists; first apply that adds product code should set one up.
+  verify:
+    - Without a test runner, verify by build/typecheck and manual scenario checks; report this limitation.
+  archive:
+    - Merge delta specs into openspec/specs before archiving.
