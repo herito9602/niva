@@ -2,7 +2,7 @@
 
 ## Intent
 
-Windows 11 has no fast, private, bilingual voice assistant that can control the PC. Niva is a Jarvis-style assistant: you say "Hey Niva" or press a shortcut, an animated island at the top of the screen reacts, and Niva runs the action. Three throwaway spikes (`spikes/*/RESULTS.md`) showed the pieces work. This change turns them into a product-grade MVP.
+Windows 11 has no fast, bilingual voice assistant that can control the PC where your voice and your commands never leave your PC (speech recognition and the LLM run locally; only reply text may leave the PC if a cloud TTS voice is used, see design D7). Niva is a Jarvis-style assistant: you say "Hey Niva" or press a shortcut, an animated island at the top of the screen reacts, and Niva runs the action. Three throwaway spikes (`spikes/*/RESULTS.md`) showed the pieces work. This change turns them into a product-grade MVP.
 
 **Users (v1):** the owner plus a few friends. No accounts, payments or licensing. An unsigned installer is acceptable. (This replaces "any PC user" in `openspec/config.yaml`.)
 
@@ -54,7 +54,7 @@ Tauri 2 (Rust) + React + TypeScript + Vite, as proven in the island spike. Hexag
 
 ## Open Decisions (settle in design)
 
-1. **STT** with no paid services: GPU faster-whisper on the RTX 3060, or a free cloud tier. Must reach < 2 s.
+1. **STT** with no paid services: GPU faster-whisper on the RTX 3060, or a free cloud tier. Must keep the action path under 2.5 s.
 2. **Rust-only vs Python sidecar.** Affects packaging and antivirus flags.
 3. **Product LLM:** qwen3.5:2b invents risky actions and mixes languages. Compare a bigger local model using an eval set.
 4. **Web search source** (free API vs. scraping vs. opening the browser).
@@ -84,7 +84,7 @@ This is a greenfield product: each slice is an isolated PR. Revert the slice's c
 
 ## Success Criteria
 
-- [ ] End-of-speech to start of reply: < 2 s on average (spike: 3.75 s).
+- [ ] End-of-speech to start of reply: < 2.5 s on average (spike: 3.75 s; raised from 2 s on 2026-11-02 after the owner chose edge-tts, ~0.9 s to first audio).
 - [ ] 0 false activations in 10 min idle; at most 1 in 30 min of music, video and talk.
 - [ ] 0 risky actions without confirmation across the eval set.
 - [ ] Reply language matches the request in at least 95% of eval commands.

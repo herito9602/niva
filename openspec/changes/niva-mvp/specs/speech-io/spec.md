@@ -28,7 +28,7 @@ In v1, "streaming" means TTS chunk streaming of a complete reply: the system MUS
 - THEN the Spanish reply uses the Spanish voice and the English reply the English voice
 
 ### Requirement: Response latency
-The average time from end of user speech to start of reply (audio or visible response) MUST be under 2 seconds on a PC with a GPU, measured over the action-path commands of the eval set (commands answered with a template reply, such as open app, volume, reminders). Search-path commands (web search plus summary) are measured and reported separately and are outside this average.
+The average time from end of user speech to start of reply (audio or visible response) MUST be under 2.5 seconds on a PC with a GPU, measured over the action-path commands of the eval set (commands answered with a template reply, such as open app, volume, reminders). Search-path commands (web search plus summary) are measured and reported separately and are outside this average.
 
 #### Scenario: Latency measurement
 - GIVEN the eval set run on a GPU PC with the assistant warmed up
@@ -46,4 +46,4 @@ The system MUST NOT run any action when transcription is empty.
 ## Assumptions to confirm
 - Latency metric: end of speech to first audio (`speak_started`); spike baseline 3.75 s (design Latency budget and Metric logging).
 - PCs without a GPU are out of scope (answer to question 2); v1 targets GPU PCs (design D1), no latency target applies elsewhere.
-- Percentiles: the < 2 s target is a mean over action-path cases; the p95 gates are STT ≤ 400 ms (S1) and LLM ≤ 700 ms (E1) (design Latency budget).
+- Percentiles: the < 2.5 s target is a mean over action-path cases; the p95 gates are STT ≤ 400 ms (S1) and LLM ≤ 700 ms (E1) (design Latency budget).

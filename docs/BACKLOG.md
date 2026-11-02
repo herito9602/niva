@@ -32,7 +32,7 @@ Grouped by when they matter. Started 2026-11-01.
   - Superseded for v1 by `design.md` D1 (local GPU Whisper; v1 targets GPU PCs). `spikes/voice/RESULTS.md`'s "STT moves to a cloud streaming API" decision is reversed by D1; cloud STT stays only as the S1 fallback.
 - [ ] **Real VAD for endpointing** (Silero) instead of a volume threshold; it cut commands off mid-phrase.
 - [ ] **Streaming TTS playback** from the first audio chunk.
-- [ ] **Re-measure end-to-end latency** after those changes; target < 2 s (spike measured 3.75 s avg).
+- [ ] **Re-measure end-to-end latency** after those changes; target < 2.5 s (raised from 2 s after choosing edge-tts; spike measured 3.75 s avg).
 - [ ] **Repeat the false-activation test with real noise** (music with lyrics, videos, conversation).
 - [ ] **Barge-in by voice** ("Hey Niva" while Niva is speaking). Needs acoustic echo cancellation so Niva does not wake on its own voice; v1 only allows barge-in with the shortcut.
 - [ ] **Voice confirmation for risky actions** (the PC control spike confirms by typing y/n).
