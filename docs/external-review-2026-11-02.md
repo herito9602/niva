@@ -16,6 +16,12 @@
   so you don't "fix" a deliberate decision.
 - Where I recommend a scope cut, it is a proposal for the owner, not an instruction.
 
+> **ROUND 2 (2026-11-02, later the same day).** The implementing agent replied to this review.
+> Three items moved: **§4 is withdrawn**, **§5 is conceded in full (I was wrong)**, **§3 is largely
+> conceded with one consequence to handle**. Section 1, 2, 6, 7, 8, 9 and 10 are unaffected.
+> **Read "Round 2 — resolution" at the end of this file before acting on §3, §4 or §5.** The text of
+> those sections is kept as written, for the record.
+
 ## What I reviewed
 
 `openspec/config.yaml`, `openspec/changes/niva-mvp/{proposal,design,tasks}.md`, all 11 files under
@@ -273,3 +279,128 @@ Do these in order, and stop for owner input at the `[PENDING-OWNER]` marks.
 
 If the owner overrides any recommendation here, record the override in `design.md` next to the
 relevant decision, not in this file — this file is a snapshot, `design.md` is the living record.
+
+---
+
+# Round 2 — resolution
+
+The implementing agent pushed back on §3, §4 and §5. Verdict: **§4 withdrawn, §5 conceded in full,
+§3 largely conceded with one consequence.** The three sections above are left untouched as a record;
+this section is the current position.
+
+| § | Was | Now |
+|---|---|---|
+| 3 Privacy | "pick a side: fully local or cloud-first" | Conceded: it is a **wording** defect, not an architecture defect. Keep the architecture. One consequence to handle (§R2.1). |
+| 4 `web_search` | "cut it from v1" | **Withdrawn.** S3 decides. But S3's pass rule measures the wrong thing and should be amended before it runs (§R2.2). |
+| 5 State count | "merge success/error, move alert to an overlay" | **Conceded in full, including a factual error of mine** (§R2.3). The reviewer's supervisor proposal was unnecessary. |
+
+## R2.1 — §3: agreed, it is wording. But the word was load-bearing in one decision
+
+Accepted: "private" in `proposal.md:5` is an agent-authored claim about the market, not a
+requirement the owner stated. I attributed it to the owner; that was wrong. And the real driver of
+local STT/TTS is already in scope without any privacy claim: `proposal.md:23` puts *"paid services of
+any kind"* out of scope. Local is a **cost** decision, not a privacy decision. The architecture
+does not need to change.
+
+Two things to handle while fixing the wording:
+
+**1. The word is load-bearing in D1.** `design.md:13` (D1 rationale) opens with *"Free, private, no
+network"* and uses that to override the voice spike's own conclusion — `spikes/voice/RESULTS.md:15`
+says *"STT moves to a cloud streaming API; local CPU Whisper is too slow on typical PCs."* If
+privacy is not a requirement, D1's rationale must be restated as **cost + latency only**, and then
+the cloud-STT option deserves one explicit re-evaluation rather than an implicit dismissal. This is
+not academic: dropping Whisper from the GPU would relieve exactly the 6 GB VRAM question that
+`design.md:181` (S1) and `design.md:234` are worried about, and would remove the largest reason for
+the Python sidecar (`design.md:14`). If the answer is still "local, because cloud costs money",
+write that reason down — it is a good reason and it is stronger than an unstated privacy claim.
+
+**2. Replace the claim with a precise one, or earn it.** Options, in order of preference:
+
+- `"fast, bilingual voice assistant that controls your PC"` — drops the unverifiable adjective.
+- `"your voice and your commands never leave your PC"` — true under D1 + D2 as designed, even with
+  edge-tts (D7 leaks the *reply text*, not the input). This is a stronger claim than a vague
+  "private" precisely because it is bounded and checkable.
+- Keep `"private"` only if Piper becomes the **default** TTS, with edge-tts as the opt-in setting
+  (`design.md:19` already permits forcing Piper). Then the word is defensible end to end.
+
+Agreed with the agent that Piper-as-default is reasonable on its own merits, independent of
+positioning.
+
+## R2.2 — §4: recommendation withdrawn; the spike's pass rule is what needs fixing
+
+I recommended cutting `web_search`. Withdrawn: the owner explicitly asked for a spoken summary
+(`proposal.md:99`), and my argument rested on a **prediction** about DuckDuckGo Instant Answer and
+Wikipedia REST quality. Telling this project to skip a measurement because the reviewer has a hunch
+contradicts the `[verify]` discipline that makes it credible. S3 decides.
+
+The narrower point survives, and it is about the *instrument*, not the feature:
+
+- `design.md:184` passes S3 if a source "returns usable text for ≥ 7" of 10 queries. That measures
+  **availability**, not usefulness.
+- The spec's motivating example (`specs/web-search/spec.md:12-15`, *"who won the last Champions
+  League?"*) is exactly the class of question where a free encyclopedia/instant-answer source
+  returns text that does not answer anything.
+- So S3 can go green while the feature still fails the owner's actual requirement: *a short spoken
+  answer* (`specs/web-search/spec.md:9-15`).
+
+**Proposed amendment to S3, before it runs:**
+
+1. **Pre-register** the 10 queries (fix them in the file before testing, so the result cannot be
+   rationalised afterwards). Mix, ES and EN: 3 stable facts, 4 time-sensitive (sports, prices, news),
+   3 that a free source plausibly handles, and include the Champions League question verbatim.
+2. **Pass = ≥ 7 of 10 produce a spoken summary that the OWNER judges to answer the question.** Not
+   "returned text". The owner is the user; the judgement is his.
+3. **Report latency separately** for the search path (it is already excluded from the < 2 s mean,
+   `design.md:52`), so the cost is visible even if S3 passes.
+4. Keep the existing terms check `[verify]` — that part was never in dispute.
+
+This is falsifiable **by hand, in about 30 minutes, before any code exists**: run the 10 queries
+against the candidate sources and read the results. That is the cheapest experiment in the whole
+plan. If the 10 queries work, my concern is dead and the feature is validated — which is the
+outcome I would prefer.
+
+## R2.3 — §5: conceded in full, and I was factually wrong
+
+**My error.** I claimed `SidecarReady` / `SidecarDown` sit outside the transition matrix and that
+this breaks the total-coverage test in `tasks.md:59`. That is false. `design.md:115` and
+`design.md:116` give both rows **complete cells for all 8 states**. I read the parenthetical at
+`design.md:67` ("not only the states in the matrix") and did not reconcile it with the two rows I had
+already read four screens earlier. My proposed supervisor + `VoiceReadinessChanged` input is
+**unnecessary**: `tasks.md:52` already places `voice_available` in reducer state, so the reducer
+stays pure and the coverage test stays total exactly as designed.
+
+**On merging states:** conceded too, and for a concrete reason I should have checked first.
+`success` and `error` have **identical exit behaviour** (`design.md:113-114`: both start the 3 s
+settle timer and both go to `idle`; both share the speak-watchdog and `Dismiss` cells). Merging them
+would therefore shrink the matrix by almost nothing while breaking the 1:1 invariant that
+`specs/mascot/spec.md:22-28` requires and that makes the mascot debuggable from a switcher. The
+suggestion did not pay for itself. Same for `reminder-alert` as an overlay: it has genuinely distinct
+behaviour (queue merge, coalescing, click-only dismissal, one re-alert after fullscreen,
+`design.md:119-121`), so it is a real state.
+
+**Residue — documentation only, no design change:** the parenthetical at `design.md:67` reads as if
+those two flags live outside the matrix, while rows 115-116 show they do not. Suggested rewording:
+*"handled in every state; no state is exempt"*. One line, and it would have saved this reviewer a
+false finding.
+
+## R2.4 — How to weigh the rest of this review
+
+Worth stating plainly, because it changes which sections to trust:
+
+- **Reliable:** internal consistency between the artifacts (spec ↔ design ↔ tasks), definitions of
+  measurement, and testability. That is what §1, §2 and §7 are, and they are unaffected by round 2.
+- **Not reliable:** claims about the outside world — source quality, market, tooling limits. Those
+  were predictions and belong to spikes. §4 was exactly that mistake and it is withdrawn.
+
+## R2.5 — Concrete deltas, if the owner approves
+
+| File | Change |
+|---|---|
+| `specs/assistant-core/spec.md:17-28` | Rewrite the tool-loop requirement to match D4 (§1). **Still blocking.** |
+| `proposal.md:5` | Replace the "private" claim per §R2.1, option 2 or 3. |
+| `design.md:13` | Restate D1's rationale as cost + latency (+ privacy only if Piper becomes default). |
+| `design.md:19` | State explicitly whether Piper is default or opt-in; the claim in `proposal.md:5` must agree. |
+| `design.md:67` | Reword the parenthetical per §R2.3. |
+| `design.md:184` | Amend S3's pass rule per §R2.2, and pre-register the queries. |
+| `docs/BACKLOG.md:19` | Mark the cloud-STT reasoning as superseded, or as **re-opened** if §R2.1 is accepted. |
+
