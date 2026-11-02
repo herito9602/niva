@@ -1,0 +1,7 @@
+[package]
+name = "niva-core"
+version = "0.1.0"
+description = "Niva assistant core: pure state machine and ports"
+edition = "2024"
+
+[dependencies]
