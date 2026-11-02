@@ -10,19 +10,26 @@ Grouped by when they matter. Started 2026-11-01.
 - [ ] **Code-sign the installer** (v1 for friends ships unsigned; Windows SmartScreen will warn).
 - [ ] **Accounts, payments and licensing** (out of v1: personal use plus a few friends).
 - [ ] **Distribution packaging.** If a Python sidecar survives, PyInstaller executables are large and often flagged by antivirus.
+- [ ] **First run** (external review §6): mic permission, model download, GPU presence and CUDA availability checks.
+- [ ] **Doctor screen**: one screen saying which degraded state applies (Ollama not installed / not running / model not pulled, sidecar down, slow mode), not only the tray tooltip.
+- [ ] **Settings**: force Piper, pick the model, rebind the shortcut, disable autostart.
+- [ ] **Uninstall and update**: uninstaller behavior, and auto-update or an explicit "no updates in v1" statement.
+- [ ] **Install-time failure modes** to document: unsigned SmartScreen warning, Ollama missing, PyInstaller sidecar flagged by Defender.
 
 ## Project setup
 - [ ] **`git init` with a `.gitignore` first** (spikes' `node_modules` and `target` hold ~3.9k files).
-- [ ] **Set up a test runner with the first product code** (cargo test / vitest / pytest), then turn on strict TDD in `openspec/config.yaml`.
+- [ ] **Set up a test runner with the first product code** (cargo test / vitest / pytest), then turn on strict TDD in `openspec/config.yaml` (done 2026-11-02: `strict_tdd: true`).
 
 ## Architecture decisions still open
 - [ ] **Rust-only vs Python sidecar.** With STT and LLM in the cloud, openWakeWord (ONNX) could run from Rust and Python may not be needed.
+  - Superseded for v1 by `openspec/changes/niva-mvp/design.md` D1/D2: GPU-local faster-whisper STT and a Python sidecar (a cloud adapter only if spike S1 fails). The "STT and LLM in the cloud" premise above no longer applies to v1.
 - [ ] **LLM as a swappable port** (hexagonal): `LlmProvider` interface with one adapter per provider (Ollama today, Claude or others later).
 - [ ] **Window overlap policy.** The island covers the browser tab strip; decide whether it shrinks, moves, or auto-hides over fullscreen apps.
 
 ## Voice (from spikes/voice/RESULTS.md)
 - [ ] **Train a custom "Hey Niva" wake word model** (openWakeWord training pipeline). The spike used the stock "hey_jarvis" model.
 - [ ] **Cloud streaming STT** instead of local Whisper (local `small` took ~1.7 s on CPU).
+  - Superseded for v1 by `design.md` D1 (local GPU Whisper; v1 targets GPU PCs). `spikes/voice/RESULTS.md`'s "STT moves to a cloud streaming API" decision is reversed by D1; cloud STT stays only as the S1 fallback.
 - [ ] **Real VAD for endpointing** (Silero) instead of a volume threshold; it cut commands off mid-phrase.
 - [ ] **Streaming TTS playback** from the first audio chunk.
 - [ ] **Re-measure end-to-end latency** after those changes; target < 2 s (spike measured 3.75 s avg).

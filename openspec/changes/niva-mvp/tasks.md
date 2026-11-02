@@ -49,19 +49,19 @@ Decision required: chain strategy (`stacked-to-main` or `feature-branch-chain`) 
 
 ### Phase 1.B: Reducer, test-first (PR 1b) in `crates/niva-core/src/state_machine.rs`
 
-- [ ] 1.6 Define `State` (8 states, `voice_available` flag default `false`, pending slot, active listen/speak ids), `Event`, `Effect`, `ReplyKind` enums and `reduce` signature returning unchanged state. Done: compiles; no logic yet.
+- [ ] 1.6 Define `State` (8 states, `voice_available` flag default `false` (set only by `VoiceReadinessChanged{ready}`), pending slot, active listen/speak ids), `Event`, `Effect`, `ReplyKind` enums and `reduce` signature returning unchanged state. Done: compiles; no logic yet.
 - [ ] 1.7 RED+GREEN: state-table rows (idle/listening/thinking/acting/confirmation/success/error/alert entry and exit). Spec: `assistant-core`, `island-shell` lifecycle.
 - [ ] 1.8 RED+GREEN: matrix rows Wake, Shortcut, SpeechStart for all 8 states, including voice-down branches. Spec: `voice-activation`.
 - [ ] 1.9 RED+GREEN: Transcript, stale-id drop (all id-carrying events), NoSpeech, EmptyTranscript, TextSubmitted rows. Spec: `speech-io`, `language-handling`.
 - [ ] 1.10 RED+GREEN: ToolCalls, ToolsDone (incl. `web_search` re-entry to thinking), Reply/Failure, AskFollowUp rows. Spec: `assistant-core`, `web-search`.
-- [ ] 1.11 RED+GREEN: SpeakStarted/SpeakDone/TtsFailed rows per `ReplyKind` (Final, ConfirmPrompt, AskFollowUp, Alert); watchdog-timeout row for every state. CO4: `SidecarDown` while `listening` -> error plus error-template `Speak` effect (skipped by runner when voice is down) so the 3 s settle starts. Spec: `speech-io`.
-- [ ] 1.12 RED+GREEN: Accept/Reject, confirm unclear reissue (new id, timer not restarted), ReminderDue/queue/merge, Dismiss, `SidecarReady`/`SidecarDown` flags in all states. Minor: Shortcut-as-Reject during prompt emits `StopSpeaking`. Spec: `action-safety`, `reminders`, `island-shell`.
+- [ ] 1.11 RED+GREEN: SpeakStarted/SpeakDone/TtsFailed rows per `ReplyKind` (Final, ConfirmPrompt, AskFollowUp, Alert); watchdog-timeout row for every state. CO4: `VoiceReadinessChanged{ready:false}` while `listening` -> error plus error-template `Speak` effect (skipped by runner when voice is down) so the 3 s settle starts. Spec: `speech-io`.
+- [ ] 1.12 RED+GREEN: Accept/Reject, confirm unclear reissue (new id, timer not restarted), ReminderDue/queue/merge, Dismiss, `VoiceReadinessChanged{ready}` row (true and false) in all 8 states. Minor: Shortcut-as-Reject during prompt emits `StopSpeaking`. Spec: `action-safety`, `reminders`, `island-shell`.
 - [ ] 1.13 REFACTOR + coverage check: script or test iterating every (event, state) cell, failing if a cell has no assertion. Done: `cargo test -p niva-core` green, all 17 rows x 8 states covered.
 
 ### Phase 1.C: Host runner and debug (PR 1c) in `app/src-tauri/src/`
 
 - [ ] 1.14 CO1: `effect_runner.rs` minimal runner: `StartTimer`/`CancelTimer` (tokio tasks feeding `Watchdog` events), settle 3 s, `ShowIsland`/`HideIsland`, `Chime` as no-op log, other effects logged. Test: runner unit test with paused tokio time (settle fires at 3 s).
-- [ ] 1.15 CO1 decision: reducer default `voice_available=false`; debug builds dispatch `SidecarReady` at startup; release slice 1 keeps it false, so shortcut shows the `error` pose (accepted until slice 3). Test: reducer test for both paths; document in `design.md` note.
+- [ ] 1.15 CO1 decision: reducer default `voice_available=false`; debug builds dispatch `VoiceReadinessChanged{ready:true}` at startup (the real supervisor arrives in slice 3); release slice 1 keeps it false, so shortcut shows the `error` pose (accepted until slice 3). Test: reducer test for both paths; document in `design.md` note.
 - [ ] 1.16 `ui_adapter.rs`: `TauriUiAdapter` emitting `niva://view` and `niva://island` from reducer output. Done: events visible in webview console.
 - [ ] 1.17 `cursor.rs`: `GetCursorPos` poller at 30 Hz while visible, emits `niva://cursor` window-relative. Done: coordinates logged on move.
 - [ ] 1.18 Wire the spike's shortcut and tray to dispatch `Shortcut` into the reducer through the runner. Done: shortcut shows/hides island via state.

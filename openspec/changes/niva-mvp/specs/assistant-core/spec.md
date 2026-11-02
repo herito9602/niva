@@ -12,20 +12,30 @@ The core MUST depend on an `LlmProvider` port and MUST ship with a local Ollama 
 #### Scenario: Provider swap
 - GIVEN a test double implementing the port
 - WHEN the core runs a request with the double instead of the Ollama adapter
-- THEN the same tool loop and safety behavior apply
+- THEN the same request pipeline and safety behavior apply
 
-### Requirement: Tool-calling loop
-The core MUST let the model call tools, feed back each tool's real result, and produce a final reply. Tool results MUST reflect what actually happened (no "dry run" placeholders).
+### Requirement: Single-response tool calling
+The core MUST take one LLM response per request, validate its tool calls before executing any of them, run the validated tools, and produce a localized template reply from the real tool results. Tool results are not fed back to the LLM; the only second LLM call is the no-tools `web_search` summary. Tool results MUST reflect what actually happened (no "dry run" placeholders), and the reply MUST report them truthfully. If the single response is incomplete for the request, the reply covers only what ran.
 
 #### Scenario: Open app
 - GIVEN the request "open Notepad"
 - WHEN the model calls the open-app tool
-- THEN the tool executes, returns a real success or failure result, and the reply reflects it
+- THEN the tool executes, returns a real success or failure result, and the template reply reflects it
 
-#### Scenario: Loop ends
-- GIVEN a tool returned its result
-- WHEN the model has nothing further to call
-- THEN the loop ends and the final reply is produced
+#### Scenario: Validation before execution
+- GIVEN a model response with an invalid argument or an unresolvable target
+- WHEN the core validates the response
+- THEN nothing is executed and an error template reply is produced
+
+#### Scenario: Results are not fed back
+- GIVEN the model response contained safe tool calls that all finished
+- WHEN the core produces the reply
+- THEN the reply is a localized template and no further LLM call is made (except the no-tools `web_search` summary)
+
+#### Scenario: web_search mixed with a risky call
+- GIVEN one model response containing `web_search` and a risky call (`close_app` or `power_action`)
+- WHEN the core validates the response
+- THEN the whole response is rejected, nothing is executed (including its safe calls), and an error template reply is produced
 
 ### Requirement: Tool selection accuracy
 The core MUST select the correct tool for at least 90% of eval commands (Spanish and English).
@@ -62,4 +72,4 @@ The core MUST signal an error state to the user when the provider is unreachable
 ## Assumptions to confirm
 - Product LLM model is an open decision; criteria apply to whichever is chosen (qwen3.5:2b is known to fail them).
 - Conversation memory across requests is not in scope; each request is independent (assumed).
-- Maximum tool-loop iterations is a design item.
+- There is no tool loop: design D4 fixes one LLM response per request, so no iteration cap applies (resolved).

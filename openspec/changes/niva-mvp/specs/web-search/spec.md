@@ -38,7 +38,15 @@ The system MUST tell the user when the search failed or returned nothing, and MU
 - WHEN the user asks a search question
 - THEN Niva says it cannot search now and the mascot shows error/confused
 
+### Requirement: Never mixed with a risky call
+A response that contains `web_search` together with a risky call MUST be rejected at validation, with an error template reply and nothing executed.
+
+#### Scenario: Search plus close
+- GIVEN one model response with `web_search` and `close_app`
+- WHEN the response is validated
+- THEN no tool runs, no confirmation is requested, and the error template is spoken
+
 ## Assumptions to confirm
-- "Short" is not quantified; assumed a few sentences (design/test sets the limit).
+- "Short" is answered by design D4/Safety Gate: the summary is capped (e.g. 400 characters); the exact cap is tuned in tests.
 - Source citation by voice is not required.
-- Search source is an open design decision.
+- Search source: picked by spike S3 (design D5); the spec example may change if no free source answers it.

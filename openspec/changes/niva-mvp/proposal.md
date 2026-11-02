@@ -50,7 +50,7 @@ None (no existing specs).
 
 ## Approach
 
-Tauri 2 (Rust) + React + TypeScript + Vite, as proven in the island spike. Hexagonal core: ports for the LLM, STT, TTS, wake word and actions. The tool loop returns realistic tool results (the spike found that "(dry run)" results caused loops).
+Tauri 2 (Rust) + React + TypeScript + Vite, as proven in the island spike. Hexagonal core: ports for the LLM, STT, TTS, wake word and actions. Tool results are realistic and never placeholders (the spike showed "(dry run)" results misled the model); under design D4 they are not fed back to the LLM, so each request takes a single LLM response, validation, execution and a template reply.
 
 ## Open Decisions (settle in design)
 

@@ -57,6 +57,6 @@ Destructive app matching MUST use substring matching only, never fuzzy matching.
 - THEN no app is closed and the user is told no match was found
 
 ## Assumptions to confirm
-- The timeout duration is not stated (design/user to set).
+- Timeout duration: 10 s (design "Confirmation flow"; user-confirmed).
 - Confirmation by shortcut/click as well as voice is not specified; spec only requires an explicit affirmative.
-- If one substring matches several running apps, behavior is unspecified (flagged; safest: ask which, never close all).
+- Several apps matching one substring: ask which one, never close all (design Safety Gate, `close_app` matching).

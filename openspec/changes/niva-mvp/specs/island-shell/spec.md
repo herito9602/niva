@@ -40,5 +40,5 @@ The system MUST hide the island when an interaction ends and show it again on th
 - THEN the island is hidden and the tray icon remains
 
 ## Assumptions to confirm
-- The idle period before auto-hide is not defined in the proposal (design decides).
+- Auto-hide idle period: 3 s settle after the reply (design State Machine, success/error rows).
 - Behavior on multi-monitor setups is unspecified; v1 uses the primary display.

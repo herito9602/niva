@@ -45,4 +45,4 @@ The system MUST use voice activity detection to decide the user finished speakin
 
 ## Assumptions to confirm
 - Slice 3 uses a stock wake word model; the custom "Hey Niva" model lands in slice 5. The criteria above apply to the custom model.
-- Behavior when no speech follows activation (listening timeout) is unspecified; flagged for design.
+- Listening timeout: 6 s with no speech, then a 15 s utterance cap after `speech_start` (design State Machine, listening row).

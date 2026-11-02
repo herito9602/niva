@@ -44,6 +44,6 @@ The system MUST NOT run any action when transcription is empty.
 - THEN no tool runs and the mascot shows error/confused
 
 ## Assumptions to confirm
-- "Start of reply" for latency means first audio or first visible text; proposal's spike figure (3.75 s) was the baseline. Chosen metric is a design/test-plan item.
-- PCs without a GPU are out of scope (answer to question 2); no latency target applies there.
-- Percentile (p95) latency target is not stated; only the average.
+- Latency metric: end of speech to first audio (`speak_started`); spike baseline 3.75 s (design Latency budget and Metric logging).
+- PCs without a GPU are out of scope (answer to question 2); v1 targets GPU PCs (design D1), no latency target applies elsewhere.
+- Percentiles: the < 2 s target is a mean over action-path cases; the p95 gates are STT ≤ 400 ms (S1) and LLM ≤ 700 ms (E1) (design Latency budget).
