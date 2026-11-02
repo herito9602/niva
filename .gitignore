@@ -5,3 +5,9 @@ dist
 .atl/
 spikes/voice/models/
 spikes/voice/samples/
+
+# E1 eval results
+spikes/eval/results/
+
+# S1 synthetic audio + raw results
+spikes/voice/s1_audio/
