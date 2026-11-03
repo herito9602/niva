@@ -1,7 +1,8 @@
 //! Host effect runner: performs the reducer's `Effect`s.
 //!
 //! Slice 1 (PR 1c) runs the effects that need no other subsystem and stubs
-//! the rest. The runner owns three guarantees from the design:
+//! the rest; PR 2b hands the request effects to a [`Requests`] handler. The
+//! runner owns three guarantees from the design:
 //!
 //! - `StartTimer{kind, token}` becomes a tokio task that echoes the same pair
 //!   as `Watchdog{kind, token}`; starting a kind again replaces the old task.
@@ -12,15 +13,16 @@
 //!
 //! Stubs until later slices (all logged): `Speak` has no TTS (the speech
 //! "ends" at once, see [`MediaMode`]), `Chime` plays no sound, `Listen`,
-//! `CancelListen`, `ForceEndOfSpeech` (slice 3), `StartRequest`, `RunTool`,
-//! `CancelRequest` (slice 2) and `EnqueueReminder`, `DrainReminders`
-//! (slice 4) do nothing.
+//! `CancelListen`, `ForceEndOfSpeech` (slice 3) and `EnqueueReminder`,
+//! `DrainReminders` (slice 4) do nothing. `StartRequest`, `RunTool` and
+//! `CancelRequest` go to the [`Requests`] handler.
 
 use std::{sync::Arc, time::Duration};
 
 use niva_core::state_machine::{Effect, Event, Say, TimerKind};
 use tokio::task::JoinHandle;
 
+use crate::requests::Requests;
 use crate::ui_adapter::template_caption;
 
 /// Where timer fires and synthesized replies go: the dispatcher's queue.
@@ -65,6 +67,7 @@ pub fn speak_watchdog_duration(say: &Say) -> Duration {
 pub struct EffectRunner {
     sink: EventSink,
     host: Arc<dyn Host>,
+    requests: Arc<dyn Requests>,
     mode: MediaMode,
     timers: Vec<(TimerKind, JoinHandle<()>)>,
     /// The speak watchdog of the speech in flight: (speak id, task).
@@ -72,10 +75,11 @@ pub struct EffectRunner {
 }
 
 impl EffectRunner {
-    pub fn new(sink: EventSink, host: Arc<dyn Host>) -> Self {
+    pub fn new(sink: EventSink, host: Arc<dyn Host>, requests: Arc<dyn Requests>) -> Self {
         EffectRunner {
             sink,
             host,
+            requests,
             mode: MediaMode::default(),
             timers: Vec::new(),
             watchdog: None,
@@ -85,6 +89,10 @@ impl EffectRunner {
     #[cfg(any(test, debug_assertions))]
     pub fn set_media_mode(&mut self, mode: MediaMode) {
         self.mode = mode;
+    }
+
+    pub fn requests(&self) -> &Arc<dyn Requests> {
+        &self.requests
     }
 
     pub fn run(&mut self, effects: Vec<Effect>) {
@@ -117,6 +125,9 @@ impl EffectRunner {
             Effect::HideIsland => self.host.hide_island(),
             Effect::Speak { id, say, .. } => self.speak(id, &say),
             Effect::StopSpeaking => self.disarm_watchdog(None),
+            Effect::StartRequest { req, input } => self.requests.start(req, input),
+            Effect::RunTool { req } => self.requests.run_tools(req),
+            Effect::CancelRequest { req } => self.requests.cancel(req),
             Effect::Chime { id } => {
                 if self.mode == MediaMode::Instant {
                     (self.sink)(Event::ChimeDone { id });
@@ -222,10 +233,35 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingRequests {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl Requests for RecordingRequests {
+        fn start(&self, req: u64, input: RequestInput) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("start {req} {input:?}"));
+        }
+        fn run_tools(&self, req: u64) {
+            self.calls.lock().unwrap().push(format!("run {req}"));
+        }
+        fn cancel(&self, req: u64) {
+            self.calls.lock().unwrap().push(format!("cancel {req}"));
+        }
+        fn observe(&self, _: &niva_core::state_machine::State, _: &Event) {}
+        fn lang(&self) -> niva_core::replies::Lang {
+            niva_core::replies::Lang::default()
+        }
+    }
+
     struct Rig {
         runner: EffectRunner,
         rx: mpsc::UnboundedReceiver<Event>,
         host: Arc<FakeHost>,
+        requests: Arc<RecordingRequests>,
     }
 
     fn rig() -> Rig {
@@ -234,10 +270,12 @@ mod tests {
         let sink: EventSink = Arc::new(move |event| {
             let _ = tx.send(event);
         });
+        let requests = Arc::new(RecordingRequests::default());
         Rig {
-            runner: EffectRunner::new(sink, host.clone()),
+            runner: EffectRunner::new(sink, host.clone(), requests.clone()),
             rx,
             host,
+            requests,
         }
     }
 
@@ -537,6 +575,28 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn request_effects_go_to_the_requests_handler_in_order() {
+        let mut r = rig();
+        r.runner.run(vec![
+            Effect::StartRequest {
+                req: 2,
+                input: RequestInput::SearchSummary,
+            },
+            Effect::RunTool { req: 2 },
+            Effect::CancelRequest { req: 2 },
+        ]);
+        assert_eq!(
+            *r.requests.calls.lock().unwrap(),
+            vec!["start 2 SearchSummary", "run 2", "cancel 2"]
+        );
+        advance(ms(60_000)).await;
+        assert!(
+            drain(&mut r.rx).is_empty(),
+            "the handler answers on its own"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn effects_of_later_slices_are_logged_and_produce_no_event() {
         let mut r = rig();
         r.runner.run(vec![
@@ -546,12 +606,6 @@ mod tests {
             },
             Effect::CancelListen { id: 1 },
             Effect::ForceEndOfSpeech { id: 1 },
-            Effect::StartRequest {
-                req: 2,
-                input: RequestInput::SearchSummary,
-            },
-            Effect::RunTool { req: 2 },
-            Effect::CancelRequest { req: 2 },
             Effect::EnqueueReminder { count: 1 },
             Effect::DrainReminders,
         ]);
