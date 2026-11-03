@@ -16,7 +16,7 @@ The system MUST show a transparent, always-on-top island at the top-center of th
 - AND its background is transparent outside the island shape
 
 ### Requirement: Tray icon
-The system MUST provide a tray icon with at least "Show island" and "Quit" entries.
+The system MUST provide a tray icon with a show/hide toggle for the island and a "Quit" entry.
 
 #### Scenario: Quit from tray
 - GIVEN Niva is running

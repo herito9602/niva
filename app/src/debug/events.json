@@ -1,0 +1,90 @@
+{
+  "buttons": [
+    { "label": "Wake", "event": { "type": "wake" } },
+    { "label": "Shortcut", "event": { "type": "shortcut" } },
+    { "label": "Speech start", "event": { "type": "speech_start" } },
+    { "label": "Transcript", "event": { "type": "transcript", "text": "open notepad" } },
+    { "label": "No speech", "event": { "type": "no_speech" } },
+    { "label": "Empty transcript", "event": { "type": "empty_transcript" } },
+    { "label": "Text submitted", "event": { "type": "text_submitted", "text": "open notepad" } },
+    { "label": "Reminder due (1)", "event": { "type": "reminder_due", "count": 1, "silent": false } },
+    { "label": "Reminder due (2, silent)", "event": { "type": "reminder_due", "count": 2, "silent": true } },
+    { "label": "Tool calls: run safe", "event": { "type": "tool_calls", "verdict": "run_safe" } },
+    { "label": "Tool calls: confirm", "event": { "type": "tool_calls", "verdict": "confirm" } },
+    { "label": "Tool calls: confirm (click only)", "event": { "type": "tool_calls", "verdict": "confirm_click_only" } },
+    { "label": "Tool calls: invalid", "event": { "type": "tool_calls", "verdict": "invalid" } },
+    { "label": "Tools done: completed", "event": { "type": "tools_done", "outcome": "completed" } },
+    { "label": "Tools done: search result", "event": { "type": "tools_done", "outcome": "search_result" } },
+    { "label": "Tools done: risky remaining", "event": { "type": "tools_done", "outcome": "risky_remaining" } },
+    { "label": "Tools done: failed", "event": { "type": "tools_done", "outcome": "failed" } },
+    { "label": "Reply", "event": { "type": "reply", "text": "Done" } },
+    { "label": "Failure", "event": { "type": "failure" } },
+    { "label": "Ask follow-up", "event": { "type": "ask_follow_up", "question": "At what time?" } },
+    { "label": "Accept", "event": { "type": "accept" } },
+    { "label": "Reject", "event": { "type": "reject" } },
+    { "label": "Speak started", "event": { "type": "speak_started" } },
+    { "label": "Speak done", "event": { "type": "speak_done" } },
+    { "label": "TTS failed", "event": { "type": "tts_failed" } },
+    { "label": "Watchdog: settle", "event": { "type": "watchdog", "kind": "settle" } },
+    { "label": "Watchdog: no speech", "event": { "type": "watchdog", "kind": "no_speech" } },
+    { "label": "Watchdog: max utterance", "event": { "type": "watchdog", "kind": "max_utterance" } },
+    { "label": "Watchdog: STT timeout", "event": { "type": "watchdog", "kind": "stt_timeout" } },
+    { "label": "Watchdog: LLM", "event": { "type": "watchdog", "kind": "llm" } },
+    { "label": "Watchdog: follow-up", "event": { "type": "watchdog", "kind": "follow_up" } },
+    { "label": "Watchdog: tool", "event": { "type": "watchdog", "kind": "tool" } },
+    { "label": "Watchdog: confirm", "event": { "type": "watchdog", "kind": "confirm" } },
+    { "label": "Watchdog: alert end", "event": { "type": "watchdog", "kind": "alert_end" } },
+    { "label": "Watchdog: speak", "event": { "type": "watchdog", "kind": "speak_watchdog" } },
+    { "label": "Chime done", "event": { "type": "chime_done" } },
+    { "label": "Voice ready", "event": { "type": "voice_ready", "ready": true } },
+    { "label": "Voice down", "event": { "type": "voice_ready", "ready": false } },
+    { "label": "Dismiss", "event": { "type": "dismiss" } }
+  ],
+  "scripts": {
+    "idle": [{ "type": "reset" }],
+    "listening": [
+      { "type": "reset" },
+      { "type": "voice_ready", "ready": true },
+      { "type": "shortcut" }
+    ],
+    "thinking": [
+      { "type": "reset" },
+      { "type": "voice_ready", "ready": true },
+      { "type": "shortcut" },
+      { "type": "transcript", "text": "open notepad" }
+    ],
+    "acting": [
+      { "type": "reset" },
+      { "type": "voice_ready", "ready": true },
+      { "type": "shortcut" },
+      { "type": "transcript", "text": "open notepad" },
+      { "type": "tool_calls", "verdict": "run_safe" }
+    ],
+    "confirmation-needed": [
+      { "type": "reset" },
+      { "type": "voice_ready", "ready": true },
+      { "type": "shortcut" },
+      { "type": "transcript", "text": "close notepad" },
+      { "type": "tool_calls", "verdict": "confirm" }
+    ],
+    "success": [
+      { "type": "reset" },
+      { "type": "voice_ready", "ready": true },
+      { "type": "shortcut" },
+      { "type": "transcript", "text": "hello" },
+      { "type": "reply", "text": "Done" }
+    ],
+    "error": [
+      { "type": "reset" },
+      { "type": "voice_ready", "ready": true },
+      { "type": "shortcut" },
+      { "type": "transcript", "text": "hello" },
+      { "type": "failure" }
+    ],
+    "reminder-alert": [
+      { "type": "reset" },
+      { "type": "voice_ready", "ready": true },
+      { "type": "reminder_due", "count": 1, "silent": false }
+    ]
+  }
+}

@@ -160,6 +160,20 @@ impl Default for State {
     }
 }
 
+impl State {
+    /// A fresh idle state that keeps `previous`'s voice flag and its id and
+    /// token allocators. Numbering never restarts, so an input still queued
+    /// from before the reset can never match an id issued after it.
+    pub fn reset_from(previous: &State) -> State {
+        State {
+            voice_available: previous.voice_available,
+            next_id: previous.next_id,
+            next_token: previous.next_token,
+            ..State::default()
+        }
+    }
+}
+
 /// Decides the follow-up transition at `speak_done`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyKind {
