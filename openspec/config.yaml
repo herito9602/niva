@@ -2,9 +2,9 @@ schema: spec-driven
 
 context: |
   Project: niva. Jarvis-style personal voice assistant for Windows 11 with an animated floating "island" UI.
-  Target user v1: the owner plus a few friends (no accounts, payments or licensing). Git repo on local `main`; slice 1 scaffold (PR 1a) committed.
+  Target user v1: the owner plus a few friends (no accounts, payments or licensing). Git repo github.com/herito9602/niva, chained PRs stacked to `main`; slice 1 done.
   Stack validated by spikes (throwaway, under spikes/): Tauri 2 (Rust) + React + TypeScript + Vite desktop app;
-  Python 3.12 via `uv run` for voice/LLM spikes; Ollama local LLM (qwen3.5:2b) behind a provider port; openWakeWord.
+  Python 3.12 via `uv run` for voice/LLM spikes; Ollama local LLM (qwen3.5:4b-q4_K_M, chosen by E1) behind a provider port; openWakeWord.
   Decisions live in openspec/changes/niva-mvp/design.md (D1-D10); open items in docs/BACKLOG.md.
   Env rule: run Rust/cargo from PowerShell, never Git Bash (Git's `link` shadows MSVC link.exe).
   Artifacts are written in English.
@@ -43,7 +43,10 @@ rules:
     - Keep the LLM behind a swappable provider port (hexagonal).
     - Risky tool actions require confirmation enforced in code, not in the prompt.
   tasks:
-    - Forecast review workload against the 400-line budget.
+    - "Plan PRs for reviewability, not a line budget (owner decision 2026-11-03; replaces the 400-line budget, which every slice-1 PR exceeded):"
+    - Safety-critical code (action safety, Approved<T>, protected list, matchers, capabilities) goes in its own PR, never mixed with bulk code or prose.
+    - One PR = one concern; each PR from slice 2 on ends in something the owner can try by hand.
+    - Test lines do not count toward PR size; report production and test lines separately.
   apply:
     - Run cargo only from PowerShell.
     - Strict TDD: write the failing test first (reducer work from task 1.6 on). Runners: cargo test -p niva-core (PowerShell), npm test in app/.

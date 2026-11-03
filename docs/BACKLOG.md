@@ -73,3 +73,6 @@ Closest competitor found: voice-first Windows companion with an island, sold as 
 - [ ] **Validate STT with the owner's real microphone and noise** (S1 used synthetic edge-tts audio); watch negations like "no apagues".
 - [ ] **Measure VAD hangover** (400 ms target) and STT overlapped with LLM generation. **Scheduled before slice 3**: VAD is the only unmeasured line in the latency budget, and a 600 ms result would break the 2.5 s mean (and the 3.0 s p95).
 - [ ] **E1 non-determinism**: results vary between runs at temperature 0; run E1 3x and report the spread before final gates.
+
+## From PR 2a review (2026-11-03)
+- [ ] **Protect the voice sidecar process by its final name** (sidecar packaging, tasks 3.3 and 5.3): `niva*` and `ollama*` stems are protected, but a sidecar that runs as plain `python.exe` is not. Pick a dedicated executable name (or a rule based on the parent process) and add it to the protected list in `crates/niva-core/src/safety/matcher.rs`.
