@@ -1,4 +1,12 @@
-:root { color-scheme: dark; }
+:root {
+  color-scheme: dark;
+  /* Mirrored in island-ui/choreography.ts (checked by a test). The content
+     animations below are fractions of these. The host hides the window only
+     after --out-ms has passed. */
+  --in-ms: 900ms;
+  --out-ms: 380ms;
+  --swap-ms: 130ms;
+}
 html, body, #root {
   margin: 0;
   padding: 0;
@@ -9,45 +17,83 @@ html, body, #root {
   font-family: "Segoe UI", system-ui, sans-serif;
   user-select: none;
 }
-.stage { display: flex; justify-content: center; padding: 0 10px; }
-.island {
+
+/* The window is wider and taller than any island (room for the shadow and the
+   spring overshoot, see island-ui/layout.ts). It ignores the mouse entirely on
+   the host side, so the empty part never blocks the apps underneath. */
+.stage { position: relative; height: 100%; }
+
+/* The island is an SVG path hanging from the top edge of the window, which is
+   the top edge of the screen (island-ui/edge.ts moves it, Island.tsx writes the
+   path every frame). */
+.island { position: absolute; inset: 0; color: #e8e8ee; }
+/* The path is filled and stroked; it is left open along the top edge so the
+   stroke never draws a line on the screen edge. */
+.island-shape {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  filter: drop-shadow(0 8px 9px rgba(0, 0, 0, 0.45)) drop-shadow(0 0 14px rgba(110, 130, 255, 0.12));
+}
+.island-shape path { fill: #07070a; stroke: rgba(255, 255, 255, 0.1); stroke-width: 1; stroke-linejoin: round; }
+/* Clips the content to the moving body; the driver sets left, width, height and clip-path. */
+.island-clip { position: absolute; top: 0; left: 0; display: flex; align-items: center; overflow: hidden; visibility: hidden; }
+
+/* Appear: the content drifts up and sharpens as the shape grows out of the
+   edge, the text a little after the mascot. */
+.island.in .mascot {
+  animation: content-in calc(var(--in-ms) * 0.36) calc(var(--in-ms) * 0.3) cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+.island.in .label {
+  animation: content-in calc(var(--in-ms) * 0.36) calc(var(--in-ms) * 0.38) cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+@keyframes content-in { from { opacity: 0; transform: translateY(8px); filter: blur(4px); } }
+/* Exit: the content fades first, quickly; the shape follows (see edge.ts). */
+.island.out .island-clip { animation: content-out calc(var(--out-ms) * 0.22) ease-out forwards; }
+@keyframes content-out { to { opacity: 0; } }
+
+/* Reduced motion: the settled shape, shown and hidden by a fade. */
+.island.rm.in .island-shape, .island.rm.in .island-clip { animation: fade-in 200ms ease-out backwards; }
+.island.rm.in .mascot, .island.rm.in .label { animation: none; }
+.island.rm.out .island-shape, .island.rm.out .island-clip { animation: fade-out 200ms ease-in forwards; }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
+
+/* Mascot and text sit at the left edge of the shape, so while it grows or
+   shrinks they travel with it instead of sliding around. */
+.content {
+  box-sizing: border-box;
+  flex: none;
   display: flex;
   align-items: center;
   gap: 14px;
-  width: 100%;
-  max-width: 380px;
-  box-sizing: border-box;
-  padding: 6px 22px;
-  margin-top: 6px;
-  border-radius: 999px;
-  background: #07070a;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #e8e8ee;
-  cursor: pointer;
-  transform: translateY(-160%);
-  opacity: 0;
-}
-.island.in { animation: drop-in 520ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards; }
-.island.out { animation: slide-up 240ms ease-in forwards; }
-@keyframes drop-in {
-  from { transform: translateY(-160%); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
-}
-@keyframes slide-up {
-  from { transform: translateY(0); opacity: 1; }
-  to { transform: translateY(-160%); opacity: 0; }
+  padding: 0 24px;
 }
 .mascot { flex: none; display: block; }
-/* Long captions wrap to two lines and end in an ellipsis instead of overflowing the pill. */
-.label {
-  flex: 1;
-  min-width: 0;
+
+/* One text style for the label and for the invisible probes that measure it. */
+.txt {
   font-size: 15px;
-  line-height: 1.3;
+  line-height: 20px;
   letter-spacing: 0.2px;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
   overflow-wrap: anywhere;
 }
+.label {
+  flex: none;
+  overflow: hidden;
+  transition: opacity var(--swap-ms) ease, filter var(--swap-ms) ease;
+}
+.label.fading { opacity: 0; filter: blur(3px); }
+/* A message longer than six lines scrolls; the edges fade so lines do not get cut hard. */
+.label.scrolls {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 5px, #000 calc(100% - 5px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 5px, #000 calc(100% - 5px), transparent 100%);
+}
+.scroller { will-change: transform, opacity; }
+.scrolls .scroller { padding-bottom: 5px; }
+
+.probe { position: absolute; top: 0; left: 0; visibility: hidden; pointer-events: none; }
+.probe-line { display: inline-block; white-space: nowrap; }

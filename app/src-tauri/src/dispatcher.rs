@@ -338,6 +338,58 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_long_reply_stays_up_long_enough_to_read_it() {
+        let mut r = rig(true);
+        r.reach_thinking();
+        let req = r.req();
+        r.send(Event::Reply {
+            req,
+            text: "word ".repeat(80),
+        });
+        assert_eq!(r.phase(), Phase::Success);
+        r.advance(ms(11_999)).await;
+        assert_eq!(r.phase(), Phase::Success, "12 s cap not reached yet");
+        r.advance(ms(1)).await;
+        assert_eq!(r.phase(), Phase::Idle);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_shortcut_during_the_reading_hold_barges_in_and_the_old_hold_is_gone() {
+        let mut r = rig(true);
+        r.reach_thinking();
+        let req = r.req();
+        r.send(Event::Reply {
+            req,
+            text: "word ".repeat(80),
+        });
+        r.advance(ms(2_000)).await;
+        assert_eq!(r.phase(), Phase::Success);
+        r.send(Event::Shortcut);
+        assert_eq!(r.phase(), Phase::Listening);
+        // The listen is open (6 s no-speech timer). Speech starts, so nothing
+        // else may end the session: the old 12 s hold must not fire.
+        let id = r.listen_id();
+        r.send(Event::SpeechStart { id });
+        r.advance(ms(12_000)).await;
+        assert_eq!(r.phase(), Phase::Listening, "the stale hold timer fired");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_short_reply_still_settles_after_3_s_with_the_reading_rule() {
+        let mut r = rig(true);
+        r.reach_thinking();
+        let req = r.req();
+        r.send(Event::Reply {
+            req,
+            text: "Opening Notepad".into(),
+        });
+        r.advance(ms(2999)).await;
+        assert_eq!(r.phase(), Phase::Success);
+        r.advance(ms(1)).await;
+        assert_eq!(r.phase(), Phase::Idle);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_confirmation_never_stays_pending_even_if_the_speech_never_ends() {
         let mut r = rig(true);
         r.core.set_media_mode(MediaMode::Held);

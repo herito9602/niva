@@ -69,6 +69,14 @@ The core MUST signal an error state to the user when the provider is unreachable
 - WHEN a request is made
 - THEN no action runs and the mascot shows error/confused
 
+### Requirement: Replies are short (owner decision 2026-11-03)
+Every spoken or shown reply MUST be at most about 400 characters, the same bound as the web-search summary. For LLM free-text replies the core MUST enforce it twice: the system prompt asks for short replies, and a hard cap cuts anything longer (at a word boundary, with an ellipsis) before it is spoken or shown. Templates and search summaries already respect the bound.
+
+#### Scenario: Chatty model
+- GIVEN the model answers a chat request with 1500 characters
+- WHEN the reply is spoken and shown
+- THEN it is cut to at most about 400 characters, so the island can show and scroll all of it within its reading time
+
 ## Assumptions to confirm
 - Product LLM model is an open decision; criteria apply to whichever is chosen (qwen3.5:2b is known to fail them).
 - Conversation memory across requests is not in scope; each request is independent (assumed).
