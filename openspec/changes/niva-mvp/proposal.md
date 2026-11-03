@@ -84,7 +84,7 @@ This is a greenfield product: each slice is an isolated PR. Revert the slice's c
 
 ## Success Criteria
 
-- [ ] End-of-speech to start of reply: < 2.5 s on average (spike: 3.75 s; raised from 2 s on 2026-11-02 after the owner chose edge-tts, ~0.9 s to first audio).
+- [ ] End-of-speech to start of reply: < 2.5 s on average (spike: 3.75 s). ~500 ms of latency was traded for TTS voice quality (edge-tts); owner's call, 2026-11-02. End-to-end p95 goal: <= 3.0 s (design, Slice 0).
 - [ ] 0 false activations in 10 min idle; at most 1 in 30 min of music, video and talk.
 - [ ] 0 risky actions without confirmation across the eval set.
 - [ ] Reply language matches the request in at least 95% of eval commands.

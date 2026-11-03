@@ -12,7 +12,11 @@ are unaffected (Whisper pads to a 30 s window) but language-ID and WER numbers a
 - DLL folders (inside the uv script env's site-packages): `nvidia/cublas/bin`, `nvidia/cudnn/bin`, `nvidia/cuda_nvrtc/bin`. The script adds all `nvidia/*/bin` via `os.add_dll_directory` and PATH.
 - Language ID: `WhisperModel.detect_language(audio)` -> `all_language_probs`, pick the higher of `es` vs `en`, then `transcribe(language=...)`, `beam_size=1`, no VAD. Latency below = detection + transcription (two encoder passes).
 - Compute type: `float16` loaded fine for both models (no int8_float16 fallback needed).
-- Models downloaded: `small`, `large-v3-turbo` (mobiuslabsgmbh CT2 conversion), into the HF cache.
+- Models downloaded into the HF cache (the script passes the bare names `small` / `large-v3-turbo` to `WhisperModel`, which resolves them to these repos; both repos are present in the HF cache):
+  - `small`: Hugging Face `Systran/faster-whisper-small`, snapshot `536b0662742c02347bc0e980a01041f333bce120`, model.bin SHA-256 `3E305921506D8872816023E4C273E75D2419FB89B24DA97B4FE7BCE14170D671`.
+  - `large-v3-turbo`: `mobiuslabsgmbh/faster-whisper-large-v3-turbo` (CT2 conversion; snapshot/SHA not recorded).
+- LLM: Ollama 0.40.13, `qwen3.5:4b-q4_K_M`, digest `d8b0f5e9760cd1682034f292d7ef72ec46f432149be0df7574bf2d6e92e38c04` (4.2B, Q4_K_M), `num_ctx 4096` for the co-residency runs.
+- E1 run settings (`spikes/eval/run_e1.py`): `think=False`, `temperature=0`, `keep_alive="30m"`; `run_e1.py` does not set `num_ctx`.
 
 ## Results (20 clips, after 3 warm-up passes)
 
@@ -53,7 +57,7 @@ GPU memory to system RAM when near the limit, which is consistent with the slowd
 Whisper `small` residency costs the LLM nothing measurable (differences are within run-to-run noise; the 94.1 vs 96.1 tool % is one
 case of a non-deterministic adversarial item). `large-v3-turbo` residency slows the LLM by roughly +45% mean / +43% p95, and Whisper
 itself slows from 563 -> 664 ms (and to 956 ms mean when re-run right after the E1 load): the two compete for a nearly full GPU.
-Note the solo LLM p95 (1.1-1.2 s) already misses the E1 700 ms action-path gate, independent of Whisper.
+Note the solo LLM p95 (1.1-1.2 s) already missed the original E1 p95 <= 700 ms action-path gate (since retired and replaced by a mean <= 800 ms gate, see design.md), independent of Whisper.
 
 ## Gates
 
