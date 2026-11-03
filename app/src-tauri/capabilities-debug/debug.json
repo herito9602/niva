@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "debug",
+  "description": "Debug window only: may call debug_dispatch and subscribe to events. Lives outside capabilities/ so release builds never load it (see build.rs).",
+  "windows": ["debug"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "allow-debug-dispatch"]
+}

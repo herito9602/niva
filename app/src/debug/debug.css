@@ -1,0 +1,33 @@
+.debug {
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  padding: 12px 16px;
+  color: #e8e8ee;
+  background: #15151b;
+  height: 100vh;
+  overflow: auto;
+  box-sizing: border-box;
+  user-select: none;
+}
+.debug h1 { font-size: 16px; margin: 0 0 8px; }
+.debug h2 { font-size: 12px; margin: 14px 0 6px; color: #9a9aa8; text-transform: uppercase; letter-spacing: 0.5px; }
+.debug .current { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 10px; background: #0d0d11; border-radius: 6px; }
+.debug .state { font-weight: 600; padding: 2px 8px; border-radius: 999px; background: #4fd1ff; color: #07070a; }
+.debug .state[data-state="thinking"], .debug .state[data-state="acting"] { background: #b57bff; }
+.debug .state[data-state="error"] { background: #ff6b6b; }
+.debug .state[data-state="success"] { background: #5be58a; }
+.debug .state[data-state="confirmation-needed"], .debug .state[data-state="reminder-alert"] { background: #ffc857; }
+.debug .state[data-state="idle"] { background: #55556a; color: #e8e8ee; }
+.debug .caption { flex: 1; }
+.debug .extra { color: #9a9aa8; }
+.debug .row, .debug .grid { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.debug button {
+  font: inherit;
+  color: inherit;
+  background: #26262f;
+  border: 1px solid #3a3a46;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.debug button:hover { background: #31313d; }
