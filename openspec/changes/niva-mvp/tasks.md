@@ -83,15 +83,15 @@ Decision required: chain strategy (`stacked-to-main` or `feature-branch-chain`) 
 
 ## Slice 2: Assistant core, tools, text input
 
-- [ ] 2.1 `ports.rs`: `LlmProvider`, `PcActions`, `Clock`, `UiPort` plus fakes; `replies.rs` es/en templates (tests for every D4 template case).
-- [ ] 2.2 `safety.rs` + `tools.rs`: registry (Safe/Risky), `Approved<T>` crate-private constructors, substring matcher, protected list, min length 3. Tests: risky never runs without `Approved`, power restart/shutdown click-only. Spec: `action-safety`.
+- [~] 2.1 (partial: ports and fakes done in PR 2a, `replies.rs` templates pending in PR 2b) `ports.rs`: `LlmProvider`, `PcActions`, `Clock`, `UiPort` plus fakes; `replies.rs` es/en templates (tests for every D4 template case).
+- [x] 2.2 (done in PR 2a, Batch 15) `safety.rs` + `tools.rs`: registry (Safe/Risky), `Approved<T>` crate-private constructors, substring matcher, protected list, min length 3. Tests: risky never runs without `Approved`, power restart/shutdown click-only. Spec: `action-safety`.
 - [ ] 2.3 `assistant.rs` tool loop with fake LLM: validation before execution, pending slot, confirmation flow, whole-utterance yes/no matcher, timeouts. Spec: `assistant-core`.
 - [ ] 2.4 Adapters `ollama.rs` (health, backoff, warm-up, `/api/ps` slow mode), `win_apps.rs`, `win_volume.rs`; `#[ignore]` integration tests. Spec: `pc-actions`.
 - [ ] 2.5 Debug window text box and release "Type a command" window (`textwindow/TextWindow.tsx`, `text_window.rs`, `capabilities/text-window.json`, tray entry). Spec: `island-shell`, `language-handling` text heuristic.
 - [ ] 2.6 CO2: RED test then rule for `web_search` mixed with a risky call in one response. Precedence: reject the mix at validation with an error template, nothing executed.
 - [ ] 2.7 Minor test: `confirm.expiresAt` absent until `speak_done`, set after.
 - [ ] 2.8 Minor test: second ambiguity in a `close_app` follow-up fails after one turn (same as reminders).
-- [ ] 2.9 Minor: remove or demote the "6 LLM steps" cap (single-response-only) and fix the design text.
+- [x] 2.9 (already done during the design review; see design.md "Judgment Day carry-over") Minor: remove or demote the "6 LLM steps" cap (single-response-only) and fix the design text.
 - [ ] 2.10 `eval/commands.yaml` (~40 cases) and `bin/niva-eval.rs`; run E1 and record gates. Decide the product LLM.
 
 ## Slice 3: Voice sidecar
@@ -117,6 +117,12 @@ Decision required: chain strategy (`stacked-to-main` or `feature-branch-chain`) 
 ## Delivery decision (2026-11-02)
 
 Owner chose chained delivery for slice 1: 4 PRs (1a scaffold, 1b reducer, 1c host, 1d mascot), `chain_strategy: stacked-to-main`, `delivery_strategy: ask-on-risk`. PR 1a is a bootstrap exception (it creates the repo).
+
+Slice 2 (2026-11-03, owner approved after an external review): 4 chained PRs, stacked-to-main. The 400-line budget is retired in favour of the reviewability rules in `openspec/config.yaml` (safety code alone in its PR, one concern per PR, tests not counted).
+- PR 2a, safety only: ports and fakes from 2.1 (not the reply templates) plus 2.2 (`Approved<T>`, Safe/Risky registry, protected list, substring matcher).
+- PR 2b: `replies.rs` templates (rest of 2.1), 2.3 assistant loop, 2.6-2.8, and the debug-window text box from 2.5, so the loop can be tried by hand with fakes.
+- PR 2c: `ollama.rs` from 2.4 plus 2.10 (`niva-eval`, E1 run 3 times on the real prompt and schemas, reported per case id so a non-deterministic risky call such as `adv-es-me-voy-a-dormir` is visible).
+- PR 2d: `win_apps.rs` and `win_volume.rs` from 2.4, plus the release "Type a command" window, capability and tray entry from 2.5.
 
 ## Apply progress
 
@@ -351,3 +357,55 @@ iva.exe`). No processes left running.
 - W3: `robot.ts` never recomputed the fingertip (the finger is a `handParts` part placed by the hand position), so there was no production caller to rewire. `fingertip` and `quadPoint` (the arm is stroked with `quadraticCurveTo`) were removed. The head-scratch test now checks the drawn finger: the tip of the finger part from `handParts` through the transform `drawHand` applies. `poseForState`, `gestureForState` and `gestureForView` were removed; tests use `POSES[state]`, and the AskFollowUp rule is tested through the production `poseForView`. No visual change.
 - S: `preview.tsx` ignores `?t=` values that are not finite and the mis-indented `timeOverride` is fixed.
 - Done checks: `npm test` 12 files / 149 tests; `npm run build` ok; `cargo test --workspace` 86 + 161 passed; `cargo clippy --workspace --all-targets -- -D warnings` clean.
+
+### Batch 15 (PR 2a, safety core) (2026-11-03)
+
+- Scope: ports and fakes from 2.1 (not `replies.rs`) plus 2.2. Nothing is wired into the reducer or the Tauri host except one reconciliation of `UiPort` (below). Strict TDD: tests written first against `unimplemented!()` stubs, real RED pass (63 failed, 169 passed), then GREEN.
+- Files (new): `crates/niva-core/src/ports/testing.rs` (fakes `FakeLlm`, `FakePc`, `FakeClock`, `FakeUi<E>`), `tools.rs` + `tools/tests.rs` (registry, Safe/Risky, per-tool argument validation), `safety.rs` + `safety/matcher.rs` + `safety/tests.rs` (`Approved<T>`, `SafetyGate`, matcher, protected list). Changed: `ports.rs` (traits `LlmProvider`, `PcActions`, `Clock`, `UiPort<E>` plus data types), `lib.rs` (two modules), host `ui_adapter.rs` and `dispatcher.rs` (see UiPort).
+- Type-level guarantee: `Approved<T>` has private fields and a `pub(crate)` constructor; `RiskyAction` is sealed; `PcActions::close_app`/`power` take only `Approved<CloseApp>`/`Approved<Power>`; the only producer is `SafetyGate::approve`, which consumes a `RiskyRequest` that only `SafetyGate::validate` makes. Four `compile_fail` doc tests pin it (struct literal E0451, private constructor E0624, foreign `T` E0277, raw action to `pc.power` E0308). Checked by hand that each fails for that error and not for a typo (rustdoc on stable ignores the error code, so the codes are documentation).
+- Gate rules: `approve` needs the matching confirmation id and `accepted: true`; restart/shutdown need `Channel::Click`. `execute_close` re-resolves the query and aborts (`TargetChanged`/`NotRunning`, nothing closed) unless the same executable still matches uniquely (new pids of the same exe are fine).
+- Matcher: case-insensitive, whitespace-stripped substring on the stem (no `.exe`), min 3 characters (counted as chars), distinct executables deduplicated and sorted, several distinct -> `Ambiguous(candidates)`, protected and out-of-session processes never counted.
+- Test counts: `cargo test --workspace` = host 86 + niva-core 233 unit (161 before; +72: tools 29, safety 39, fakes 4) + 4 doc tests; `npm test` 149 unchanged; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --check` clean.
+- Lines (new code, `git diff --stat` plus untracked): production 1,129 = `ports.rs` 105, `tools.rs` 437, `safety.rs` 289 (incl. about 50 lines of doc tests), `safety/matcher.rs` 103, `ports/testing.rs` fakes 195; plus 8 changed lines in the host. Tests 1,176 = `tools/tests.rs` 484, `safety/tests.rs` 604, fake tests in `ports/testing.rs` 88.
+- UiPort: the host already had `UiPort` (`ui_adapter.rs`, non-generic over `UiEvent`, which is serde/Tauri-specific). Rather than a second trait, the core owns `UiPort<E>` and the host re-exports it (`pub use niva_core::ports::UiPort`), implementing `UiPort<UiEvent>`. Mechanical edits: 2 lines in `ui_adapter.rs`, 3 in `dispatcher.rs`; host tests unchanged and passing.
+- Open points / spec ambiguities (spec followed; nothing invented unless stated):
+  1. **Ports are synchronous** (no async runtime in `niva-core`). Design lists no signature. The host runs blocking adapters off the event loop; a late LLM result is dropped by request id (already in the reducer). Revisit in 2c (Ollama over HTTP) if it hurts.
+  2. **`PcActions` deviates from the design port list**: it exposes `running_processes()` instead of `resolve_close_target(query) -> Candidates`. Reason: the protected list, the session filter and the matcher then live in the core and cannot be skipped or got wrong by an adapter. The re-resolve at execution is `SafetyGate::execute_close`.
+  3. **Volume out of range**: the spec clamps `level` (and reports it); the design schema says `delta` is -100..100. Followed both: `level` is clamped, a `delta` outside -100..100 is rejected as invalid. Not specified for delta; owner may prefer clamping.
+  4. **Text never confirms**: the gate has `Channel::{Click, Voice}` only. The spec says only "explicit affirmative", the matrix ignores `TextSubmitted` in confirmation-needed. The whole-utterance yes/no matcher is task 2.3 (PR 2b).
+  5. **Action-safety scenarios not owned by the gate**: timeout cancels and unclear reply are the reducer's (slice 1, `tests_confirm.rs`) and the matcher's (2b). The gate covers: safe action, confirmed, denied, model bypass, near-miss name, ambiguity. Spec "Confirmation for risky actions" is therefore only fully verifiable end to end in 2b.
+  6. **Protected list**: "Niva" and "the voice sidecar" have no final process name (packaging is open, tasks 3.3 and 5.3). Protected here: stem `niva` and the families `niva-*`, `niva_*`, `niva *`, same for `ollama` (covers `ollama app`, `ollama_llama_server`). A sidecar running as plain `python.exe` is NOT protected; decide when the sidecar is packaged.
+  7. **Follow-up pick vs substring**: after "which one?" the user's answer is resolved with the same substring matcher. Answering "notepad" when `notepad.exe` and `notepad++.exe` run is ambiguous again, which the one-turn rule then fails. A query may carry the `.exe` suffix (added so a spoken candidate name resolves). 2b may want to resolve a follow-up by exact candidate name; not done here because the spec says substring only.
+  8. **Reminder validation** is structural only here (text, exactly one of `delay_minutes`/`at_local_time`, `HH:MM`, real `YYYY-MM-DD`, `delay_minutes > 0`). "Past date" and "tomorrow" need the clock and belong to `reminders.rs` (slice 4); the `ToolError::Missing` values (`text`, `time`) are what 2b turns into `AskFollowUp`.
+  9. **Not in this PR**: the `web_search` + risky mix rejection (2.6, it is a batch-level rule over several calls), the pending slot and follow-up turn (2.3, 2.8), `replies.rs`, the prompt text of `ToolVerdict::Confirm` (`RiskyRequest::target()` and `click_only()` are the inputs), `ReminderStore`/`SearchProvider`/`SpeechEngine` ports (their slices).
+  10. `Float` exists in `ArgValue` only so a non-integer is rejected as `WrongType`; the host JSON decoder must reject arrays and objects itself.
+- Proposed commits (conventional, no AI attribution):
+  1. `feat(core): add tool registry, Approved safety gate and ports with fakes` (ports.rs, ports/testing.rs, tools.rs, tools/, safety.rs, safety/, lib.rs, host UiPort re-export). One commit on purpose: `ports.rs` imports the `safety` and `tools` types and the risky port methods only make sense with the gate, so splitting would leave a commit that does not build.
+  2. `docs(openspec): record PR 2a progress and open points` (tasks.md, openspec/config.yaml if the owner wants the reviewability rules in the same PR).
+
+### Batch 16 (PR 2a review fixes) (2026-11-03)
+
+- Source: risk review plus `verify-report-2a.md`. Strict TDD: tests first, real RED pass for the behaviour changes (12 failed against the old code: protected-name normalisation, widened list, delta clamp, caps, `at_local_time` forms, non-ASCII case), then GREEN.
+- What changed
+  1. **Fail-closed protected list**: names from the adapter are normalised before any check (last path component after `\` or `/`, trimmed, trailing dots dropped, Unicode-lowercased, `.exe` stripped). An odd name (empty stem, control characters, `: * ? " < > |`) counts as protected and is never a candidate. Candidates are returned as the file name without directory.
+  2. **Wider list**: `applicationframehost`, `msedgewebview2`; any stem starting with `niva` or `ollama` (with or without separator, e.g. `NivaVoice.exe`).
+  3. **One confirmation, one execution**: `RiskyRequest`/`Validated` lost `Clone`; `approve` consumes the request. `validate(call, processes, request, call_index)` mints a `ConfirmationId{request, call}` per risky call. The test that cloned and approved twice now builds two requests; two new `compile_fail` doc tests (use after move E0382, no `Clone` E0599). `Channel::Click` documents that only the native click handler may produce it (host-PR requirement).
+  4. **Adapter contract** documented on `PcActions` (user session, exact exe name, re-check `is_protected`, no force kill); `debug_assert!(!is_protected(exe))` in `execute_close`.
+  5. **Doc test 3** now pins the seal (`struct F; impl RiskyAction for F {}`, E0277); each of the five `compile_fail` snippets was compiled by hand and fails with its stated error.
+  6. **Bounds**: free text (app name, queries, reminder text) at most 200 characters (`ArgProblem::TooLong`), `delay_minutes` at most 10080 (`OutOfRange`).
+  7. **`at_local_time`** accepts `H`, `HH`, `H:MM`, `HH:MM`, `HH:MM:SS`, normalised to `HH:MM` (seconds range-checked, then dropped); `24`, `18:60`, `09:00:60` rejected.
+  8. **Delta clamped** to -100..100 and reported like `level`.
+  9. **One source of truth for risk**: `parse_call` dispatches on `ToolName::risk()`; a tool the class does not cover fails closed (`UnknownTool`). A test links every tool's `risk()` to the shape `parse_call` returns.
+  10. **Fakes**: fakes-only tests and the duplicate safety test deleted; `ports::testing` is behind `#[cfg(any(test, feature = "testing"))]` with a `testing` cargo feature (off by default; PR 2c's `niva-eval` enables it). Checked: the production build has no fakes.
+  11. **Design**: `design.md` updated (sync ports, `running_processes`, `UiPort<E>`, re-resolve in `SafetyGate::execute_close`, adapter contract, normalisation and widened list, per-call ids, delta clamp, `at_local_time` forms, bounds). Judgment: delta clamping and the time forms are design-level (spec `pc-actions` only names the level clamp and `reminders` does not fix the argument format), so no spec changed.
+  12. **Reuse (S4)**: `safety::Answer` renamed `ConfirmationAnswer` (the reducer's `state_machine::Answer` is the Yes/No/Unclear verdict). Correction to Batch 15 point 4: the whole-utterance yes/no matcher already exists as `state_machine::classify_confirmation`; **PR 2b must reuse it and map its verdict to `ConfirmationAnswer.accepted`, not write a second matcher.** Also S2 fixed: executable names compare with Unicode case folding (dedupe and re-resolve).
+- Test counts: `cargo test --workspace` = host 86 + niva-core 242 unit (161 reducer + 81 new: tools 33, safety 48) + 6 doc tests; `npm test` 149; clippy `-D warnings` and `cargo fmt --check` clean.
+- Lines (whole PR now, new files): production 1,262 = `ports.rs` 111, `tools.rs` 487, `safety.rs` 334 (about 65 are doc tests), `safety/matcher.rs` 135, `ports/testing.rs` fakes 195, plus 8 changed lines in the host. Tests 1,399 = `tools/tests.rs` 626, `safety/tests.rs` 773.
+- Open points left (new or still open)
+  - Sidecar process name (`python.exe` is not protected): `docs/BACKLOG.md`, decide at tasks 3.3 and 5.3.
+  - Verify S5 (`NoMatch` covers both "not running" and "near-miss"): 2b uses one wording or adds a case. S6: make `level`/`mute` combinations tolerant if E1 shows models filling both (today `Conflicting`), and the host JSON decoder must send integral numbers as `Int`. S7: `MIN_QUERY_CHARS` and `is_protected` stay public (needed by the adapter contract); the RED evidence is self-reported.
+  - Batch 15 points 1, 3 (now: delta clamped too), 4 (corrected above), 6 (updated list), 7, 8 and 9 stand.
+  - W3 (PR composition): ports, fakes and the host `UiPort` re-export stay with the gate because the risky port methods need `Approved`; nothing is wired yet, so there is nothing to try by hand in 2a (accepted exception of the owner-approved split).
+- Updated commit plan (conventional, no AI attribution; safety code alone, all prose separate)
+  1. `feat(core): add tool registry, Approved safety gate and ports` : `crates/niva-core` (`Cargo.toml` feature, `lib.rs`, `ports.rs`, `ports/testing.rs`, `tools.rs`, `tools/`, `safety.rs`, `safety/`) plus the two host files for the `UiPort` re-export (`app/src-tauri/src/ui_adapter.rs`, `dispatcher.rs`). One commit because `ports.rs` imports the gate types.
+  2. `docs(openspec): record PR 2a review, reviewability rules and design updates` : `openspec/config.yaml` (rule change), `openspec/changes/niva-mvp/{tasks,design,verify-report-2a}.md`, `docs/BACKLOG.md`.
