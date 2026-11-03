@@ -9,6 +9,11 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+/// How long the host waits before hiding the window after `niva://island
+/// {visible:false}`: the exit animation (`EDGE_OUT_MS` in
+/// `src/island-ui/choreography.ts`) plays first. A test reads those constants.
+pub const HIDE_DELAY_MS: u64 = 540;
+
 #[derive(Clone, Default)]
 pub struct HideGuard {
     generation: Arc<AtomicU64>,

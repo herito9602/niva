@@ -1,7 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { islandLabel } from "./island";
-import { MascotCanvas } from "./mascot/MascotCanvas";
+import { Island } from "./island-ui/Island";
 import { bindHostEvents, createViewStore, type ViewState } from "./state/viewStore";
 import "./styles.css";
 
@@ -19,12 +18,5 @@ export default function App() {
 
   useEffect(() => bindHostEvents(store, listen), []);
 
-  return (
-    <div className="stage">
-      <div className={`island ${phase}`}>
-        <MascotCanvas view={view} getCursor={getCursor} active={phase === "in"} />
-        <span className="label">{islandLabel(view)}</span>
-      </div>
-    </div>
-  );
+  return <Island phase={phase} view={view} getCursor={getCursor} />;
 }

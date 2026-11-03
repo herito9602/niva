@@ -1,3 +1,4 @@
+mod click_through;
 mod cursor;
 #[cfg(debug_assertions)]
 mod debug;
@@ -11,6 +12,8 @@ mod visibility;
 
 #[cfg(test)]
 mod capabilities_tests;
+#[cfg(test)]
+mod island_contract_tests;
 
 use std::{
     sync::Arc,
@@ -26,14 +29,13 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
+use crate::click_through::{IslandWindow, prepare_island, show_island_window};
 use crate::cursor::CursorPoller;
 use crate::dispatcher::{Core, Input, InputTx, startup_events};
 use crate::effect_runner::{EffectRunner, EventSink, Host};
 use crate::requests::Requests;
 use crate::ui_adapter::{ISLAND_LABEL, TauriUiAdapter};
-use crate::visibility::{HideGuard, ShortcutStatus, shortcut_status};
-
-const HIDE_DELAY_MS: u64 = 250;
+use crate::visibility::{HIDE_DELAY_MS, HideGuard, ShortcutStatus, shortcut_status};
 
 /// Center the window horizontally on the primary monitor, flush with the top edge.
 fn position_top_center(win: &WebviewWindow) {
@@ -41,6 +43,22 @@ fn position_top_center(win: &WebviewWindow) {
         let mon_pos = mon.position();
         let x = mon_pos.x + (mon.size().width as i32 - size.width as i32) / 2;
         let _ = win.set_position(PhysicalPosition::new(x, mon_pos.y));
+    }
+}
+
+/// The real window behind the island seam. Click-through is set from Rust, so
+/// the webview needs no permission for it.
+impl IslandWindow for WebviewWindow {
+    fn position_top_center(&self) {
+        position_top_center(self);
+    }
+
+    fn set_ignore_cursor_events(&self, ignore: bool) -> Result<(), String> {
+        WebviewWindow::set_ignore_cursor_events(self, ignore).map_err(|err| err.to_string())
+    }
+
+    fn show(&self) {
+        let _ = WebviewWindow::show(self);
     }
 }
 
@@ -57,8 +75,7 @@ impl Host for TauriHost {
     fn show_island(&self) {
         self.guard.show();
         if let Some(win) = self.app.get_webview_window(ISLAND_LABEL) {
-            position_top_center(&win);
-            let _ = win.show();
+            show_island_window(&win);
         }
         self.cursor.start(&self.app, ISLAND_LABEL);
     }
@@ -178,7 +195,7 @@ pub fn run() {
             }
 
             if let Some(win) = app.get_webview_window(ISLAND_LABEL) {
-                position_top_center(&win);
+                prepare_island(&win);
             }
 
             #[cfg(debug_assertions)]
