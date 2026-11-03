@@ -40,6 +40,7 @@ Grouped by when they matter. Started 2026-11-01.
 ## Island / desktop (from spikes/island/RESULTS.md)
 - [ ] **Reduce WebView2 memory while hidden** (~170 MB private today), e.g. lower the memory target level.
 - [ ] **Cache the Start menu app index** at startup (loading it takes ~3.6 s).
+- [ ] **Thinking pose: owner not fully convinced by the one-finger crown scratch (2026-11-03); revisit the look later.**
 
 ## PC control (from spikes/pc-control/RESULTS.md)
 - [ ] **Pick the product LLM.** `qwen3.5:2b` is fast but invents extra actions; compare a bigger local model and Claude (needs API credits) on the same commands.
