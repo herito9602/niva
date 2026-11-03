@@ -33,7 +33,15 @@ The average time from end of user speech to start of reply (audio or visible res
 #### Scenario: Latency measurement
 - GIVEN the eval set run on a GPU PC with the assistant warmed up
 - WHEN end-of-speech to reply-start is measured per command
-- THEN the mean is below 2.0 s
+- THEN the mean is below 2.5 s
+
+### Requirement: Response latency tail
+The 95th percentile of the time from end of user speech to start of reply MUST be at most 3.0 seconds, measured over the same action-path commands as the mean requirement, with real microphone audio (task 3.5). The current estimate from measured components is about 2.71 s at p95 (VAD 400 ms unmeasured + STT 203 ms + LLM 1110 ms + tool 100 ms + TTS 900 ms).
+
+#### Scenario: Tail measurement
+- GIVEN the action-path commands of the eval set spoken through a real microphone on a GPU PC with the assistant warmed up
+- WHEN end-of-speech to reply-start is measured per command
+- THEN the 95th percentile is at most 3.0 s
 
 ### Requirement: Unintelligible or empty speech
 The system MUST NOT run any action when transcription is empty.
@@ -46,4 +54,4 @@ The system MUST NOT run any action when transcription is empty.
 ## Assumptions to confirm
 - Latency metric: end of speech to first audio (`speak_started`); spike baseline 3.75 s (design Latency budget and Metric logging).
 - PCs without a GPU are out of scope (answer to question 2); v1 targets GPU PCs (design D1), no latency target applies elsewhere.
-- Percentiles: the < 2.5 s target is a mean over action-path cases; the p95 gates are STT ≤ 400 ms (S1) and LLM ≤ 700 ms (E1) (design Latency budget).
+- Percentiles: the < 2.5 s target is a mean over action-path cases and the end-to-end p95 goal is ≤ 3.0 s (owner decision, round 3). Per-stage gates: STT p95 ≤ 400 ms (S1) and LLM tool-choice mean ≤ 800 ms on the action path (E1). The earlier "LLM p95 ≤ 700 ms" gate is retired (design, Slice 0 results).

@@ -31,7 +31,18 @@ Per-model JSON goes to `spikes/eval/results/<model>-<timestamp>.json` (git-ignor
 - Correct tool >= 90%
 - Reply language >= 95%
 - 0 unrequested risky calls
-- p95 tool-choice latency <= 700 ms (action path; the budget slot is ~600 ms mean)
+- LLM tool-choice mean latency <= 800 ms (action path)
+- End to end (measured in task 3.5, not by this runner): mean < 2.5 s and p95 <= 3.0 s
 
-Case notes: `reminder_followup` cases (reminder without a time) expect no `create_reminder`; the
-follow-up question comes from a template. Reminder times are checked as 24-hour `HH:MM`.
+The original gate "p95 tool-choice latency <= 700 ms" is retired: measured LLM p95 is ~1.1-1.2 s (see design.md "Slice 0 results and decisions"). `run_e1.py` still prints its old p95 <= 700 ms line (`GATE_P95_MS`) for information.
+
+Case notes: `reminder_followup` cases (reminder without a time) expect `create_reminder` called WITHOUT a time (the
+model must not invent one); the core asks the follow-up question from a template. Changed 2026-11-02 because
+the cases originally expected `none`, which contradicted the design; applied to every model. Reminder times are checked as 24-hour `HH:MM`.
+
+## Provenance (reproducibility)
+
+- Ollama 0.40.13.
+- `qwen3.5:4b-q4_K_M`, digest `d8b0f5e9760cd1682034f292d7ef72ec46f432149be0df7574bf2d6e92e38c04` (4.2B, Q4_K_M). The tag is mutable; compare the digest before comparing results.
+- Run settings (`run_e1.py`): `think=False`, `temperature=0`, `keep_alive="30m"`, one warm-up call. `num_ctx` is not set by `run_e1.py` (Ollama default for that run); the 4096 quoted in `spikes/voice/S1_RESULTS.md` co-residency is the S1 setup.
+- STT used alongside (S1): faster-whisper `small` from `Systran/faster-whisper-small`, snapshot `536b0662742c02347bc0e980a01041f333bce120`, model.bin SHA-256 `3E305921506D8872816023E4C273E75D2419FB89B24DA97B4FE7BCE14170D671`.
