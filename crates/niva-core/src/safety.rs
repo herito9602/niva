@@ -72,7 +72,7 @@ mod matcher;
 #[cfg(test)]
 mod tests;
 
-pub use matcher::{MIN_QUERY_CHARS, is_protected, resolve_close_target};
+pub use matcher::{MIN_QUERY_CHARS, is_protected, resolve_close_target, resolve_pinned};
 
 mod sealed {
     pub trait Sealed {}
@@ -86,6 +86,9 @@ pub trait RiskyAction: sealed::Sealed {}
 pub struct CloseApp {
     query: String,
     exe: String,
+    /// The user picked `exe` by its whole file name (the answer to "which
+    /// one?"): execution re-resolves it the same way.
+    pinned: bool,
 }
 
 impl CloseApp {
@@ -157,9 +160,12 @@ impl<T: RiskyAction> Approved<T> {
 pub enum Channel {
     /// A click on the confirmation buttons. **Host requirement:** only the
     /// native click handler (the `answer_confirmation` path that comes from
-    /// the island) may produce this; no code reachable from the webview's
-    /// debug commands, the model or typed text may construct it. Restart and
-    /// shutdown are confirmable through this channel alone.
+    /// the island) may produce this; no code reachable from the model or typed
+    /// text may construct it, and no release-build webview command may.
+    /// Debug builds are the one exception: the debug window's Confirm button
+    /// also becomes a click, which is safe only because every `PcActions` a
+    /// debug build runs is dry-run (design "Safety Gate"; PR 2d must keep it
+    /// so). Restart and shutdown are confirmable through this channel alone.
     Click,
     Voice,
 }
@@ -271,7 +277,11 @@ impl SafetyGate {
             ParsedCall::Safe(action) => return Ok(Validated::Safe(action)),
             ParsedCall::Close { query } => {
                 let exe = resolve_close_target(&query, processes)?;
-                RiskyKind::Close(CloseApp { query, exe })
+                RiskyKind::Close(CloseApp {
+                    query,
+                    exe,
+                    pinned: false,
+                })
             }
             ParsedCall::Power(kind) => RiskyKind::Power(Power { kind }),
         };
@@ -282,6 +292,32 @@ impl SafetyGate {
                 call: call_index,
             },
         }))
+    }
+
+    /// The user's follow-up answer to "which one?": `exe` is the whole file
+    /// name of one of the candidates. It must still be a running, unprotected
+    /// process of the user's session, and the confirmation binds to exactly
+    /// that executable. The model's own `close_app` call must not come here:
+    /// `validate` keeps an exact name ambiguous.
+    pub fn validate_pinned(
+        &self,
+        exe: &str,
+        processes: &[ProcessInfo],
+        request: u64,
+        call_index: u32,
+    ) -> Result<RiskyRequest, ToolError> {
+        let exe = resolve_pinned(exe, processes)?;
+        Ok(RiskyRequest {
+            kind: RiskyKind::Close(CloseApp {
+                query: exe.clone(),
+                exe,
+                pinned: true,
+            }),
+            confirmation_id: ConfirmationId {
+                request,
+                call: call_index,
+            },
+        })
     }
 
     /// Turns a risky request plus an explicit answer into an [`Approval`].
@@ -317,7 +353,13 @@ impl SafetyGate {
         // Cannot happen (`validate` never resolves a protected process);
         // asserted so a future bug shows up in tests.
         debug_assert!(!is_protected(&confirmed));
-        match resolve_close_target(&approved.action.query, &pc.running_processes()) {
+        let processes = pc.running_processes();
+        let now = if approved.action.pinned {
+            resolve_pinned(&approved.action.query, &processes)
+        } else {
+            resolve_close_target(&approved.action.query, &processes)
+        };
+        match now {
             Ok(now) if now.to_lowercase() == confirmed => {
                 pc.close_app(approved).map_err(ExecError::Pc)
             }

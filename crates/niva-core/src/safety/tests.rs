@@ -448,6 +448,111 @@ fn an_answer_for_another_confirmation_does_not_approve() {
     );
 }
 
+// Pinned pick (the follow-up answer to "which one?"): the generic path never
+// takes an exact name as a shortcut, only `validate_pinned` does
+
+#[test]
+fn a_generic_close_with_an_exact_exe_name_is_still_ambiguous() {
+    let running = procs(&["notepad.exe", "notepad++.exe", "Spotify.exe"]);
+    let expected = Err(ToolError::Ambiguous(vec![
+        "notepad++.exe".into(),
+        "notepad.exe".into(),
+    ]));
+    assert_eq!(resolve_close_target("notepad.exe", &running), expected);
+    assert_eq!(resolve_close_target("  NOTEPAD.EXE ", &running), expected);
+    // ...and through the gate, which is what the model's call goes through.
+    assert!(matches!(
+        SafetyGate::new().validate(&close_call("notepad.exe"), &running, 1, 0),
+        Err(ToolError::Ambiguous(_))
+    ));
+}
+
+#[test]
+fn a_pinned_exe_name_picks_that_executable_among_several_matches() {
+    let running = procs(&["notepad.exe", "notepad++.exe", "Spotify.exe"]);
+    let gate = SafetyGate::new();
+    let request = gate
+        .validate_pinned("notepad.exe", &running, 4, 0)
+        .expect("an exact name picks");
+    assert_eq!(request.target(), "notepad.exe");
+    assert_eq!(request.confirmation_id(), cid(4));
+    let request = gate
+        .validate_pinned("  NOTEPAD++.EXE ", &running, 5, 2)
+        .expect("case and spaces do not matter");
+    assert_eq!(request.target(), "notepad++.exe");
+}
+
+#[test]
+fn a_pinned_exe_name_never_widens_what_it_reaches() {
+    let gate = SafetyGate::new();
+    // Protected processes stay unreachable even when named exactly.
+    assert_eq!(
+        gate.validate_pinned(
+            "explorer.exe",
+            &procs(&["explorer.exe", "notepad.exe"]),
+            1,
+            0
+        ),
+        Err(ToolError::NoMatch)
+    );
+    // Out-of-session processes are refused.
+    let other_session = vec![ProcessInfo {
+        exe_name: "notepad.exe".into(),
+        in_user_session: false,
+    }];
+    assert_eq!(
+        gate.validate_pinned("notepad.exe", &other_session, 1, 0),
+        Err(ToolError::NoMatch)
+    );
+    // Only a whole file name counts: no substring, no prefix, nothing empty.
+    let running = procs(&["notepad.exe", "notepad++.exe"]);
+    for wrong in ["note.exe", "notepad", "pad.exe", "", "  "] {
+        assert_eq!(
+            gate.validate_pinned(wrong, &running, 1, 0),
+            Err(ToolError::NoMatch),
+            "{wrong:?}"
+        );
+    }
+}
+
+#[test]
+fn a_pinned_pick_survives_the_re_resolve_at_execution() {
+    let pc = FakePc::with_processes(&["notepad.exe", "notepad++.exe"]);
+    let gate = SafetyGate::new();
+    let request = gate
+        .validate_pinned("notepad.exe", &pc.running_processes(), 4, 0)
+        .expect("pinned");
+    let Ok(Approval::Close(approved)) = gate.approve(request, click(4)) else {
+        panic!("a click must approve");
+    };
+    assert_eq!(gate.execute_close(approved, &pc), Ok(CloseOutcome::Closed));
+    assert_eq!(
+        pc.calls(),
+        vec![PcCall::CloseApp {
+            exe: "notepad.exe".into()
+        }],
+        "only the picked executable is closed"
+    );
+}
+
+#[test]
+fn a_pinned_pick_whose_app_is_gone_closes_nothing() {
+    let gate = SafetyGate::new();
+    let before = procs(&["notepad.exe", "notepad++.exe"]);
+    let request = gate
+        .validate_pinned("notepad.exe", &before, 4, 0)
+        .expect("pinned");
+    let Ok(Approval::Close(approved)) = gate.approve(request, click(4)) else {
+        panic!("a click must approve");
+    };
+    let pc = FakePc::with_processes(&["notepad++.exe"]);
+    assert_eq!(
+        gate.execute_close(approved, &pc),
+        Err(ExecError::NotRunning)
+    );
+    assert!(pc.calls().is_empty());
+}
+
 // Execution
 
 #[test]
