@@ -148,12 +148,13 @@ fn a_fire_of_the_first_confirm_timer_does_not_reject_the_second_confirmation() {
     let (s, _) = run(
         waiting,
         vec![
-            Event::Accept,
+            Event::Accept { id: CONFIRM_ID },
             Event::ToolsDone {
                 req: REQ_ID,
                 outcome: ToolsOutcome::RiskyRemaining {
                     prompt: "Close Spotify.exe?".into(),
                     click_only: false,
+                    cancel_text: None,
                 },
             },
         ],
@@ -169,7 +170,10 @@ fn a_fire_of_the_first_confirm_timer_does_not_reject_the_second_confirmation() {
 
 #[test]
 fn accept_click_then_a_late_voice_yes_is_dropped() {
-    let (acting, _) = step(&state_in(Phase::ConfirmationNeeded), Event::Accept);
+    let (acting, _) = step(
+        &state_in(Phase::ConfirmationNeeded),
+        Event::Accept { id: CONFIRM_ID },
+    );
     assert_ignored(acting, yes(CONFIRM_LISTEN_ID));
 }
 
@@ -177,7 +181,7 @@ fn accept_click_then_a_late_voice_yes_is_dropped() {
 fn reject_then_the_confirm_watchdog_is_dropped() {
     let confirming = state_in(Phase::ConfirmationNeeded);
     let late = fire(&confirming, TimerKind::Confirm);
-    let (rejected, _) = step(&confirming, Event::Reject);
+    let (rejected, _) = step(&confirming, Event::Reject { id: CONFIRM_ID });
     assert_ignored(rejected, late);
 }
 
@@ -185,7 +189,7 @@ fn reject_then_the_confirm_watchdog_is_dropped() {
 fn accept_then_a_stale_confirm_watchdog_does_not_reject_or_rerun() {
     let confirming = state_in(Phase::ConfirmationNeeded);
     let late = fire(&confirming, TimerKind::Confirm);
-    let (acting, _) = step(&confirming, Event::Accept);
+    let (acting, _) = step(&confirming, Event::Accept { id: CONFIRM_ID });
     assert_ignored(acting, late);
 }
 
@@ -473,7 +477,7 @@ fn accepting_without_a_request_is_a_logic_error() {
     let mut s = state_in(Phase::ConfirmationNeeded);
     s.request_id = None;
     s.listen_id = None;
-    let _ = step(&s, Event::Accept);
+    let _ = step(&s, Event::Accept { id: CONFIRM_ID });
 }
 
 // --- Tool calls while summarizing ----------------------------------------------------------
@@ -485,6 +489,7 @@ fn tool_calls_during_the_search_summary_are_invalid() {
         ToolVerdict::Confirm {
             prompt: "Close it?".into(),
             click_only: false,
+            cancel_text: None,
         },
     ] {
         let mut s = state_in(Phase::Thinking);
@@ -610,8 +615,8 @@ fn the_same_state_and_event_always_give_the_same_result() {
     let events = [
         Event::Wake,
         Event::Shortcut,
-        Event::Accept,
-        Event::Reject,
+        Event::Accept { id: CONFIRM_ID },
+        Event::Reject { id: CONFIRM_ID },
         Event::Dismiss,
         Event::TextSubmitted { text: "hi".into() },
         reminder(2, false),

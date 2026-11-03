@@ -111,6 +111,14 @@ pub struct State {
     pub summarizing: bool,
     /// The open confirmation has no voice channel (power action or voice down).
     pub confirm_click_only: bool,
+    /// Identity of the open confirmation (present exactly in
+    /// `ConfirmationNeeded`). A click carries the id it answers
+    /// (`Event::Accept { id }`), so a late or repeated click for an earlier
+    /// prompt is dropped instead of answering the next one.
+    pub confirm_id: Option<u64>,
+    /// The reply for the open confirmation if it ends without an accept
+    /// (reject, shortcut, timeout). `None`: the "cancelled" template.
+    pub cancel_text: Option<String>,
     /// Reminders merged into the current alert.
     pub alert_count: u32,
     /// Id of the alert chime while it is still playing (alert only).
@@ -118,6 +126,8 @@ pub struct State {
     /// Timers started by the reducer and not yet fired or cancelled.
     pub timers: Vec<Timer>,
     pub(crate) next_id: u64,
+    /// Next confirmation id; separate from `next_id`, never reused.
+    pub(crate) next_confirm: u64,
     /// Next timer token; every `StartTimer` gets a fresh one.
     pub(crate) next_token: u64,
 }
@@ -151,10 +161,13 @@ impl Default for State {
             followup_turn: false,
             summarizing: false,
             confirm_click_only: false,
+            confirm_id: None,
+            cancel_text: None,
             alert_count: 0,
             chime_id: None,
             timers: Vec::new(),
             next_id: 1,
+            next_confirm: 1,
             next_token: 1,
         }
     }
@@ -168,6 +181,7 @@ impl State {
         State {
             voice_available: previous.voice_available,
             next_id: previous.next_id,
+            next_confirm: previous.next_confirm,
             next_token: previous.next_token,
             ..State::default()
         }
@@ -275,7 +289,13 @@ pub enum ToolVerdict {
     /// Safe calls: run them.
     RunSafe,
     /// Only risky calls: confirm the first one.
-    Confirm { prompt: String, click_only: bool },
+    Confirm {
+        prompt: String,
+        click_only: bool,
+        /// What the reply says if the user does not confirm (nothing has run
+        /// yet in this verdict, so it is only needed after `RiskyRemaining`).
+        cancel_text: Option<String>,
+    },
     /// Unknown tool, no match or invalid arguments: nothing executes.
     Invalid,
 }
@@ -290,6 +310,10 @@ pub enum ToolsOutcome {
     RiskyRemaining {
         prompt: String,
         click_only: bool,
+        /// What the reply says if this prompt is rejected, cancelled or times
+        /// out: what already ran, then what was cancelled. `None` falls back
+        /// to the plain "cancelled" template (nothing ran).
+        cancel_text: Option<String>,
     },
     Failed,
 }
@@ -338,14 +362,27 @@ pub enum Event {
     Failure {
         req: u64,
     },
+    /// Like `Failure`, but the service supplies the localized error text, so a
+    /// tool error can say what went wrong (not found, still running, ...).
+    FailureText {
+        req: u64,
+        text: String,
+    },
     /// A tool needs one more piece of input (always raised from `thinking`).
     AskFollowUp {
         req: u64,
         question: String,
         slot: PendingSlot,
     },
-    Accept,
-    Reject,
+    /// Click on Accept for the confirmation `id` (`State::confirm_id`, shown
+    /// in the view). An answer for any other confirmation is dropped.
+    Accept {
+        id: u64,
+    },
+    /// Click on Reject for the confirmation `id`.
+    Reject {
+        id: u64,
+    },
     SpeakStarted {
         id: u64,
     },
@@ -501,6 +538,8 @@ impl State {
         self.followup_turn = false;
         self.summarizing = false;
         self.confirm_click_only = false;
+        self.confirm_id = None;
+        self.cancel_text = None;
         self.alert_count = 0;
         self.chime_id = None;
         self.utterance = Utterance::WaitingForSpeech;
@@ -536,8 +575,12 @@ impl State {
     }
 
     pub(crate) fn enter_error(&mut self, template: Template, fx: &mut Vec<Effect>) {
+        self.enter_error_say(Say::Template(template), fx);
+    }
+
+    pub(crate) fn enter_error_say(&mut self, say: Say, fx: &mut Vec<Effect>) {
         self.transition(Phase::Error, fx);
-        self.speak(ReplyKind::Final, Say::Template(template), fx);
+        self.speak(ReplyKind::Final, say, fx);
     }
 
     pub(crate) fn enter_success(&mut self, say: Say, fx: &mut Vec<Effect>) {
@@ -604,6 +647,7 @@ pub fn reduce(mut state: State, event: Event) -> (State, Vec<Effect>) {
         Event::ToolsDone { outcome, .. } => state.on_tools_done(outcome, &mut fx),
         Event::Reply { text, .. } => state.on_reply(text, &mut fx),
         Event::Failure { .. } => state.on_failure(&mut fx),
+        Event::FailureText { text, .. } => state.on_failure_text(text, &mut fx),
         Event::AskFollowUp { question, slot, .. } => {
             state.on_ask_follow_up(question, slot, &mut fx)
         }
@@ -613,8 +657,8 @@ pub fn reduce(mut state: State, event: Event) -> (State, Vec<Effect>) {
         Event::SpeakDone { .. } | Event::TtsFailed { .. } => state.on_speak_done(&mut fx),
         Event::Watchdog { kind, .. } => state.on_watchdog(kind, &mut fx),
         Event::VoiceReadinessChanged { ready } => state.on_voice_readiness(ready, &mut fx),
-        Event::Accept => state.on_accept(&mut fx),
-        Event::Reject => state.on_reject(&mut fx),
+        Event::Accept { .. } => state.on_accept(&mut fx),
+        Event::Reject { .. } => state.on_reject(&mut fx),
         Event::ReminderDue { count, silent } => state.on_reminder_due(count, silent, &mut fx),
         Event::Dismiss => state.on_dismiss(&mut fx),
         Event::ChimeDone { .. } => state.on_chime_done(&mut fx),
@@ -638,6 +682,7 @@ impl State {
             | Event::ToolsDone { req, .. }
             | Event::Reply { req, .. }
             | Event::Failure { req }
+            | Event::FailureText { req, .. }
             | Event::AskFollowUp { req, .. } => self.request_id != Some(*req),
             // The speak watchdog is bound to the speak it was armed for.
             Event::Watchdog {
@@ -650,12 +695,12 @@ impl State {
                 .iter()
                 .any(|t| t.kind == *kind && t.token == *token),
             Event::ChimeDone { id } => self.chime_id != Some(*id),
+            // A click answers one confirmation only: the one it was rendered for.
+            Event::Accept { id } | Event::Reject { id } => self.confirm_id != Some(*id),
             Event::Wake
             | Event::Shortcut
             | Event::TextSubmitted { .. }
             | Event::ReminderDue { .. }
-            | Event::Accept
-            | Event::Reject
             | Event::VoiceReadinessChanged { .. }
             | Event::Dismiss => false,
         }
@@ -938,9 +983,18 @@ impl State {
         self.enter_error(template, fx);
     }
 
-    fn ask_confirmation(&mut self, prompt: String, click_only: bool, fx: &mut Vec<Effect>) {
+    fn ask_confirmation(
+        &mut self,
+        prompt: String,
+        click_only: bool,
+        cancel_text: Option<String>,
+        fx: &mut Vec<Effect>,
+    ) {
         self.transition(Phase::ConfirmationNeeded, fx);
         self.confirm_click_only = click_only;
+        self.cancel_text = cancel_text;
+        self.confirm_id = Some(self.next_confirm);
+        self.next_confirm += 1;
         // The 10 s timer and `listen{confirm}` start at speak_done.
         self.speak(ReplyKind::ConfirmPrompt, Say::Text(prompt), fx);
     }
@@ -968,8 +1022,12 @@ impl State {
                 self.start_timer(TimerKind::Tool, fx);
                 fx.push(Effect::RunTool { req });
             }
-            ToolVerdict::Confirm { prompt, click_only } => {
-                self.ask_confirmation(prompt, click_only, fx);
+            ToolVerdict::Confirm {
+                prompt,
+                click_only,
+                cancel_text,
+            } => {
+                self.ask_confirmation(prompt, click_only, cancel_text, fx);
             }
             ToolVerdict::Invalid => self.fail_request(fx),
         }
@@ -997,8 +1055,12 @@ impl State {
                 self.summarizing = true;
                 self.begin_request(RequestInput::SearchSummary, fx);
             }
-            ToolsOutcome::RiskyRemaining { prompt, click_only } => {
-                self.ask_confirmation(prompt, click_only, fx);
+            ToolsOutcome::RiskyRemaining {
+                prompt,
+                click_only,
+                cancel_text,
+            } => {
+                self.ask_confirmation(prompt, click_only, cancel_text, fx);
             }
             ToolsOutcome::Failed => {
                 self.finish_request();
@@ -1025,6 +1087,21 @@ impl State {
     fn on_failure(&mut self, fx: &mut Vec<Effect>) {
         match self.phase {
             Phase::Thinking | Phase::Acting => self.fail_request(fx),
+            Phase::Idle
+            | Phase::Listening
+            | Phase::ConfirmationNeeded
+            | Phase::Success
+            | Phase::Error
+            | Phase::ReminderAlert => {}
+        }
+    }
+
+    fn on_failure_text(&mut self, text: String, fx: &mut Vec<Effect>) {
+        match self.phase {
+            Phase::Thinking | Phase::Acting => {
+                self.finish_request();
+                self.enter_error_say(Say::Text(text), fx);
+            }
             Phase::Idle
             | Phase::Listening
             | Phase::ConfirmationNeeded
@@ -1241,11 +1318,16 @@ impl State {
         }
     }
 
-    /// Reject, Shortcut or timeout in `confirmation-needed`: the request ends
-    /// with the "cancelled" template, not fed back to the LLM; the remaining
-    /// risky calls are discarded by the service.
+    /// Reject, Shortcut or timeout in `confirmation-needed`: the request ends,
+    /// not fed back to the LLM; the remaining risky calls are discarded by the
+    /// service. The reply is the service's `cancel_text` (what already ran,
+    /// then what was cancelled) or, when nothing ran, the "cancelled" template.
     fn reject(&mut self, fx: &mut Vec<Effect>) {
+        let say = match self.cancel_text.take() {
+            Some(text) => Say::Text(text),
+            None => Say::Template(Template::Cancelled),
+        };
         self.request_id = None;
-        self.enter_success(Say::Template(Template::Cancelled), fx);
+        self.enter_success(say, fx);
     }
 }

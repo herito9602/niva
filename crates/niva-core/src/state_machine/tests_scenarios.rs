@@ -105,6 +105,7 @@ fn scenario_risky_call_confirmed_by_voice() {
         verdict: ToolVerdict::Confirm {
             prompt: "Close Spotify.exe?".into(),
             click_only: false,
+            cancel_text: None,
         },
     });
     assert_eq!(run.phase(), Phase::ConfirmationNeeded);

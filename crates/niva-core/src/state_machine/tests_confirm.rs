@@ -20,7 +20,10 @@ fn confirm_listen(id: u64) -> Effect {
 
 #[test]
 fn accept_runs_the_risky_tool_and_closes_the_confirm_listen() {
-    let (s, fx) = step(&state_in(Phase::ConfirmationNeeded), Event::Accept);
+    let (s, fx) = step(
+        &state_in(Phase::ConfirmationNeeded),
+        Event::Accept { id: CONFIRM_ID },
+    );
     assert_eq!(s.phase, Phase::Acting);
     assert_eq!(s.request_id, Some(2));
     assert_eq!(s.listen_id, None);
@@ -40,18 +43,21 @@ fn accept_runs_the_risky_tool_and_closes_the_confirm_listen() {
 
 #[test]
 fn a_click_while_the_prompt_is_spoken_stops_speaking_first() {
-    let (_, fx) = step(&prompt_playing(), Event::Accept);
+    let (_, fx) = step(&prompt_playing(), Event::Accept { id: CONFIRM_ID });
     assert_eq!(fx.first(), Some(&Effect::StopSpeaking));
     assert!(fx.contains(&Effect::RunTool { req: 2 }));
 
-    let (s, fx) = step(&prompt_playing(), Event::Reject);
+    let (s, fx) = step(&prompt_playing(), Event::Reject { id: CONFIRM_ID });
     assert_eq!(s.phase, Phase::Success);
     assert_eq!(fx.first(), Some(&Effect::StopSpeaking));
 }
 
 #[test]
 fn reject_ends_with_the_cancelled_reply_and_does_not_feed_the_llm() {
-    let (s, fx) = step(&state_in(Phase::ConfirmationNeeded), Event::Reject);
+    let (s, fx) = step(
+        &state_in(Phase::ConfirmationNeeded),
+        Event::Reject { id: CONFIRM_ID },
+    );
     assert_eq!(s.phase, Phase::Success);
     assert_eq!(s.request_id, None);
     assert_eq!(
@@ -72,7 +78,7 @@ fn a_click_only_confirmation_accepts_and_rejects_without_a_listen_to_close() {
     let mut start = state_in(Phase::ConfirmationNeeded);
     start.listen_id = None;
     start.confirm_click_only = true;
-    let (s, fx) = step(&start, Event::Accept);
+    let (s, fx) = step(&start, Event::Accept { id: CONFIRM_ID });
     assert_eq!(s.phase, Phase::Acting);
     assert!(!s.confirm_click_only, "flag is per confirmation");
     assert!(!fx.iter().any(|e| matches!(e, Effect::CancelListen { .. })));
@@ -84,9 +90,160 @@ fn accept_and_reject_are_ignored_outside_confirmation() {
         if phase == Phase::ConfirmationNeeded {
             continue;
         }
-        assert_ignored(state_in(phase), Event::Accept);
-        assert_ignored(state_in(phase), Event::Reject);
+        assert_ignored(state_in(phase), Event::Accept { id: CONFIRM_ID });
+        assert_ignored(state_in(phase), Event::Reject { id: CONFIRM_ID });
     }
+}
+
+// --- A click answers one confirmation only ----------------------------------
+
+#[test]
+fn a_click_for_another_confirmation_is_dropped() {
+    let confirming = state_in(Phase::ConfirmationNeeded);
+    assert_ignored(confirming.clone(), Event::Accept { id: CONFIRM_ID + 1 });
+    assert_ignored(confirming.clone(), Event::Reject { id: CONFIRM_ID + 1 });
+    assert_ignored(confirming.clone(), Event::Accept { id: 0 });
+    // The matching id still works.
+    let (s, _) = step(&confirming, Event::Accept { id: CONFIRM_ID });
+    assert_eq!(s.phase, Phase::Acting);
+}
+
+#[test]
+fn every_prompt_gets_a_new_confirmation_id() {
+    let (acting, _) = step(
+        &state_in(Phase::ConfirmationNeeded),
+        Event::Accept { id: CONFIRM_ID },
+    );
+    assert_eq!(acting.confirm_id, None, "no confirmation while acting");
+    let (second, _) = step(
+        &acting,
+        Event::ToolsDone {
+            req: REQ_ID,
+            outcome: ToolsOutcome::RiskyRemaining {
+                prompt: "Close Spotify.exe?".into(),
+                click_only: false,
+                cancel_text: None,
+            },
+        },
+    );
+    assert_eq!(second.phase, Phase::ConfirmationNeeded);
+    assert_eq!(second.confirm_id, Some(NEXT_CONFIRM));
+    assert_eq!(second.next_confirm, NEXT_CONFIRM + 1);
+}
+
+#[test]
+fn a_double_accept_leaves_the_second_prompt_waiting() {
+    // Two risky calls: the user clicks Accept twice on the first prompt, and the
+    // second click reaches the reducer once prompt 2 is open.
+    let (acting, _) = step(
+        &state_in(Phase::ConfirmationNeeded),
+        Event::Accept { id: CONFIRM_ID },
+    );
+    let (second, _) = step(
+        &acting,
+        Event::ToolsDone {
+            req: REQ_ID,
+            outcome: ToolsOutcome::RiskyRemaining {
+                prompt: "Close Spotify.exe?".into(),
+                click_only: false,
+                cancel_text: None,
+            },
+        },
+    );
+    assert_ignored(second.clone(), Event::Accept { id: CONFIRM_ID });
+    assert_ignored(second.clone(), Event::Reject { id: CONFIRM_ID });
+    assert_eq!(second.phase, Phase::ConfirmationNeeded);
+    // The answer for prompt 2 itself is accepted.
+    let id = second.confirm_id.expect("open confirmation");
+    let (s, _) = step(&second, Event::Accept { id });
+    assert_eq!(s.phase, Phase::Acting);
+}
+
+#[test]
+fn reset_keeps_confirmation_ids_increasing() {
+    let confirming = state_in(Phase::ConfirmationNeeded);
+    let fresh = State::reset_from(&confirming);
+    assert_eq!(fresh.confirm_id, None);
+    assert_eq!(fresh.next_confirm, confirming.next_confirm);
+}
+
+// --- What a cancelled confirmation says -----------------------------------------
+
+/// The state after the service asked a second prompt that carries `cancel_text`.
+fn second_prompt_with(cancel_text: Option<&str>) -> State {
+    let (acting, _) = step(
+        &state_in(Phase::ConfirmationNeeded),
+        Event::Accept { id: CONFIRM_ID },
+    );
+    let (second, _) = step(
+        &acting,
+        Event::ToolsDone {
+            req: REQ_ID,
+            outcome: ToolsOutcome::RiskyRemaining {
+                prompt: "Close Spotify.exe?".into(),
+                click_only: false,
+                cancel_text: cancel_text.map(str::to_string),
+            },
+        },
+    );
+    second
+}
+
+#[test]
+fn a_cancelled_confirmation_says_what_ran_when_the_service_gave_the_text() {
+    let second = second_prompt_with(Some("Volume at 30%. Cancelled closing Spotify.exe."));
+    let id = second.confirm_id.expect("open confirmation");
+    for event in [
+        Event::Reject { id },
+        Event::Shortcut,
+        fire(&speaking_done(second.clone()), TimerKind::Confirm),
+    ] {
+        let start = if matches!(event, Event::Watchdog { .. }) {
+            speaking_done(second.clone())
+        } else {
+            second.clone()
+        };
+        let (s, fx) = step(&start, event.clone());
+        assert_eq!(s.phase, Phase::Success, "{event:?}");
+        assert!(
+            fx.iter().any(|e| matches!(
+                e,
+                Effect::Speak { say: Say::Text(text), .. }
+                    if text == "Volume at 30%. Cancelled closing Spotify.exe."
+            )),
+            "{event:?}: {fx:?}"
+        );
+        assert_eq!(s.cancel_text, None);
+    }
+}
+
+#[test]
+fn without_a_text_a_cancel_is_the_plain_template() {
+    let second = second_prompt_with(None);
+    let id = second.confirm_id.expect("open confirmation");
+    let (_, fx) = step(&second, Event::Reject { id });
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::Speak {
+            say: Say::Template(Template::Cancelled),
+            ..
+        }
+    )));
+}
+
+#[test]
+fn an_accept_forgets_the_cancel_text() {
+    let second = second_prompt_with(Some("Volume at 30%. Cancelled closing Spotify.exe."));
+    let id = second.confirm_id.expect("open confirmation");
+    let (s, _) = step(&second, Event::Accept { id });
+    assert_eq!(s.phase, Phase::Acting);
+    assert_eq!(s.cancel_text, None);
+}
+
+/// The prompt of `state` has been spoken, so the confirm timer runs.
+fn speaking_done(state: State) -> State {
+    let speak = state.speak_id.expect("the prompt is being spoken");
+    step(&state, Event::SpeakDone { id: speak }).0
 }
 
 // --- Voice answers and the "unclear" reissue --------------------------------
@@ -376,7 +533,7 @@ fn voice_down_in_confirmation_keeps_the_click_path_and_the_timer() {
             text: "yes".into(),
         },
     );
-    let (s, _) = step(&s, Event::Accept);
+    let (s, _) = step(&s, Event::Accept { id: CONFIRM_ID });
     assert_eq!(s.phase, Phase::Acting, "click still works");
 }
 
@@ -437,6 +594,7 @@ fn after_voice_returns_new_prompts_may_use_voice_again() {
     let verdict = ToolVerdict::Confirm {
         prompt: "Close it?".into(),
         click_only: false,
+        cancel_text: None,
     };
     let (confirm, _) = step(&up, Event::ToolCalls { req: 2, verdict });
     let (s, fx) = step(&confirm, Event::SpeakDone { id: 100 });

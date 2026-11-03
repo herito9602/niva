@@ -8,6 +8,10 @@ use super::*;
 pub(super) const LISTEN_ID: u64 = 1;
 pub(super) const REQ_ID: u64 = 2;
 pub(super) const CONFIRM_LISTEN_ID: u64 = 3;
+/// Confirmation id of the `ConfirmationNeeded` fixture; `NEXT_CONFIRM` is what
+/// the next confirmation gets.
+pub(super) const CONFIRM_ID: u64 = 5;
+pub(super) const NEXT_CONFIRM: u64 = 60;
 pub(super) const SPEAK_ID: u64 = 7;
 pub(super) const CHIME_ID: u64 = 8;
 pub(super) const NEXT_ID: u64 = 100;
@@ -62,6 +66,7 @@ pub(super) fn state_in(phase: Phase) -> State {
         phase,
         voice_available: true,
         next_id: NEXT_ID,
+        next_confirm: NEXT_CONFIRM,
         next_token: NEXT_TOKEN,
         ..State::default()
     };
@@ -82,6 +87,7 @@ pub(super) fn state_in(phase: Phase) -> State {
         Phase::ConfirmationNeeded => {
             s.request_id = Some(REQ_ID);
             s.listen_id = Some(CONFIRM_LISTEN_ID);
+            s.confirm_id = Some(CONFIRM_ID);
             s.timers = running(&[TimerKind::Confirm]);
         }
         Phase::Success | Phase::Error => {
@@ -215,6 +221,18 @@ pub(super) fn assert_invariants(s: &State, context: &str) {
         ),
         Phase::Success | Phase::Error | Phase::ReminderAlert => {}
     }
+    assert!(
+        s.confirm_id.is_some() == (s.phase == Phase::ConfirmationNeeded),
+        "{context}: a confirmation id exists exactly while one is open: {s:?}"
+    );
+    assert!(
+        s.cancel_text.is_none() || s.phase == Phase::ConfirmationNeeded,
+        "{context}: a cancel text belongs to an open confirmation: {s:?}"
+    );
+    assert!(
+        s.confirm_id.is_none_or(|id| id < s.next_confirm),
+        "{context}: confirmation id was never issued: {s:?}"
+    );
     assert!(
         s.speak_id.is_some() == s.speak_kind.is_some(),
         "{context}: speak id and kind move together: {s:?}"

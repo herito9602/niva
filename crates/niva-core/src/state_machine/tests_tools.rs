@@ -46,6 +46,7 @@ fn a_risky_call_asks_for_confirmation_by_speaking_the_prompt() {
     let verdict = ToolVerdict::Confirm {
         prompt: "Close Spotify.exe?".into(),
         click_only: false,
+        cancel_text: None,
     };
     let (s, fx) = step(&state_in(Phase::Thinking), calls(verdict));
     assert_eq!(s.phase, Phase::ConfirmationNeeded);
@@ -68,6 +69,7 @@ fn a_power_confirmation_is_click_only() {
     let verdict = ToolVerdict::Confirm {
         prompt: "Shut down?".into(),
         click_only: true,
+        cancel_text: None,
     };
     let (s, _) = step(&state_in(Phase::Thinking), calls(verdict));
     assert!(s.confirm_click_only);
@@ -140,6 +142,7 @@ fn a_remaining_risky_call_moves_acting_to_confirmation() {
     let outcome = ToolsOutcome::RiskyRemaining {
         prompt: "Close Spotify.exe?".into(),
         click_only: false,
+        cancel_text: None,
     };
     let (s, fx) = step(&state_in(Phase::Acting), done(outcome));
     assert_eq!(s.phase, Phase::ConfirmationNeeded);
@@ -231,6 +234,62 @@ fn a_failed_search_summary_says_it_cannot_search_now() {
         fx.last(),
         Some(&speak_final(100, tmpl(Template::SearchUnavailable)))
     );
+}
+
+#[test]
+fn failure_text_ends_the_request_in_error_with_the_services_own_text() {
+    for phase in [Phase::Thinking, Phase::Acting] {
+        let mut start = state_in(phase);
+        start.timers = running(&[TimerKind::Llm]);
+        let (s, fx) = step(
+            &start,
+            Event::FailureText {
+                req: 2,
+                text: "I could not find that app.".into(),
+            },
+        );
+        assert_eq!(s.phase, Phase::Error, "{phase:?}");
+        assert_eq!(s.request_id, None, "{phase:?}: the request is over");
+        assert_eq!(
+            fx.last(),
+            Some(&speak_final(
+                100,
+                Say::Text("I could not find that app.".into())
+            )),
+            "{phase:?}"
+        );
+        assert!(
+            !fx.iter().any(|e| matches!(e, Effect::CancelRequest { .. })),
+            "{phase:?}: nothing to cancel, the request finished"
+        );
+    }
+}
+
+#[test]
+fn failure_text_for_an_old_request_is_dropped_and_ignored_elsewhere() {
+    let mut s = state_in(Phase::Thinking);
+    s.request_id = Some(2);
+    assert_ignored(
+        s,
+        Event::FailureText {
+            req: 1,
+            text: "late".into(),
+        },
+    );
+    for phase in Phase::ALL {
+        if matches!(phase, Phase::Thinking | Phase::Acting) {
+            continue;
+        }
+        let mut s = state_in(phase);
+        s.request_id = Some(2);
+        assert_ignored(
+            s,
+            Event::FailureText {
+                req: 2,
+                text: "x".into(),
+            },
+        );
+    }
 }
 
 #[test]
