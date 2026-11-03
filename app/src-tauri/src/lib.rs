@@ -1,8 +1,11 @@
 mod cursor;
 #[cfg(debug_assertions)]
 mod debug;
+#[cfg(debug_assertions)]
+mod dev;
 mod dispatcher;
 mod effect_runner;
+mod requests;
 mod ui_adapter;
 mod visibility;
 
@@ -26,6 +29,7 @@ use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 use crate::cursor::CursorPoller;
 use crate::dispatcher::{Core, Input, InputTx, startup_events};
 use crate::effect_runner::{EffectRunner, EventSink, Host};
+use crate::requests::Requests;
 use crate::ui_adapter::{ISLAND_LABEL, TauriUiAdapter};
 use crate::visibility::{HideGuard, ShortcutStatus, shortcut_status};
 
@@ -81,6 +85,36 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+// A tripwire, not a proof: this const only pins the SIGNATURE of
+// `dev::assistant`, so a change to it breaks the build and gets noticed. It
+// does not stop another constructor from being used. What enforces "debug
+// builds act only on the dry-run PC" (the premise of the debug window's
+// click-to-confirm, see the SECURITY note in `dev.rs`) is the behavioural test
+// `the_assistant_of_a_debug_build_only_ever_acts_on_the_dry_run_pc` in `dev.rs`.
+#[cfg(debug_assertions)]
+const _: fn(dev::LogSink) -> niva_core::assistant::Assistant = dev::assistant;
+
+/// Who answers the reducer's request effects. Debug builds run the assistant
+/// loop on the dev LLM and the dry-run PC (the real adapters are PRs 2c/2d);
+/// release builds fail every request safely and contain none of that code.
+#[cfg(debug_assertions)]
+fn build_requests(app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
+    use tauri::Emitter;
+
+    let app = app.clone();
+    let log: dev::LogSink = Arc::new(move |line| {
+        eprintln!("{line}");
+        let payload = serde_json::json!({ "line": line });
+        let _ = app.emit_to(debug::DEBUG_WINDOW_LABEL, debug::DEV_LOG_EVENT, payload);
+    });
+    Arc::new(requests::AssistantRequests::new(dev::assistant(log), sink))
+}
+
+#[cfg(not(debug_assertions))]
+fn build_requests(_app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
+    Arc::new(requests::Unavailable::new(sink))
+}
+
 fn send_event(app: &AppHandle, event: Event) {
     if let Err(err) = app.state::<InputTx>().send(Input::Event(event)) {
         eprintln!("[niva] dispatcher is gone: {err}");
@@ -122,8 +156,9 @@ pub fn run() {
                     let _ = tx.send(Input::Event(event));
                 })
             };
+            let requests = build_requests(app.handle(), sink.clone());
             let core = Core::new(
-                EffectRunner::new(sink, host),
+                EffectRunner::new(sink, host, requests),
                 Arc::new(TauriUiAdapter::new(
                     Arc::new(app.handle().clone()),
                     cfg!(debug_assertions),

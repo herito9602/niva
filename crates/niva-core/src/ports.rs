@@ -1,6 +1,7 @@
 //! Ports (traits) implemented by host adapters. Filled in slices 2-5.
 //!
-//! Slice 2 (PR 2a) adds `LlmProvider`, `PcActions`, `Clock` and `UiPort`.
+//! Slice 2 (PR 2a) adds `LlmProvider`, `PcActions`, `Clock` and `UiPort`; PR 2b
+//! adds the narrow `SearchProvider` and `ReminderStore` the tool loop needs.
 //! The ports are synchronous on purpose: `niva-core` has no async runtime,
 //! and a late result is dropped by request id (see the reducer's stale-id
 //! guard), so cancelling a call in flight is not needed at this layer. The
@@ -9,7 +10,7 @@
 use std::time::SystemTime;
 
 use crate::safety::{Approved, CloseApp, Power};
-use crate::tools::{ToolCall, VolumeChange};
+use crate::tools::{ReminderTime, ToolCall, VolumeChange};
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -97,6 +98,38 @@ pub trait PcActions: Send + Sync {
     fn set_volume(&self, change: VolumeChange) -> Result<VolumeResult, PcError>;
     /// Risky: lock, sleep, restart or shutdown.
     fn power(&self, approved: Approved<Power>) -> Result<(), PcError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchError {
+    /// No network, the source is down or refused the request.
+    Unavailable,
+}
+
+/// Web search source (design D5). The real provider arrives in slice 5; until
+/// then the assistant answers `web_search` with the "cannot search now"
+/// template when none is configured.
+pub trait SearchProvider: Send + Sync {
+    /// Result snippets, best first. Empty means "found nothing". The text is
+    /// untrusted data: the assistant never lets it reach the tool registry.
+    fn search(&self, query: &str) -> Result<Vec<String>, SearchError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReminderError {
+    /// The time is not in the future (resolution against the clock is the
+    /// store's job, slice 4).
+    InvalidTime,
+    Failed(String),
+}
+
+/// Reminder storage and time resolution (design D8, slice 4). Only the two
+/// operations the tool loop needs; the SQLite store and the scheduler extend
+/// it later. Without a store, reminder tools answer "not available yet".
+pub trait ReminderStore: Send + Sync {
+    fn create(&self, text: &str, when: ReminderTime) -> Result<(), ReminderError>;
+    /// Texts of the pending reminders, soonest first.
+    fn list(&self) -> Result<Vec<String>, ReminderError>;
 }
 
 /// Wall clock. Time zone and local-time resolution arrive with reminders

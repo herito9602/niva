@@ -5,6 +5,7 @@
 //! into the events to publish. [`TauriUiAdapter`] is the thin `UiPort`
 //! implementation that emits them.
 
+use niva_core::replies::{self, Lang};
 use niva_core::state_machine::{Effect, Phase, ReplyKind, Say, State, Template, TimerKind};
 use std::sync::Arc;
 
@@ -30,24 +31,16 @@ pub fn event_targets(event_name: &str, debug_build: bool) -> Vec<&'static str> {
     targets
 }
 
-/// English text of a reply template.
-///
-/// Stub: the real es/en rendering lives in `replies.rs` (slice 2, task 2.1).
+/// English text of a reply template (used where the language does not matter,
+/// e.g. to size the speak watchdog).
 pub fn template_caption(template: Template) -> &'static str {
-    match template {
-        Template::VoiceNotReady => "Voice is not ready. Type a command instead.",
-        Template::Error => "Something went wrong.",
-        Template::Cancelled => "Cancelled.",
-        Template::ActionDone => "Done.",
-        Template::SearchUnavailable => "I can't search right now.",
-        Template::ReminderAlert => "Reminder.",
-    }
+    replies::template(template, Lang::En)
 }
 
-fn say_text(say: &Say) -> String {
+fn say_text(say: &Say, lang: Lang) -> String {
     match say {
         Say::Text(text) => text.clone(),
-        Say::Template(template) => template_caption(*template).to_owned(),
+        Say::Template(template) => replies::template(*template, lang).to_owned(),
     }
 }
 
@@ -67,6 +60,8 @@ fn phase_name(phase: Phase) -> &'static str {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ConfirmView {
+    /// Identity of this confirmation (`State::confirm_id`): the buttons send it
+    /// back with their answer, and a click for another id is dropped.
     pub id: u64,
     pub prompt: String,
     /// Epoch milliseconds; absent until the confirmation timer starts
@@ -132,6 +127,7 @@ pub use niva_core::ports::UiPort;
 
 /// Folds reducer output into UI events, publishing a view only when it changed.
 pub struct ViewModel {
+    lang: Lang,
     phase: Phase,
     caption: Option<String>,
     confirm_prompt: Option<String>,
@@ -148,12 +144,18 @@ impl Default for ViewModel {
 impl ViewModel {
     pub fn new() -> Self {
         ViewModel {
+            lang: Lang::default(),
             phase: Phase::Idle,
             caption: None,
             confirm_prompt: None,
             expires_at: None,
             last: ViewPayload::idle(),
         }
+    }
+
+    /// Language the reducer's reply templates are shown in (the request's).
+    pub fn set_lang(&mut self, lang: Lang) {
+        self.lang = lang;
     }
 
     /// `now_ms` (epoch ms) timestamps the confirmation deadline.
@@ -163,8 +165,15 @@ impl ViewModel {
     /// into a stale view.
     pub fn update(&mut self, state: &State, effects: &[Effect], now_ms: u64) -> Vec<UiEvent> {
         if state.phase != self.phase {
+            // The question of a follow-up turn stays on screen while Niva
+            // listens for the answer.
+            let follow_up_listen = self.phase == Phase::Thinking
+                && state.phase == Phase::Listening
+                && state.pending.is_some();
             self.phase = state.phase;
-            self.caption = None;
+            if !follow_up_listen {
+                self.caption = None;
+            }
             self.confirm_prompt = None;
             self.expires_at = None;
         }
@@ -173,7 +182,7 @@ impl ViewModel {
         for effect in effects {
             match effect {
                 Effect::Speak { kind, say, .. } => {
-                    let text = say_text(say);
+                    let text = say_text(say, self.lang);
                     if *kind == ReplyKind::ConfirmPrompt {
                         self.confirm_prompt = Some(text.clone());
                         self.expires_at = None;
@@ -205,7 +214,7 @@ impl ViewModel {
     fn payload(&self, state: &State) -> ViewPayload {
         let confirm = match (state.phase, &self.confirm_prompt) {
             (Phase::ConfirmationNeeded, Some(prompt)) => Some(ConfirmView {
-                id: state.request_id.unwrap_or(0),
+                id: state.confirm_id.unwrap_or(0),
                 prompt: prompt.clone(),
                 expires_at: self.expires_at,
             }),
@@ -357,7 +366,7 @@ mod tests {
     #[test]
     fn an_ignored_event_publishes_nothing() {
         let mut sim = Sim::new();
-        assert_eq!(sim.send(Event::Accept), vec![]);
+        assert_eq!(sim.send(Event::Accept { id: 1 }), vec![]);
         sim.send(Event::VoiceReadinessChanged { ready: true });
         sim.send(Event::Shortcut);
         // SpeechStart for the open listen changes no visible state.
@@ -407,6 +416,7 @@ mod tests {
             verdict: ToolVerdict::Confirm {
                 prompt: "Close Notepad?".into(),
                 click_only: false,
+                cancel_text: None,
             },
         });
         assert_eq!(view_of(&events).state, "confirmation-needed");
@@ -433,6 +443,34 @@ mod tests {
         assert_eq!(
             view_of(&events).caption.as_deref(),
             Some("Voice is not ready. Type a command instead.")
+        );
+    }
+
+    #[test]
+    fn the_follow_up_question_stays_visible_while_listening_for_the_answer() {
+        let mut sim = Sim::ready();
+        sim.thinking();
+        let req = sim.req();
+        sim.send(Event::AskFollowUp {
+            req,
+            question: "At what time?".into(),
+            slot: PendingSlot::Reminder { text: None },
+        });
+        let speak = sim.state.speak_id.expect("the question is playing");
+        let events = sim.send(Event::SpeakDone { id: speak });
+        let view = view_of(&events);
+        assert_eq!(view.state, "listening");
+        assert_eq!(view.caption.as_deref(), Some("At what time?"));
+    }
+
+    #[test]
+    fn templates_are_shown_in_the_language_the_view_model_is_given() {
+        let mut sim = Sim::new();
+        sim.view.set_lang(Lang::Es);
+        let events = sim.send(Event::Shortcut);
+        assert_eq!(
+            view_of(&events).caption.as_deref(),
+            Some("La voz no está lista. Escribe un comando.")
         );
     }
 
@@ -486,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn the_confirmation_carries_the_prompt_and_the_request_id() {
+    fn the_confirmation_carries_the_prompt_and_the_confirmation_id() {
         let mut sim = Sim::ready();
         sim.thinking();
         let req = sim.req();
@@ -495,10 +533,12 @@ mod tests {
             verdict: ToolVerdict::Confirm {
                 prompt: "Close Notepad?".into(),
                 click_only: false,
+                cancel_text: None,
             },
         });
         let confirm = view_of(&events).confirm.clone().expect("confirm");
-        assert_eq!(confirm.id, req);
+        assert_eq!(Some(confirm.id), sim.state.confirm_id);
+        assert_ne!(confirm.id, req, "the confirmation has its own id");
         assert_eq!(confirm.prompt, "Close Notepad?");
         assert_eq!(confirm.expires_at, None, "no deadline before speak_done");
     }
@@ -513,6 +553,7 @@ mod tests {
             verdict: ToolVerdict::Confirm {
                 prompt: "Close Notepad?".into(),
                 click_only: false,
+                cancel_text: None,
             },
         });
         let speak_id = sim.state.speak_id.unwrap();
@@ -532,9 +573,11 @@ mod tests {
             verdict: ToolVerdict::Confirm {
                 prompt: "Close Notepad?".into(),
                 click_only: true,
+                cancel_text: None,
             },
         });
-        let events = sim.send(Event::Accept);
+        let id = sim.state.confirm_id.expect("a confirmation");
+        let events = sim.send(Event::Accept { id });
         let view = view_of(&events);
         assert_eq!(view.state, "acting");
         assert_eq!(view.confirm, None);
@@ -571,8 +614,10 @@ mod tests {
             verdict: ToolVerdict::Confirm {
                 prompt: "Close Notepad?".into(),
                 click_only: false,
+                cancel_text: None,
             },
         });
+        let confirm_id = sim.state.confirm_id.unwrap();
         let speak_id = sim.state.speak_id.unwrap();
         let events2 = sim.at(500, Event::SpeakDone { id: speak_id });
         assert_eq!(
@@ -580,7 +625,7 @@ mod tests {
             json!({
                 "state": "confirmation-needed",
                 "caption": "Close Notepad?",
-                "confirm": {"id": req, "prompt": "Close Notepad?", "expiresAt": 10_500},
+                "confirm": {"id": confirm_id, "prompt": "Close Notepad?", "expiresAt": 10_500},
             })
         );
         // Optional fields are omitted, not null.
@@ -589,7 +634,7 @@ mod tests {
             json!({
                 "state": "confirmation-needed",
                 "caption": "Close Notepad?",
-                "confirm": {"id": req, "prompt": "Close Notepad?"},
+                "confirm": {"id": confirm_id, "prompt": "Close Notepad?"},
             })
         );
     }

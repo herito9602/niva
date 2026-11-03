@@ -3,6 +3,9 @@
 //! Matching is a case-insensitive, whitespace-stripped substring test on the
 //! process stem (file name without `.exe`). There is no fuzzy step anywhere:
 //! the spike once mapped "Spotify" to `FortiTray.exe` with a fuzzy matcher.
+//! When several executables match, the query is ambiguous, whatever it says
+//! (even an exact file name): only [`resolve_pinned`], used for the user's
+//! follow-up answer to "which one?", picks one by its whole file name.
 //!
 //! The process name comes from an adapter, so it is normalised before any
 //! check (last path component, trimmed, trailing dots dropped, Unicode case
@@ -132,4 +135,22 @@ pub fn resolve_close_target(query: &str, processes: &[ProcessInfo]) -> Result<St
                 .collect(),
         )),
     }
+}
+
+/// Resolves the user's follow-up pick: `exe` must be the whole file name
+/// (case and surrounding spaces aside) of a running, unprotected executable of
+/// the user's session. No substring, no prefix. This is the only exact-name
+/// shortcut; the model's own `close_app` call never reaches it.
+pub fn resolve_pinned(exe: &str, processes: &[ProcessInfo]) -> Result<String, ToolError> {
+    let wanted = exe.trim().to_lowercase();
+    if wanted.is_empty() {
+        return Err(ToolError::NoMatch);
+    }
+    processes
+        .iter()
+        .filter(|process| process.in_user_session && !is_protected(&process.exe_name))
+        .filter_map(|process| file_name_and_stem(&process.exe_name))
+        .find(|(base, _)| base.to_lowercase() == wanted)
+        .map(|(base, _)| base.to_string())
+        .ok_or(ToolError::NoMatch)
 }

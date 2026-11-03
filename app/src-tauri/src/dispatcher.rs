@@ -100,12 +100,16 @@ impl Core {
 
     fn dispatch(&mut self, event: Event) {
         self.runner.observe(&event);
+        // Records a confirmation answer (click or spoken yes) for the tool loop
+        // before the reducer consumes the event.
+        self.runner.requests().observe(&self.state, &event);
         let (state, effects) = reduce(std::mem::take(&mut self.state), event);
         self.state = state;
         self.apply(effects);
     }
 
     fn apply(&mut self, effects: Vec<Effect>) {
+        self.view.set_lang(self.runner.requests().lang());
         let ui_events = self.view.update(&self.state, &effects, (self.now_ms)());
         // Window effects first, so the island is on screen before the webview
         // is told to animate it in.
@@ -140,6 +144,7 @@ mod tests {
 
     use super::*;
     use crate::effect_runner::{EffectRunner, EventSink, Host, MediaMode};
+    use crate::requests::{Ignore, Requests, Unavailable};
     use crate::ui_adapter::{UiEvent, UiPort};
 
     #[derive(Default)]
@@ -190,13 +195,17 @@ mod tests {
     }
 
     fn rig(debug_build: bool) -> Rig {
+        rig_with(debug_build, |_| Arc::new(Ignore))
+    }
+
+    fn rig_with(debug_build: bool, requests: impl FnOnce(EventSink) -> Arc<dyn Requests>) -> Rig {
         let (tx, rx) = mpsc::unbounded_channel();
         let host = Arc::new(FakeHost::default());
         let ui = Arc::new(FakeUi::default());
         let sink: EventSink = Arc::new(move |event| {
             let _ = tx.send(Input::Event(event));
         });
-        let runner = EffectRunner::new(sink, host.clone());
+        let runner = EffectRunner::new(sink.clone(), host.clone(), requests(sink));
         let mut core = Core::new(runner, ui.clone(), Box::new(|| 1_000));
         for event in startup_events(debug_build) {
             core.handle(Input::Event(event));
@@ -339,6 +348,7 @@ mod tests {
             verdict: ToolVerdict::Confirm {
                 prompt: "Close Notepad?".into(),
                 click_only: false,
+                cancel_text: None,
             },
         });
         assert_eq!(r.phase(), Phase::ConfirmationNeeded);
@@ -386,6 +396,7 @@ mod tests {
             verdict: ToolVerdict::Confirm {
                 prompt: "Close Notepad?".into(),
                 click_only: false,
+                cancel_text: None,
             },
         });
         // Instant media: the prompt is done at once, so the timer has started.
@@ -429,6 +440,307 @@ mod tests {
         r.core.handle(Input::Resolve(Box::new(|_| None)));
         r.pump();
         assert_eq!(*r.core.state(), before);
+    }
+
+    // --- release behavior: requests fail safely ----------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn without_adapters_a_typed_command_ends_in_a_not_available_error() {
+        let mut r = rig_with(true, |sink| Arc::new(Unavailable::new(sink)));
+        r.send(Event::TextSubmitted {
+            text: "close notepad".into(),
+        });
+        assert_eq!(r.phase(), Phase::Error);
+        let view = r.ui.last_view();
+        assert_eq!(view.state, "error");
+        assert_eq!(
+            view.caption.as_deref(),
+            Some("Assistant commands are not available yet.")
+        );
+    }
+
+    // --- the whole loop with the dev adapters (debug builds) ---------------
+
+    #[cfg(debug_assertions)]
+    mod assistant_loop {
+        use std::sync::Arc;
+
+        use niva_core::state_machine::Event;
+
+        use super::*;
+        use crate::requests::AssistantRequests;
+
+        fn dev_rig() -> Rig {
+            rig_with(true, |sink| {
+                let assistant = crate::dev::assistant(Arc::new(|_| {}));
+                // Inline: the job runs on the dispatcher thread; its events
+                // still go through the queue.
+                Arc::new(AssistantRequests::with_spawn(
+                    assistant,
+                    sink,
+                    Box::new(|job| job()),
+                ))
+            })
+        }
+
+        impl Rig {
+            fn type_text(&mut self, text: &str) {
+                self.send(Event::TextSubmitted { text: text.into() });
+            }
+
+            fn caption(&self) -> String {
+                self.ui.last_view().caption.unwrap_or_default()
+            }
+
+            /// A click on the buttons the island shows now: it sends back the
+            /// confirmation id the view carries.
+            fn click(&mut self, accept: bool) {
+                let id = self.ui.last_view().confirm.expect("a confirmation").id;
+                self.click_for(id, accept);
+            }
+
+            fn click_for(&mut self, id: u64, accept: bool) {
+                self.send(if accept {
+                    Event::Accept { id }
+                } else {
+                    Event::Reject { id }
+                });
+            }
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_typed_command_runs_and_the_island_shows_the_template_reply() {
+            let mut r = dev_rig();
+            r.type_text("open notepad");
+            assert_eq!(r.ui.last_view().state, "success");
+            assert_eq!(r.caption(), "Opened notepad.");
+            r.type_text("abrí Spotify");
+            assert_eq!(r.caption(), "Abrí Spotify.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn the_reducers_own_templates_follow_the_request_language() {
+            let mut r = dev_rig();
+            r.type_text("cierra el spotify");
+            assert_eq!(r.caption(), "¿Cerrar Spotify.exe?");
+            r.click(false);
+            assert_eq!(r.caption(), "Cancelado.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_close_waits_for_a_click_and_the_view_carries_the_prompt() {
+            let mut r = dev_rig();
+            r.type_text("close spotify");
+            assert_eq!(r.phase(), Phase::ConfirmationNeeded);
+            let confirm = r.ui.last_view().confirm.expect("a confirmation");
+            assert_eq!(confirm.prompt, "Close Spotify.exe?");
+            assert_eq!(Some(confirm.id), r.core.state().confirm_id);
+            r.click(true);
+            assert_eq!(r.ui.last_view().state, "success");
+            assert_eq!(r.caption(), "Closed Spotify.exe.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn the_confirmation_deadline_appears_only_after_the_prompt_was_spoken() {
+            // Task 2.7 through the real loop.
+            let mut r = dev_rig();
+            r.core.set_media_mode(MediaMode::Held);
+            r.type_text("close spotify");
+            let confirm = r.ui.last_view().confirm.expect("a confirmation");
+            assert_eq!(confirm.expires_at, None, "the prompt is still being spoken");
+            let speak = r.core.state().speak_id.expect("the prompt is playing");
+            r.send(Event::SpeakDone { id: speak });
+            let confirm = r.ui.last_view().confirm.expect("a confirmation");
+            assert_eq!(confirm.expires_at, Some(11_000));
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn restart_cannot_be_confirmed_by_voice_only_by_click() {
+            let mut r = dev_rig();
+            r.type_text("restart the pc");
+            assert_eq!(r.caption(), "Restart the PC?");
+            // No confirm listen is open for a click-only prompt.
+            assert_eq!(r.core.state().listen_id, None);
+            r.send(Event::Transcript {
+                id: 1,
+                text: "yes".into(),
+            });
+            assert_eq!(r.phase(), Phase::ConfirmationNeeded);
+            r.click(true);
+            assert_eq!(r.caption(), "Restarting the PC.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn an_ambiguous_close_asks_and_the_answer_picks_by_exact_name() {
+            let mut r = dev_rig();
+            r.type_text("close notepad");
+            assert_eq!(r.caption(), "Which one: notepad++.exe or notepad.exe?");
+            r.type_text("notepad");
+            assert_eq!(r.caption(), "Close notepad.exe?");
+            r.click(true);
+            assert_eq!(r.caption(), "Closed notepad.exe.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_reminder_without_a_time_asks_once_then_completes() {
+            let mut r = dev_rig();
+            r.type_text("remind me to call mom");
+            assert_eq!(r.caption(), "At what time?");
+            r.type_text("in 10 minutes");
+            assert_eq!(r.caption(), "Reminder set in 10 minutes: call mom.");
+            r.type_text("list my reminders");
+            assert_eq!(r.caption(), "You have 1 reminder: call mom.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn web_search_goes_through_the_summary_call() {
+            let mut r = dev_rig();
+            r.type_text("search rust");
+            assert_eq!(r.ui.last_view().state, "success");
+            assert!(r.caption().starts_with("Dev summary"), "{}", r.caption());
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_search_mixed_with_a_risky_call_is_rejected_and_nothing_runs() {
+            let mut r = dev_rig();
+            r.type_text("search rust and close spotify");
+            assert_eq!(r.ui.last_view().state, "error");
+            assert!(r.caption().starts_with("I can't search and do that"));
+            // The next command still sees Spotify running.
+            r.type_text("close spotify");
+            assert_eq!(r.caption(), "Close Spotify.exe?");
+        }
+
+        // The manual try-it checklist (tasks.md, Batch 17), as tests.
+
+        #[tokio::test(start_paused = true)]
+        async fn a_second_ambiguity_in_the_follow_up_ends_in_an_error() {
+            let mut r = dev_rig();
+            r.type_text("close notepad");
+            r.type_text("close note");
+            assert_eq!(r.ui.last_view().state, "error");
+            assert_eq!(r.caption(), "Something went wrong.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn the_other_notepad_stays_open_with_a_save_dialog() {
+            let mut r = dev_rig();
+            r.type_text("close notepad");
+            r.type_text("notepad");
+            r.click(true);
+            assert_eq!(r.caption(), "Closed notepad.exe.");
+            r.type_text("close notepad");
+            assert_eq!(r.caption(), "Close notepad++.exe?");
+            r.click(true);
+            assert_eq!(r.ui.last_view().state, "success");
+            assert_eq!(
+                r.caption(),
+                "notepad++.exe is still running. It may be asking to save."
+            );
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_closed_app_is_gone_from_the_fake_process_list() {
+            let mut r = dev_rig();
+            r.type_text("close spotify");
+            r.click(true);
+            r.type_text("close spotify");
+            assert_eq!(r.ui.last_view().state, "error");
+            assert_eq!(r.caption(), "I couldn't find a running app with that name.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn safe_calls_run_before_the_confirmation_and_share_the_reply() {
+            let mut r = dev_rig();
+            r.type_text("volume 30 and close spotify");
+            assert_eq!(r.caption(), "Close Spotify.exe?");
+            r.click(true);
+            assert_eq!(r.caption(), "Volume at 30%. Closed Spotify.exe.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_reminder_with_nothing_asks_what_and_when_and_in_spanish() {
+            let mut r = dev_rig();
+            r.type_text("remind me");
+            assert_eq!(r.caption(), "What should I remind you about, and when?");
+            r.type_text("call mom at 6");
+            assert_eq!(r.caption(), "Reminder set at 06:00: call mom.");
+            r.type_text("recuérdame llamar a mamá a las 18:30");
+            assert_eq!(r.caption(), "Recordatorio a las 18:30: llamar a mamá.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn search_with_no_results_or_offline_is_an_error() {
+            let mut r = dev_rig();
+            r.type_text("search nothing");
+            assert_eq!(r.ui.last_view().state, "error");
+            assert_eq!(r.caption(), "I found nothing for that search.");
+            r.type_text("search offline");
+            assert_eq!(r.caption(), "I can't search right now.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn lock_is_confirmed_and_shutdown_can_be_cancelled() {
+            let mut r = dev_rig();
+            r.type_text("lock the pc");
+            assert_eq!(r.caption(), "Lock the PC?");
+            r.click(true);
+            assert_eq!(r.caption(), "Locking the PC.");
+            r.type_text("shut down the pc");
+            assert_eq!(r.caption(), "Shut down the PC?");
+            r.click(false);
+            assert_eq!(r.caption(), "Cancelled.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn the_confirmation_times_out_after_10_s_and_cancels() {
+            let mut r = dev_rig();
+            r.type_text("close spotify");
+            r.advance(ms(10_000)).await;
+            assert_eq!(r.caption(), "Cancelled.");
+        }
+
+        // Batch 18 (review fixes), through the real loop.
+
+        #[tokio::test(start_paused = true)]
+        async fn a_double_click_on_prompt_one_does_not_confirm_prompt_two() {
+            let mut r = dev_rig();
+            r.type_text("close spotify and close chrome");
+            assert_eq!(r.caption(), "Close Spotify.exe?");
+            let first = r.ui.last_view().confirm.expect("first").id;
+            r.click_for(first, true);
+            r.click_for(first, true);
+            assert_eq!(r.phase(), Phase::ConfirmationNeeded);
+            assert_eq!(r.caption(), "Close chrome.exe?");
+            let second = r.ui.last_view().confirm.expect("second").id;
+            assert_ne!(first, second, "each prompt has its own id");
+            r.click_for(second, true);
+            assert_eq!(r.caption(), "Closed Spotify.exe. Closed chrome.exe.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn cancelling_after_a_safe_call_reports_what_ran() {
+            let mut r = dev_rig();
+            r.type_text("volume 30 and close spotify");
+            r.click(false);
+            assert_eq!(r.caption(), "Volume at 30%. Cancelled closing Spotify.exe.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn the_confirmation_timing_out_after_a_safe_call_reports_what_ran() {
+            let mut r = dev_rig();
+            r.type_text("volume 30 and close spotify");
+            r.advance(ms(10_000)).await;
+            assert_eq!(r.caption(), "Volume at 30%. Cancelled closing Spotify.exe.");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn the_protected_explorer_is_never_offered() {
+            let mut r = dev_rig();
+            r.type_text("close explorer");
+            assert_eq!(r.ui.last_view().state, "error");
+            assert_eq!(r.caption(), "I couldn't find a running app with that name.");
+        }
     }
 
     #[cfg(debug_assertions)]

@@ -10,10 +10,10 @@ use std::time::{Duration, SystemTime};
 
 use super::{
     ChatReply, ChatRequest, Clock, CloseOutcome, LlmError, LlmProvider, PcActions, PcError,
-    ProcessInfo, UiPort, VolumeResult,
+    ProcessInfo, ReminderError, ReminderStore, SearchError, SearchProvider, UiPort, VolumeResult,
 };
 use crate::safety::{Approved, CloseApp, Power};
-use crate::tools::{PowerKind, VolumeChange};
+use crate::tools::{PowerKind, ReminderTime, VolumeChange};
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -143,6 +143,64 @@ impl PcActions for FakePc {
     fn power(&self, approved: Approved<Power>) -> Result<(), PcError> {
         lock(&self.calls).push(PcCall::Power(approved.action().kind()));
         Ok(())
+    }
+}
+
+/// Search source with a fixed answer; records the queries.
+pub struct FakeSearch {
+    answer: Mutex<Result<Vec<String>, SearchError>>,
+    queries: Mutex<Vec<String>>,
+}
+
+impl FakeSearch {
+    pub fn new(answer: Result<Vec<String>, SearchError>) -> Self {
+        FakeSearch {
+            answer: Mutex::new(answer),
+            queries: Mutex::default(),
+        }
+    }
+
+    pub fn queries(&self) -> Vec<String> {
+        lock(&self.queries).clone()
+    }
+}
+
+impl SearchProvider for FakeSearch {
+    fn search(&self, query: &str) -> Result<Vec<String>, SearchError> {
+        lock(&self.queries).push(query.into());
+        lock(&self.answer).clone()
+    }
+}
+
+/// Reminder store that keeps what it was given in memory.
+#[derive(Default)]
+pub struct FakeReminders {
+    created: Mutex<Vec<(String, ReminderTime)>>,
+    reject_time: Mutex<bool>,
+}
+
+impl FakeReminders {
+    /// Makes `create` fail with `InvalidTime` (a time in the past).
+    pub fn reject_time(&self, reject: bool) {
+        *lock(&self.reject_time) = reject;
+    }
+
+    pub fn created(&self) -> Vec<(String, ReminderTime)> {
+        lock(&self.created).clone()
+    }
+}
+
+impl ReminderStore for FakeReminders {
+    fn create(&self, text: &str, when: ReminderTime) -> Result<(), ReminderError> {
+        if *lock(&self.reject_time) {
+            return Err(ReminderError::InvalidTime);
+        }
+        lock(&self.created).push((text.into(), when));
+        Ok(())
+    }
+
+    fn list(&self) -> Result<Vec<String>, ReminderError> {
+        Ok(lock(&self.created).iter().map(|(t, _)| t.clone()).collect())
     }
 }
 

@@ -1,8 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { VIEW_EVENT, type ViewPayload } from "../events";
-import { ALL_STATES, EVENT_BUTTONS, STATE_SCRIPTS, type DebugEvent } from "./events";
+import { ALL_STATES, EVENT_BUTTONS, STATE_SCRIPTS, answerEvent, rawEvent, type DebugEvent } from "./events";
+import {
+  DEV_LOG_EVENT,
+  MAX_DEBUG_TEXT,
+  appendLog,
+  describeView,
+  prepareText,
+  type DevLogPayload,
+} from "./log";
 import "./debug.css";
 
 // Debug builds only: the host creates this window and registers `debug_dispatch`.
@@ -18,11 +26,23 @@ export default function DebugWindow() {
   const [view, setView] = useState<ViewPayload | null>(null);
   const [voiceReady, setVoiceReady] = useState(true);
   const [hold, setHold] = useState(true);
+  const [text, setText] = useState("");
+  const [log, setLog] = useState<string[]>([]);
+  const lastView = useRef<ViewPayload | null>(null);
 
   useEffect(() => {
-    const sub = listen<ViewPayload>(VIEW_EVENT, (e) => setView(e.payload));
+    const subs = [
+      listen<ViewPayload>(VIEW_EVENT, (e) => {
+        const line = describeView(lastView.current, e.payload);
+        lastView.current = e.payload;
+        setView(e.payload);
+        if (line) setLog((old) => appendLog(old, line));
+      }),
+      // What the dry-run PC and the dev LLM report (debug builds only).
+      listen<DevLogPayload>(DEV_LOG_EVENT, (e) => setLog((old) => appendLog(old, e.payload.line))),
+    ];
     return () => {
-      sub.then((un) => un());
+      for (const sub of subs) sub.then((un) => un());
     };
   }, []);
 
@@ -37,6 +57,15 @@ export default function DebugWindow() {
       await dispatch(event);
     }
   }, []);
+
+  // A typed command goes in as TextSubmitted, like the release text window will.
+  const send = useCallback(async () => {
+    const command = prepareText(text);
+    if (command === null) return;
+    setText("");
+    setLog((old) => appendLog(old, `you: ${command}`));
+    await dispatch({ type: "text_submitted", text: command });
+  }, [text]);
 
   const toggleVoice = useCallback(async () => {
     const ready = !voiceReady;
@@ -55,6 +84,52 @@ export default function DebugWindow() {
         <span className="caption">{view?.caption ?? ""}</span>
         {view?.confirm && <span className="extra">confirm: {view.confirm.prompt}</span>}
         {view?.reminder && <span className="extra">reminder: {view.reminder.text}</span>}
+      </section>
+
+      <section>
+        <h2>Type a command</h2>
+        <form
+          className="row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void send();
+          }}
+        >
+          <input
+            type="text"
+            className="command"
+            value={text}
+            maxLength={MAX_DEBUG_TEXT}
+            placeholder="open notepad, close spotify, volume 30, remind me to call mom..."
+            onChange={(e) => setText(e.target.value)}
+            autoFocus
+          />
+          <button type="submit">Send</button>
+        </form>
+        {view?.state === "confirmation-needed" && view.confirm && (
+          <div className="row confirm">
+            <button
+              className="yes"
+              onClick={() => dispatch(answerEvent("accept", view.confirm!.id))}
+            >
+              Confirm (click)
+            </button>
+            <button onClick={() => dispatch(answerEvent("reject", view.confirm!.id))}>
+              Cancel (click)
+            </button>
+            <span className="extra">Restart and shutdown can only be confirmed by click.</span>
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h2>Activity</h2>
+        <ol className="log">
+          {log.map((line, i) => (
+            <li key={i}>{line}</li>
+          ))}
+        </ol>
+        <button onClick={() => setLog([])}>Clear</button>
       </section>
 
       <section>
@@ -85,7 +160,11 @@ export default function DebugWindow() {
         <h2>Events</h2>
         <div className="grid">
           {EVENT_BUTTONS.map((b) => (
-            <button key={b.label} onClick={() => dispatch(b.event)}>
+            <button key={b.label} onClick={() =>
+                dispatch(
+                  rawEvent(b.event, view?.state === "confirmation-needed" ? view.confirm?.id : undefined),
+                )
+              }>
               {b.label}
             </button>
           ))}

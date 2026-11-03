@@ -17,6 +17,8 @@ use crate::effect_runner::MediaMode;
 pub const DEBUG_WINDOW_LABEL: &str = crate::ui_adapter::DEBUG_LABEL;
 /// Longest free-form text (characters) the debug window may inject.
 pub const MAX_TEXT_CHARS: usize = 500;
+/// Event the dry-run adapters use to tell the debug window what they did.
+pub const DEV_LOG_EVENT: &str = "niva://dev-log";
 /// Prompt used by the debug window's confirmation buttons.
 pub const CONFIRM_PROMPT: &str = "Close Notepad?";
 
@@ -109,8 +111,17 @@ pub enum DebugEvent {
     AskFollowUp {
         question: String,
     },
-    Accept,
-    Reject,
+    /// Click on Confirm. Both kinds of button send the id of the confirmation
+    /// shown when they were clicked (`view.confirm.id`). A message with no id
+    /// never matches any confirmation (it resolves to id 0).
+    Accept {
+        #[serde(default)]
+        id: Option<u64>,
+    },
+    Reject {
+        #[serde(default)]
+        id: Option<u64>,
+    },
     SpeakStarted,
     SpeakDone,
     TtsFailed,
@@ -181,6 +192,7 @@ impl DebugEvent {
                     OutcomeName::RiskyRemaining => ToolsOutcome::RiskyRemaining {
                         prompt: CONFIRM_PROMPT.into(),
                         click_only: false,
+                        cancel_text: None,
                     },
                 },
             },
@@ -194,8 +206,14 @@ impl DebugEvent {
                 question: cap(question),
                 slot: PendingSlot::Reminder { text: None },
             },
-            DebugEvent::Accept => Event::Accept,
-            DebugEvent::Reject => Event::Reject,
+            // An id-less click never matches: 0 is never allocated. The id
+            // must be fixed when the button is clicked, not here.
+            DebugEvent::Accept { id } => Event::Accept {
+                id: id.unwrap_or(0),
+            },
+            DebugEvent::Reject { id } => Event::Reject {
+                id: id.unwrap_or(0),
+            },
             DebugEvent::SpeakStarted => Event::SpeakStarted { id: speak },
             DebugEvent::SpeakDone => Event::SpeakDone { id: speak },
             DebugEvent::TtsFailed => Event::TtsFailed { id: speak },
@@ -231,6 +249,7 @@ fn confirm(click_only: bool) -> ToolVerdict {
     ToolVerdict::Confirm {
         prompt: CONFIRM_PROMPT.into(),
         click_only,
+        cancel_text: None,
     }
 }
 
@@ -440,7 +459,8 @@ mod tests {
                 req: 0,
                 verdict: ToolVerdict::Confirm {
                     prompt: CONFIRM_PROMPT.into(),
-                    click_only: false
+                    click_only: false,
+                    cancel_text: None,
                 }
             }
         );
@@ -450,7 +470,8 @@ mod tests {
                 req: 0,
                 verdict: ToolVerdict::Confirm {
                     prompt: CONFIRM_PROMPT.into(),
-                    click_only: true
+                    click_only: true,
+                    cancel_text: None,
                 }
             }
         );
@@ -486,9 +507,49 @@ mod tests {
                 req: 0,
                 outcome: ToolsOutcome::RiskyRemaining {
                     prompt: CONFIRM_PROMPT.into(),
-                    click_only: false
+                    click_only: false,
+                    cancel_text: None,
                 }
             }
+        );
+    }
+
+    #[test]
+    fn a_click_carries_the_confirmation_id_it_was_rendered_for() {
+        let state = after(&[
+            Event::VoiceReadinessChanged { ready: true },
+            Event::Shortcut,
+        ]);
+        // With an id: sent as is, even if it is not the open one (the reducer
+        // drops it as stale).
+        assert_eq!(
+            parse(r#"{"type":"accept","id":41}"#)
+                .resolve(&state)
+                .unwrap(),
+            Event::Accept { id: 41 }
+        );
+        assert_eq!(
+            parse(r#"{"type":"reject","id":41}"#)
+                .resolve(&state)
+                .unwrap(),
+            Event::Reject { id: 41 }
+        );
+        // An id-less click never matches (0 is never allocated), open
+        // confirmation or not: the id is fixed when the button is clicked (the
+        // frontend sends the rendered one), never when the event is processed.
+        assert_eq!(
+            parse(r#"{"type":"accept"}"#).resolve(&state).unwrap(),
+            Event::Accept { id: 0 }
+        );
+        let mut confirming = state;
+        confirming.confirm_id = Some(9);
+        assert_eq!(
+            parse(r#"{"type":"reject"}"#).resolve(&confirming).unwrap(),
+            Event::Reject { id: 0 }
+        );
+        assert_eq!(
+            parse(r#"{"type":"accept"}"#).resolve(&confirming).unwrap(),
+            Event::Accept { id: 0 }
         );
     }
 

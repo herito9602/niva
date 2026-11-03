@@ -11,8 +11,8 @@
 //! a new kind cannot be forgotten in the iteration either.
 
 use super::tests::{
-    CHIME_ID, LISTEN_ID, REQ_ID, SPEAK_ID, assert_invariants, fire, no_voice, slot, speaking,
-    state_in,
+    CHIME_ID, CONFIRM_ID, LISTEN_ID, REQ_ID, SPEAK_ID, assert_invariants, fire, no_voice, slot,
+    speaking, state_in,
 };
 use super::*;
 
@@ -39,6 +39,7 @@ kinds!(
     ToolsDone,
     Reply,
     Failure,
+    FailureText,
     AskFollowUp,
     Accept,
     Reject,
@@ -68,9 +69,10 @@ fn kind_of(event: &Event) -> EventKind {
         Event::ToolsDone { .. } => EventKind::ToolsDone,
         Event::Reply { .. } => EventKind::Reply,
         Event::Failure { .. } => EventKind::Failure,
+        Event::FailureText { .. } => EventKind::FailureText,
         Event::AskFollowUp { .. } => EventKind::AskFollowUp,
-        Event::Accept => EventKind::Accept,
-        Event::Reject => EventKind::Reject,
+        Event::Accept { .. } => EventKind::Accept,
+        Event::Reject { .. } => EventKind::Reject,
         Event::SpeakStarted { .. } => EventKind::SpeakStarted,
         Event::SpeakDone { .. } => EventKind::SpeakDone,
         Event::TtsFailed { .. } => EventKind::TtsFailed,
@@ -286,6 +288,7 @@ fn row(kind: EventKind) -> [Expect; 8] {
         EventKind::ToolsDone => [I, I, I, Goes(Success, reply), I, I, I, I],
         EventKind::Reply => [I, I, Goes(Success, reply), Goes(Success, reply), I, I, I, I],
         EventKind::Failure => [I, I, Goes(Error, reply), Goes(Error, reply), I, I, I, I],
+        EventKind::FailureText => [I, I, Goes(Error, reply), Goes(Error, reply), I, I, I, I],
         EventKind::AskFollowUp => [I, I, Stays(reply), I, I, I, I, I],
         EventKind::Accept => [I, I, I, I, Goes(Acting, accept), I, I, I],
         EventKind::Reject => [I, I, I, I, Goes(Success, reject), I, I, I],
@@ -417,13 +420,21 @@ fn sample(kind: EventKind, state: &State) -> Event {
             text: "ok".into(),
         },
         EventKind::Failure => Event::Failure { req },
+        EventKind::FailureText => Event::FailureText {
+            req,
+            text: "no such app".into(),
+        },
         EventKind::AskFollowUp => Event::AskFollowUp {
             req,
             question: "when?".into(),
             slot: slot(),
         },
-        EventKind::Accept => Event::Accept,
-        EventKind::Reject => Event::Reject,
+        EventKind::Accept => Event::Accept {
+            id: state.confirm_id.unwrap_or(CONFIRM_ID),
+        },
+        EventKind::Reject => Event::Reject {
+            id: state.confirm_id.unwrap_or(CONFIRM_ID),
+        },
         EventKind::SpeakStarted => Event::SpeakStarted { id: SPEAK_ID },
         EventKind::SpeakDone => Event::SpeakDone { id: SPEAK_ID },
         EventKind::TtsFailed => Event::TtsFailed { id: SPEAK_ID },
