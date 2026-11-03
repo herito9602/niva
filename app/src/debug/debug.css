@@ -31,3 +31,8 @@
   cursor: pointer;
 }
 .debug button:hover { background: #31313d; }
+.debug .command { flex: 1; min-width: 320px; font: inherit; color: inherit; background: #0d0d11; border: 1px solid #3a3a46; border-radius: 4px; padding: 5px 8px; user-select: text; }
+.debug .confirm { margin-top: 8px; }
+.debug .confirm .yes { background: #1f5b34; border-color: #2f8a50; }
+.debug .log { margin: 0 0 6px; padding: 8px 10px 8px 28px; max-height: 190px; overflow: auto; background: #0d0d11; border-radius: 6px; font-family: Consolas, monospace; font-size: 12px; user-select: text; }
+.debug .log li { margin: 1px 0; }

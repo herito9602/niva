@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ALL_STATES, EVENT_BUTTONS, STATE_SCRIPTS } from "./events";
+import { ALL_STATES, EVENT_BUTTONS, STATE_SCRIPTS, answerEvent, rawEvent } from "./events";
 
 // The 22 message types of the Rust `DebugEvent` that map to reducer events
 // (the 23rd kind, VoiceReadinessChanged, has two buttons: ready and down).
@@ -47,6 +47,28 @@ describe("debug event buttons", () => {
       (b) => b.event.ready === true,
     );
     expect(voice.sort()).toEqual([false, true]);
+  });
+});
+
+describe("confirm buttons", () => {
+  it("send back the id of the confirmation they were rendered for", () => {
+    expect(answerEvent("accept", 12)).toEqual({ type: "accept", id: 12 });
+    expect(answerEvent("reject", 12)).toEqual({ type: "reject", id: 12 });
+  });
+});
+
+describe("raw accept / reject buttons", () => {
+  const accept = { type: "accept" };
+  it("send the id of the confirmation shown when one is open", () => {
+    expect(rawEvent(accept, 7)).toEqual({ type: "accept", id: 7 });
+    expect(rawEvent({ type: "reject" }, 7)).toEqual({ type: "reject", id: 7 });
+  });
+  it("send an id that never matches when none is open", () => {
+    expect(rawEvent(accept, undefined)).toEqual({ type: "accept", id: 0 });
+  });
+  it("leave every other event alone", () => {
+    const wake = { type: "wake" };
+    expect(rawEvent(wake, 7)).toBe(wake);
   });
 });
 

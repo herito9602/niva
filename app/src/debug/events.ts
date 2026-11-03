@@ -14,6 +14,25 @@ export interface EventButton {
   event: DebugEvent;
 }
 
+/**
+ * The message a Confirm / Cancel button sends: it carries the id of the
+ * confirmation the view showed, so a click that arrives after that prompt was
+ * replaced by the next one is dropped by the reducer.
+ */
+export function answerEvent(type: "accept" | "reject", confirmId: number): DebugEvent {
+  return { type, id: confirmId };
+}
+
+/**
+ * What a raw event button sends. Accept / Reject carry the id of the
+ * confirmation shown now (`undefined` when none is open: id 0, which no
+ * prompt ever has), so the click can never land on a later prompt.
+ */
+export function rawEvent(event: DebugEvent, openConfirmId: number | undefined): DebugEvent {
+  if (event.type !== "accept" && event.type !== "reject") return event;
+  return { ...event, id: openConfirmId ?? 0 };
+}
+
 /** One button per reducer event (several for events with variants). */
 export const EVENT_BUTTONS: EventButton[] = data.buttons;
 
