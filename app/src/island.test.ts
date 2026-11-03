@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ALL_STATES, type ViewPayload } from "./events";
-import { islandLabel, islandMode, phaseForIsland } from "./island";
+import { islandLabel, phaseForIsland } from "./island";
 
 const view = (state: ViewPayload["state"], caption?: string): ViewPayload => ({ state, caption });
 
@@ -18,16 +18,6 @@ describe("islandLabel", () => {
 
   it("shows the listening label before any view arrives", () => {
     expect(islandLabel(null)).toBe("Listening…");
-  });
-});
-
-describe("islandMode", () => {
-  it("keeps the spike's two looks: thinking and listening", () => {
-    expect(islandMode("thinking")).toBe("thinking");
-    expect(islandMode("acting")).toBe("thinking");
-    expect(islandMode("listening")).toBe("listening");
-    expect(islandMode("error")).toBe("listening");
-    expect(islandMode(undefined)).toBe("listening");
   });
 });
 
