@@ -469,6 +469,24 @@ fn ids_are_allocated_monotonically() {
 }
 
 #[test]
+fn a_reset_state_keeps_the_voice_flag_and_never_restarts_the_id_and_token_allocators() {
+    let mut old = state_in(Phase::Listening);
+    old.voice_available = true;
+    old.alloc_id();
+    old.alloc_id();
+    let mut fx = Vec::new();
+    old.start_timer(TimerKind::Settle, &mut fx);
+    let fresh = State::reset_from(&old);
+    assert_eq!(fresh.phase, Phase::Idle);
+    assert!(fresh.voice_available);
+    assert!(fresh.timers.is_empty());
+    assert_eq!(fresh.listen_id, None);
+    assert_eq!(fresh.next_id, old.next_id, "no id is ever reused");
+    assert_eq!(fresh.next_token, old.next_token, "no token is ever reused");
+    assert!(fresh.next_id > 1 && fresh.next_token > 1);
+}
+
+#[test]
 fn timers_are_tracked_and_cancelled_individually() {
     let mut s = state_in(Phase::Idle);
     let mut fx = Vec::new();

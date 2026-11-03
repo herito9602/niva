@@ -1,0 +1,578 @@
+//! Host effect runner: performs the reducer's `Effect`s.
+//!
+//! Slice 1 (PR 1c) runs the effects that need no other subsystem and stubs
+//! the rest. The runner owns three guarantees from the design:
+//!
+//! - `StartTimer{kind, token}` becomes a tokio task that echoes the same pair
+//!   as `Watchdog{kind, token}`; starting a kind again replaces the old task.
+//! - Every `Speak` arms a speak watchdog (`token` = speak id, length-based
+//!   duration), so a `Speak` always ends in `SpeakDone`, `TtsFailed` or a
+//!   watchdog event and a confirmation can never stay pending (W2).
+//! - Every `Chime{id}` reports `ChimeDone{id}`.
+//!
+//! Stubs until later slices (all logged): `Speak` has no TTS (the speech
+//! "ends" at once, see [`MediaMode`]), `Chime` plays no sound, `Listen`,
+//! `CancelListen`, `ForceEndOfSpeech` (slice 3), `StartRequest`, `RunTool`,
+//! `CancelRequest` (slice 2) and `EnqueueReminder`, `DrainReminders`
+//! (slice 4) do nothing.
+
+use std::{sync::Arc, time::Duration};
+
+use niva_core::state_machine::{Effect, Event, Say, TimerKind};
+use tokio::task::JoinHandle;
+
+use crate::ui_adapter::template_caption;
+
+/// Where timer fires and synthesized replies go: the dispatcher's queue.
+pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
+
+/// Window operations the runner needs from the host.
+pub trait Host: Send + Sync {
+    fn show_island(&self);
+    fn hide_island(&self);
+}
+
+/// How the stubbed audio behaves until the voice sidecar exists (slice 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaMode {
+    /// No audio device: `Speak` ends with a synthesized `SpeakDone` and
+    /// `Chime` with `ChimeDone`, both at once (the design's "sidecar down"
+    /// behavior).
+    #[default]
+    Instant,
+    /// A sidecar that never answers: nothing is synthesized, so only the
+    /// speak watchdog, the alert cap or a manual event ends the media. Used by
+    /// the debug window to look at a state for longer than a blink.
+    #[cfg(any(test, debug_assertions))]
+    Held,
+}
+
+/// Minimum speak watchdog and the per-character estimate (design: max(5 s,
+/// 80 ms per character)).
+const MIN_SPEAK_WATCHDOG: Duration = Duration::from_secs(5);
+const SPEAK_WATCHDOG_PER_CHAR: Duration = Duration::from_millis(80);
+
+/// Length of the speak watchdog for a reply.
+pub fn speak_watchdog_duration(say: &Say) -> Duration {
+    let chars = match say {
+        Say::Text(text) => text.chars().count(),
+        Say::Template(template) => template_caption(*template).chars().count(),
+    };
+    let estimate = SPEAK_WATCHDOG_PER_CHAR * u32::try_from(chars).unwrap_or(u32::MAX);
+    estimate.max(MIN_SPEAK_WATCHDOG)
+}
+
+pub struct EffectRunner {
+    sink: EventSink,
+    host: Arc<dyn Host>,
+    mode: MediaMode,
+    timers: Vec<(TimerKind, JoinHandle<()>)>,
+    /// The speak watchdog of the speech in flight: (speak id, task).
+    watchdog: Option<(u64, JoinHandle<()>)>,
+}
+
+impl EffectRunner {
+    pub fn new(sink: EventSink, host: Arc<dyn Host>) -> Self {
+        EffectRunner {
+            sink,
+            host,
+            mode: MediaMode::default(),
+            timers: Vec::new(),
+            watchdog: None,
+        }
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    pub fn set_media_mode(&mut self, mode: MediaMode) {
+        self.mode = mode;
+    }
+
+    pub fn run(&mut self, effects: Vec<Effect>) {
+        for effect in effects {
+            self.run_one(effect);
+        }
+    }
+
+    /// Lets the runner see events the reducer is about to receive: a finished
+    /// or failed speech disarms its watchdog.
+    pub fn observe(&mut self, event: &Event) {
+        if let Event::SpeakDone { id } | Event::TtsFailed { id } = event {
+            self.disarm_watchdog(Some(*id));
+        }
+    }
+
+    /// Aborts every timer and the speak watchdog (debug reset).
+    pub fn cancel_all(&mut self) {
+        for (_, task) in self.timers.drain(..) {
+            task.abort();
+        }
+        self.disarm_watchdog(None);
+    }
+
+    fn run_one(&mut self, effect: Effect) {
+        match effect {
+            Effect::StartTimer { kind, token } => self.start_timer(kind, token),
+            Effect::CancelTimer { kind } => self.drop_timer(kind),
+            Effect::ShowIsland => self.host.show_island(),
+            Effect::HideIsland => self.host.hide_island(),
+            Effect::Speak { id, say, .. } => self.speak(id, &say),
+            Effect::StopSpeaking => self.disarm_watchdog(None),
+            Effect::Chime { id } => {
+                if self.mode == MediaMode::Instant {
+                    (self.sink)(Event::ChimeDone { id });
+                } else {
+                    eprintln!("[niva] chime {id} held (no ChimeDone)");
+                }
+            }
+            other => eprintln!("[niva] stub effect (later slice): {other:?}"),
+        }
+    }
+
+    fn start_timer(&mut self, kind: TimerKind, token: u64) {
+        let Some(duration) = kind.duration() else {
+            // The speak watchdog belongs to the runner, never to the reducer.
+            eprintln!("[niva] ignoring reducer-started {kind:?}");
+            return;
+        };
+        let sink = self.sink.clone();
+        let deadline = tokio::time::Instant::now() + duration;
+        let task = tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            sink(Event::Watchdog { kind, token });
+        });
+        self.drop_timer(kind);
+        self.timers.push((kind, task));
+    }
+
+    fn drop_timer(&mut self, kind: TimerKind) {
+        self.timers.retain(|(running, task)| {
+            let drop = *running == kind;
+            if drop {
+                task.abort();
+            }
+            !drop
+        });
+    }
+
+    fn speak(&mut self, id: u64, say: &Say) {
+        eprintln!("[niva] speak {id} (no TTS yet): {say:?}");
+        self.arm_watchdog(id, speak_watchdog_duration(say));
+        if self.mode == MediaMode::Instant {
+            (self.sink)(Event::SpeakDone { id });
+            self.disarm_watchdog(Some(id));
+        }
+    }
+
+    fn arm_watchdog(&mut self, id: u64, duration: Duration) {
+        self.disarm_watchdog(None);
+        let sink = self.sink.clone();
+        let deadline = tokio::time::Instant::now() + duration;
+        let task = tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            sink(Event::Watchdog {
+                kind: TimerKind::SpeakWatchdog,
+                token: id,
+            });
+        });
+        self.watchdog = Some((id, task));
+    }
+
+    /// Drops the watchdog; with `Some(id)` only if it guards that speech.
+    fn disarm_watchdog(&mut self, id: Option<u64>) {
+        let matches = match (&self.watchdog, id) {
+            (Some((armed, _)), Some(wanted)) => *armed == wanted,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if matches && let Some((_, task)) = self.watchdog.take() {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for EffectRunner {
+    fn drop(&mut self) {
+        self.cancel_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use niva_core::state_machine::{
+        Effect, Event, ListenMode, ReplyKind, RequestInput, Say, Template, TimerKind,
+    };
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct FakeHost {
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    impl Host for FakeHost {
+        fn show_island(&self) {
+            self.calls.lock().unwrap().push("show");
+        }
+        fn hide_island(&self) {
+            self.calls.lock().unwrap().push("hide");
+        }
+    }
+
+    struct Rig {
+        runner: EffectRunner,
+        rx: mpsc::UnboundedReceiver<Event>,
+        host: Arc<FakeHost>,
+    }
+
+    fn rig() -> Rig {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let host = Arc::new(FakeHost::default());
+        let sink: EventSink = Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        Rig {
+            runner: EffectRunner::new(sink, host.clone()),
+            rx,
+            host,
+        }
+    }
+
+    /// Advances the paused clock and lets the spawned timer tasks run.
+    async fn advance(d: Duration) {
+        tokio::time::advance(d).await;
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<Event>) -> Vec<Event> {
+        let mut out = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            out.push(event);
+        }
+        out
+    }
+
+    fn speak(id: u64, say: Say) -> Effect {
+        Effect::Speak {
+            id,
+            kind: ReplyKind::Final,
+            say,
+        }
+    }
+
+    fn text_of_len(n: usize) -> Say {
+        Say::Text("x".repeat(n))
+    }
+
+    // --- timers (task 1.14: settle fires at 3 s) -------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn settle_timer_fires_at_exactly_3_s_with_its_token() {
+        let mut r = rig();
+        r.runner.run(vec![Effect::StartTimer {
+            kind: TimerKind::Settle,
+            token: 7,
+        }]);
+        advance(ms(2999)).await;
+        assert!(drain(&mut r.rx).is_empty(), "fired before 3 s");
+        advance(ms(1)).await;
+        assert_eq!(
+            drain(&mut r.rx),
+            vec![Event::Watchdog {
+                kind: TimerKind::Settle,
+                token: 7
+            }]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_reducer_timer_fires_at_its_duration_and_echoes_kind_and_token() {
+        let mut checked = 0;
+        for (i, kind) in TimerKind::ALL.into_iter().enumerate() {
+            let Some(duration) = kind.duration() else {
+                continue;
+            };
+            let token = 100 + i as u64;
+            let mut r = rig();
+            r.runner.run(vec![Effect::StartTimer { kind, token }]);
+            advance(duration - ms(1)).await;
+            assert!(drain(&mut r.rx).is_empty(), "{kind:?} fired early");
+            advance(ms(1)).await;
+            assert_eq!(
+                drain(&mut r.rx),
+                vec![Event::Watchdog { kind, token }],
+                "{kind:?}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 9);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn restarting_a_kind_drops_the_earlier_instance() {
+        let mut r = rig();
+        r.runner.run(vec![Effect::StartTimer {
+            kind: TimerKind::Llm,
+            token: 1,
+        }]);
+        advance(ms(10_000)).await;
+        r.runner.run(vec![Effect::StartTimer {
+            kind: TimerKind::Llm,
+            token: 2,
+        }]);
+        advance(ms(5_000)).await;
+        assert!(
+            drain(&mut r.rx).is_empty(),
+            "the first instance would fire here"
+        );
+        advance(ms(10_000)).await;
+        assert_eq!(
+            drain(&mut r.rx),
+            vec![Event::Watchdog {
+                kind: TimerKind::Llm,
+                token: 2
+            }]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_timer_stops_only_that_kind() {
+        let mut r = rig();
+        r.runner.run(vec![
+            Effect::StartTimer {
+                kind: TimerKind::Settle,
+                token: 1,
+            },
+            Effect::StartTimer {
+                kind: TimerKind::Confirm,
+                token: 2,
+            },
+            Effect::CancelTimer {
+                kind: TimerKind::Settle,
+            },
+        ]);
+        advance(ms(10_000)).await;
+        assert_eq!(
+            drain(&mut r.rx),
+            vec![Event::Watchdog {
+                kind: TimerKind::Confirm,
+                token: 2
+            }]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reducer_started_speak_watchdog_is_ignored() {
+        let mut r = rig();
+        r.runner.run(vec![Effect::StartTimer {
+            kind: TimerKind::SpeakWatchdog,
+            token: 1,
+        }]);
+        advance(ms(60_000)).await;
+        assert!(drain(&mut r.rx).is_empty());
+    }
+
+    // --- Speak: always ends (W2 runner contract) -------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn speak_without_tts_is_done_at_once() {
+        let mut r = rig();
+        r.runner.run(vec![speak(4, Say::Template(Template::Error))]);
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(drain(&mut r.rx), vec![Event::SpeakDone { id: 4 }]);
+        advance(ms(60_000)).await;
+        assert!(
+            drain(&mut r.rx).is_empty(),
+            "the watchdog must not fire after the synthesized SpeakDone"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn held_speak_arms_the_watchdog_with_the_speak_id_as_token() {
+        let mut r = rig();
+        r.runner.set_media_mode(MediaMode::Held);
+        r.runner.run(vec![speak(9, text_of_len(10))]);
+        advance(ms(4999)).await;
+        assert!(drain(&mut r.rx).is_empty());
+        advance(ms(1)).await;
+        assert_eq!(
+            drain(&mut r.rx),
+            vec![Event::Watchdog {
+                kind: TimerKind::SpeakWatchdog,
+                token: 9
+            }]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn held_watchdog_is_length_based_for_long_text() {
+        let mut r = rig();
+        r.runner.set_media_mode(MediaMode::Held);
+        r.runner.run(vec![speak(3, text_of_len(100))]);
+        advance(ms(7999)).await;
+        assert!(drain(&mut r.rx).is_empty(), "100 chars x 80 ms = 8 s");
+        advance(ms(1)).await;
+        assert_eq!(
+            drain(&mut r.rx),
+            vec![Event::Watchdog {
+                kind: TimerKind::SpeakWatchdog,
+                token: 3
+            }]
+        );
+    }
+
+    #[test]
+    fn watchdog_duration_is_the_max_of_5_s_and_80_ms_per_char() {
+        assert_eq!(speak_watchdog_duration(&text_of_len(0)), ms(5000));
+        assert_eq!(speak_watchdog_duration(&text_of_len(62)), ms(5000));
+        assert_eq!(speak_watchdog_duration(&text_of_len(63)), ms(5040));
+        assert_eq!(speak_watchdog_duration(&text_of_len(100)), ms(8000));
+        assert!(speak_watchdog_duration(&Say::Template(Template::Error)) >= ms(5000));
+        // Multi-byte characters count once.
+        assert_eq!(
+            speak_watchdog_duration(&Say::Text("é".repeat(100))),
+            ms(8000)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn spoken_done_or_failure_of_the_same_id_cancels_the_watchdog() {
+        for done in [Event::SpeakDone { id: 5 }, Event::TtsFailed { id: 5 }] {
+            let mut r = rig();
+            r.runner.set_media_mode(MediaMode::Held);
+            r.runner.run(vec![speak(5, text_of_len(10))]);
+            r.runner.observe(&done);
+            advance(ms(60_000)).await;
+            assert!(drain(&mut r.rx).is_empty(), "{done:?}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn spoken_done_of_another_id_keeps_the_watchdog() {
+        let mut r = rig();
+        r.runner.set_media_mode(MediaMode::Held);
+        r.runner.run(vec![speak(5, text_of_len(10))]);
+        r.runner.observe(&Event::SpeakDone { id: 4 });
+        advance(ms(5000)).await;
+        assert_eq!(drain(&mut r.rx).len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_speaking_cancels_the_watchdog() {
+        let mut r = rig();
+        r.runner.set_media_mode(MediaMode::Held);
+        r.runner
+            .run(vec![speak(5, text_of_len(10)), Effect::StopSpeaking]);
+        advance(ms(60_000)).await;
+        assert!(drain(&mut r.rx).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_newer_speak_replaces_the_older_watchdog() {
+        let mut r = rig();
+        r.runner.set_media_mode(MediaMode::Held);
+        r.runner.run(vec![speak(5, text_of_len(10))]);
+        advance(ms(3000)).await;
+        r.runner.run(vec![speak(6, text_of_len(10))]);
+        advance(ms(2500)).await;
+        assert!(drain(&mut r.rx).is_empty(), "the id 5 watchdog was dropped");
+        advance(ms(2500)).await;
+        assert_eq!(
+            drain(&mut r.rx),
+            vec![Event::Watchdog {
+                kind: TimerKind::SpeakWatchdog,
+                token: 6
+            }]
+        );
+    }
+
+    // --- Chime -> ChimeDone ----------------------------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn chime_reports_chime_done_with_the_same_id() {
+        let mut r = rig();
+        r.runner.run(vec![Effect::Chime { id: 8 }]);
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(drain(&mut r.rx), vec![Event::ChimeDone { id: 8 }]);
+        r.runner.run(vec![Effect::Chime { id: 21 }]);
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(drain(&mut r.rx), vec![Event::ChimeDone { id: 21 }]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn held_chime_never_completes_on_its_own() {
+        let mut r = rig();
+        r.runner.set_media_mode(MediaMode::Held);
+        r.runner.run(vec![Effect::Chime { id: 8 }]);
+        advance(ms(60_000)).await;
+        assert!(drain(&mut r.rx).is_empty());
+    }
+
+    // --- window effects and logged stubs ---------------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn show_and_hide_island_reach_the_host_in_order() {
+        let mut r = rig();
+        r.runner.run(vec![
+            Effect::ShowIsland,
+            Effect::HideIsland,
+            Effect::ShowIsland,
+        ]);
+        assert_eq!(*r.host.calls.lock().unwrap(), vec!["show", "hide", "show"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn effects_of_later_slices_are_logged_and_produce_no_event() {
+        let mut r = rig();
+        r.runner.run(vec![
+            Effect::Listen {
+                id: 1,
+                mode: ListenMode::Command,
+            },
+            Effect::CancelListen { id: 1 },
+            Effect::ForceEndOfSpeech { id: 1 },
+            Effect::StartRequest {
+                req: 2,
+                input: RequestInput::SearchSummary,
+            },
+            Effect::RunTool { req: 2 },
+            Effect::CancelRequest { req: 2 },
+            Effect::EnqueueReminder { count: 1 },
+            Effect::DrainReminders,
+        ]);
+        advance(ms(60_000)).await;
+        assert!(drain(&mut r.rx).is_empty());
+        assert!(r.host.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_all_drops_every_timer_and_the_watchdog() {
+        let mut r = rig();
+        r.runner.set_media_mode(MediaMode::Held);
+        r.runner.run(vec![
+            Effect::StartTimer {
+                kind: TimerKind::Confirm,
+                token: 1,
+            },
+            speak(2, text_of_len(10)),
+        ]);
+        r.runner.cancel_all();
+        advance(ms(60_000)).await;
+        assert!(drain(&mut r.rx).is_empty());
+    }
+}
