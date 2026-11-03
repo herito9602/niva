@@ -78,7 +78,8 @@ Decision required: chain strategy (`stacked-to-main` or `feature-branch-chain`) 
 
 ### Phase 1.E: Slice 1 done check
 
-- [ ] 1.26 (a) Dev: `cargo test`, `npm test` pass and all 8 states visible from the debug window. (b) Release: `cargo tauri build` from PowerShell, run the exe, shortcut shows island (error pose), no debug window, no `debug_dispatch` (`npm run check:release` in `app/`). Note: under the slice-1 stubs the release reminder alert ends instantly, so this smoke test must not expect a visible alert.
+- [x] 1.26 (a) Dev: `cargo test`, `npm test` pass and all 8 states visible from the debug window. (b) Release: `cargo tauri build` from PowerShell, run the exe, shortcut shows island (error pose), no debug window, no `debug_dispatch` (`npm run check:release` in `app/`). Note: under the slice-1 stubs the release reminder alert ends instantly, so this smoke test must not expect a visible alert.
+  - Done 2026-11-03: `cargo test --workspace` 86 + 161 and `npm test` 149 passed on main; 8 states checked by the owner in the debug window during PR 1d. Release built with `npm run tauri build -- --no-bundle` (no installer, so WiX/NSIS are not downloaded yet; installer deferred to packaging), `npm run check:release` ok. Owner ran the exe: island drops with the error pose and "Voice is not ready" caption, no debug window. The smoke test found the caption overflowing the pill (`white-space: nowrap`); fixed in `app/src/styles.css` (wraps to 2 lines, then ellipsis) and re-checked by the owner on a rebuilt exe.
 
 ## Slice 2: Assistant core, tools, text input
 
