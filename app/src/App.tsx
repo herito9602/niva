@@ -1,45 +1,28 @@
-import { useEffect, useState } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
-import {
-  CURSOR_EVENT,
-  ISLAND_EVENT,
-  VIEW_EVENT,
-  type CursorPayload,
-  type IslandPayload,
-  type ViewPayload,
-} from "./events";
-import { islandLabel, islandMode, phaseForIsland, type SlidePhase } from "./island";
+import { islandLabel } from "./island";
+import { MascotCanvas } from "./mascot/MascotCanvas";
+import { bindHostEvents, createViewStore, type ViewState } from "./state/viewStore";
 import "./styles.css";
 
-export default function App() {
-  const [phase, setPhase] = useState<SlidePhase>("hidden");
-  const [view, setView] = useState<ViewPayload | null>(null);
+const store = createViewStore();
 
-  useEffect(() => {
-    // Every event is also logged so the host wiring is visible in the webview
-    // console (PR 1d replaces this with the view store).
-    const subs = [
-      listen<ViewPayload>(VIEW_EVENT, (e) => {
-        console.log(VIEW_EVENT, e.payload);
-        setView(e.payload);
-      }),
-      listen<IslandPayload>(ISLAND_EVENT, (e) => {
-        console.log(ISLAND_EVENT, e.payload);
-        setPhase(phaseForIsland(e.payload.visible));
-      }),
-      listen<CursorPayload>(CURSOR_EVENT, (e) => {
-        console.log(CURSOR_EVENT, e.payload.x, e.payload.y);
-      }),
-    ];
-    return () => {
-      subs.forEach((p) => p.then((un) => un()));
-    };
-  }, []);
+function useViewState<T>(select: (state: ViewState) => T): T {
+  return useSyncExternalStore(store.subscribe, () => select(store.getState()));
+}
+
+const getCursor = () => store.getState().cursor;
+
+export default function App() {
+  const phase = useViewState((s) => s.phase);
+  const view = useViewState((s) => s.view);
+
+  useEffect(() => bindHostEvents(store, listen), []);
 
   return (
     <div className="stage">
-      <div className={`island ${phase} ${islandMode(view?.state)}`}>
-        <div className="orb" />
+      <div className={`island ${phase}`}>
+        <MascotCanvas view={view} getCursor={getCursor} active={phase === "in"} />
         <span className="label">{islandLabel(view)}</span>
       </div>
     </div>
