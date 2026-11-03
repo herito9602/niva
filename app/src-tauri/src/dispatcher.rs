@@ -13,7 +13,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use crate::effect_runner::EffectRunner;
 #[cfg(any(test, debug_assertions))]
 use crate::effect_runner::MediaMode;
-use crate::ui_adapter::{UiPort, ViewModel};
+use crate::ui_adapter::{UiEvent, UiPort, ViewModel};
 
 /// Builds an event from the current state (used when an event carries an id
 /// the caller cannot know, e.g. the debug window's `Transcript`). `None`
@@ -53,14 +53,14 @@ pub struct Core {
     state: State,
     runner: EffectRunner,
     view: ViewModel,
-    ui: Arc<dyn UiPort>,
+    ui: Arc<dyn UiPort<UiEvent>>,
     now_ms: Box<dyn Fn() -> u64 + Send>,
 }
 
 impl Core {
     pub fn new(
         runner: EffectRunner,
-        ui: Arc<dyn UiPort>,
+        ui: Arc<dyn UiPort<UiEvent>>,
         now_ms: Box<dyn Fn() -> u64 + Send>,
     ) -> Self {
         Core {
@@ -161,7 +161,7 @@ mod tests {
         events: Mutex<Vec<UiEvent>>,
     }
 
-    impl UiPort for FakeUi {
+    impl UiPort<UiEvent> for FakeUi {
         fn publish(&self, event: UiEvent) {
             self.events.lock().unwrap().push(event);
         }

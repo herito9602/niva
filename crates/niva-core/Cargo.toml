@@ -5,3 +5,8 @@ description = "Niva assistant core: pure state machine and ports"
 edition = "2024"
 
 [dependencies]
+
+[features]
+# In-memory fakes of the ports (`ports::testing`) for tests of the host and
+# `niva-eval`; off in production builds.
+testing = []

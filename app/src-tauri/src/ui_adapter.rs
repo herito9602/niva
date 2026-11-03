@@ -126,10 +126,9 @@ impl UiEvent {
     }
 }
 
-/// Where UI events go (design: `UiPort`).
-pub trait UiPort: Send + Sync {
-    fn publish(&self, event: UiEvent);
-}
+/// Where UI events go (design: `UiPort`). The trait lives in `niva-core`; the
+/// host implements it for its own [`UiEvent`].
+pub use niva_core::ports::UiPort;
 
 /// Folds reducer output into UI events, publishing a view only when it changed.
 pub struct ViewModel {
@@ -255,7 +254,7 @@ impl TauriUiAdapter {
     }
 }
 
-impl UiPort for TauriUiAdapter {
+impl UiPort<UiEvent> for TauriUiAdapter {
     fn publish(&self, event: UiEvent) {
         let payload = event.payload();
         // One failing window never blocks the others.
