@@ -1,3 +1,4 @@
+pub mod adapters;
 mod click_through;
 mod cursor;
 #[cfg(debug_assertions)]
@@ -6,9 +7,13 @@ mod debug;
 mod dev;
 mod dispatcher;
 mod effect_runner;
+#[cfg(feature = "eval")]
+pub mod eval;
 mod requests;
 mod ui_adapter;
 mod visibility;
+#[cfg(any(test, debug_assertions))]
+mod worker_pool;
 
 #[cfg(test)]
 mod capabilities_tests;
@@ -29,6 +34,8 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
+#[cfg(debug_assertions)]
+use crate::adapters::ollama::{OllamaProvider, health::start_up};
 use crate::click_through::{IslandWindow, prepare_island, show_island_window};
 use crate::cursor::CursorPoller;
 use crate::dispatcher::{Core, Input, InputTx, startup_events};
@@ -110,6 +117,13 @@ fn now_ms() -> u64 {
 // `the_assistant_of_a_debug_build_only_ever_acts_on_the_dry_run_pc` in `dev.rs`.
 #[cfg(debug_assertions)]
 const _: fn(dev::LogSink) -> niva_core::assistant::Assistant = dev::assistant;
+// Same tripwire for the second constructor (PR 2c: a real model, dry-run PC).
+#[cfg(debug_assertions)]
+const _: fn(
+    dev::LogSink,
+    Arc<dyn niva_core::ports::LlmProvider>,
+    Arc<dyn niva_core::ports::Clock>,
+) -> niva_core::assistant::Assistant = dev::assistant_with;
 
 /// Who answers the reducer's request effects. Debug builds run the assistant
 /// loop on the dev LLM and the dry-run PC (the real adapters are PRs 2c/2d);
@@ -124,7 +138,18 @@ fn build_requests(app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
         let payload = serde_json::json!({ "line": line });
         let _ = app.emit_to(debug::DEBUG_WINDOW_LABEL, debug::DEV_LOG_EVENT, payload);
     });
-    Arc::new(requests::AssistantRequests::new(dev::assistant(log), sink))
+    let (assistant, warm) = dev::pick_assistant(log.clone(), OllamaProvider::new());
+    if let Some(ollama) = warm {
+        // Warm the model up in the background (retrying with the app's backoff)
+        // so the first command is not slower than the rest.
+        thread::spawn(move || {
+            let outcome = start_up(&ollama, Some(6), &thread::sleep, &|line| log(line));
+            if let Err(error) = outcome {
+                log(format!("[niva-ollama] warm-up gave up: {error:?}"));
+            }
+        });
+    }
+    Arc::new(requests::AssistantRequests::new(assistant, sink))
 }
 
 #[cfg(not(debug_assertions))]

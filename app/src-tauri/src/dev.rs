@@ -27,9 +27,13 @@
 use std::sync::{Arc, Mutex};
 
 use niva_core::assistant::{Assistant, PENDING_REMINDER_ALL_MARKER, PENDING_REMINDER_MARKER};
+
+use crate::adapters::ollama::OllamaProvider;
+use crate::adapters::ollama::health::Health;
+use crate::adapters::system_clock::SystemClock;
 use niva_core::ports::{
-    ChatReply, ChatRequest, CloseOutcome, LlmError, LlmProvider, PcActions, PcError, ProcessInfo,
-    ReminderError, ReminderStore, SearchError, SearchProvider, VolumeResult,
+    ChatReply, ChatRequest, Clock, CloseOutcome, LlmError, LlmProvider, PcActions, PcError,
+    ProcessInfo, ReminderError, ReminderStore, SearchError, SearchProvider, VolumeResult,
 };
 use niva_core::safety::{Approved, CloseApp, Power};
 use niva_core::tools::{ArgValue, ReminderTime, ToolCall, VolumeChange};
@@ -53,6 +57,86 @@ pub fn assistant(log: LogSink) -> Assistant {
         log,
         items: Mutex::default(),
     }))
+}
+
+/// The same assistant over another model (the Ollama provider, PR 2c) and a
+/// clock for the prompt's time line. The PC, search and reminders stay the
+/// dry-run ones: this and [`assistant`] are the only constructors, and the
+/// behavioural tests below hold both to it.
+pub fn assistant_with(log: LogSink, llm: Arc<dyn LlmProvider>, clock: Arc<dyn Clock>) -> Assistant {
+    Assistant::new(llm, Arc::new(DryRunPc::new(log.clone())))
+        .with_clock(clock)
+        .with_search(Arc::new(DryRunSearch { log: log.clone() }))
+        .with_reminders(Arc::new(DryRunReminders {
+            log,
+            items: Mutex::default(),
+        }))
+}
+
+/// Debug builds: the real Ollama model when it answers, the rule-based dev LLM
+/// when it does not; either way the PC is the dry-run one (never the real PC),
+/// and the log says which LLM is active. The choice is taken once, at start-up
+/// (restart the app to switch). The second value is the provider to warm up in
+/// the background, `None` when the dev LLM was chosen.
+pub fn pick_assistant(
+    log: LogSink,
+    ollama: OllamaProvider,
+) -> (Assistant, Option<Arc<OllamaProvider>>) {
+    let health = ollama.health();
+    if health != Health::Ready {
+        log(format!(
+            "[niva] LLM: rule-based dev LLM. {}",
+            health.message(ollama.model())
+        ));
+        return (assistant(log), None);
+    }
+    log(format!(
+        "[niva] LLM: Ollama ({}), dry-run PC. Warming up in the background.",
+        ollama.model()
+    ));
+    let ollama = Arc::new(ollama);
+    let llm = Arc::new(LoggedLlm::new(ollama.clone(), log.clone()));
+    (
+        assistant_with(log, llm, Arc::new(SystemClock)),
+        Some(ollama),
+    )
+}
+
+/// A real model (Ollama) whose every call is reported to the log, like the
+/// dev LLM's lines: what was asked, which tools came back and how long it took.
+pub struct LoggedLlm {
+    inner: Arc<dyn LlmProvider>,
+    log: LogSink,
+}
+
+impl LoggedLlm {
+    pub fn new(inner: Arc<dyn LlmProvider>, log: LogSink) -> Self {
+        LoggedLlm { inner, log }
+    }
+}
+
+impl LlmProvider for LoggedLlm {
+    fn chat(&self, request: &ChatRequest) -> Result<ChatReply, LlmError> {
+        let started = std::time::Instant::now();
+        let outcome = self.inner.chat(request);
+        let ms = started.elapsed().as_millis();
+        let what = match &outcome {
+            Ok(reply) if reply.calls.is_empty() => "plain text".to_string(),
+            Ok(reply) => reply
+                .calls
+                .iter()
+                .map(|call| call.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" + "),
+            Err(error) => format!("{error:?}"),
+        };
+        // `{:?}` keeps a multi-line utterance on one log line.
+        (self.log)(format!(
+            "[niva-ollama] {:?} -> {what} ({ms} ms)",
+            request.user
+        ));
+        outcome
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -815,6 +899,244 @@ mod tests {
                 .filter(|l| !l.contains(DEV_LLM_MARKER))
                 .all(|l| l.contains(DRY_RUN_MARKER)),
             "every non-LLM adapter line is a dry-run line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_logged_llm_reports_each_call_with_its_tools_and_timing() {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink: LogSink = {
+            let lines = lines.clone();
+            Arc::new(move |line| lock(&lines).push(line))
+        };
+        let inner = RiskyLlm {
+            script: Mutex::new(vec![call(
+                "set_volume",
+                vec![arg("level", ArgValue::Int(30))],
+            )]),
+        };
+        let llm = LoggedLlm::new(Arc::new(inner), sink.clone());
+        let reply = llm
+            .chat(&ChatRequest {
+                system: String::new(),
+                user: "volume 30".into(),
+                allow_tools: true,
+            })
+            .unwrap();
+        assert_eq!(reply.calls.len(), 1);
+        let failing = LoggedLlm::new(Arc::new(FailingLlm), sink);
+        assert_eq!(
+            failing
+                .chat(&ChatRequest {
+                    system: String::new(),
+                    user: "hi\nthere".into(),
+                    allow_tools: false,
+                })
+                .unwrap_err(),
+            LlmError::Timeout
+        );
+        let lines = lock(&lines);
+        assert!(
+            lines[0].starts_with("[niva-ollama] \"volume 30\" -> set_volume ("),
+            "{lines:?}"
+        );
+        assert!(lines[0].ends_with(" ms)"), "{lines:?}");
+        assert!(
+            lines[1].contains("\"hi\\nthere\""),
+            "one line per call: {lines:?}"
+        );
+        assert!(lines[1].contains("Timeout"), "{lines:?}");
+    }
+
+    struct FailingLlm;
+
+    impl LlmProvider for FailingLlm {
+        fn chat(&self, _request: &ChatRequest) -> Result<ChatReply, LlmError> {
+            Err(LlmError::Timeout)
+        }
+    }
+
+    // --- the choice between the real model and the dev LLM -----------------
+
+    use crate::adapters::ollama::fake::{FakeTransport, status, tags};
+    use crate::adapters::ollama::{Endpoint, MODEL, TransportError};
+    use niva_core::state_machine::{Event, RequestInput};
+
+    fn collected() -> (Arc<Mutex<Vec<String>>>, LogSink) {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink: LogSink = {
+            let lines = lines.clone();
+            Arc::new(move |line| lock(&lines).push(line))
+        };
+        (lines, sink)
+    }
+
+    fn text_request(text: &str) -> RequestInput {
+        RequestInput::User {
+            text: text.into(),
+            slot: None,
+        }
+    }
+
+    #[test]
+    fn a_healthy_ollama_is_used_and_the_pc_stays_dry_run() {
+        let transport = Arc::new(FakeTransport::default());
+        transport.push(Endpoint::Tags, tags(&[MODEL]));
+        transport.push(
+            Endpoint::Chat,
+            crate::adapters::ollama::fake::ok(
+                r#"{"message":{"content":"","tool_calls":[{"function":{"name":"close_app","arguments":{"name":"spotify"}}}]}}"#,
+            ),
+        );
+        let (lines, log) = collected();
+        let ollama = OllamaProvider::with_transport(transport.clone());
+        let (assistant, warm) = pick_assistant(log, ollama);
+        assert!(
+            warm.is_some(),
+            "the caller warms Ollama up in the background"
+        );
+        let events = assistant.start_request(1, &text_request("close spotify"));
+        match &events[0] {
+            Event::ToolCalls { .. } => {}
+            other => panic!("{other:?}"),
+        }
+        let lines = lock(&lines);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("LLM: Ollama (qwen3.5:4b-q4_K_M), dry-run PC")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("[niva-ollama]") && l.contains("close_app"))
+        );
+        let chats = transport
+            .seen()
+            .into_iter()
+            .filter(|s| s.endpoint == Endpoint::Chat)
+            .count();
+        assert_eq!(chats, 1, "the real provider answered, not the dev LLM");
+        assert!(
+            !lines.iter().any(|l| l.contains(DEV_LLM_MARKER)),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn ollama_down_falls_back_to_the_dev_llm_and_says_so() {
+        let transport = Arc::new(FakeTransport::default());
+        transport.push(Endpoint::Tags, Err(TransportError::Refused));
+        let (lines, log) = collected();
+        let (assistant, warm) = pick_assistant(log, OllamaProvider::with_transport(transport));
+        assert!(warm.is_none(), "nothing to warm up");
+        let events = assistant.start_request(1, &text_request("open notepad"));
+        assert!(matches!(events[0], Event::ToolCalls { .. }), "{events:?}");
+        let lines = lock(&lines);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("rule-based dev LLM")
+                    && l.to_lowercase().contains("not running")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains(DEV_LLM_MARKER)),
+            "the dev LLM answered"
+        );
+    }
+
+    #[test]
+    fn a_missing_model_also_falls_back_and_names_the_pull_command() {
+        let transport = Arc::new(FakeTransport::default());
+        transport.push(Endpoint::Tags, tags(&["llama3.2:3b"]));
+        let (lines, log) = collected();
+        let (_, warm) = pick_assistant(log, OllamaProvider::with_transport(transport));
+        assert!(warm.is_none());
+        assert!(
+            lock(&lines)
+                .iter()
+                .any(|l| l.contains("rule-based dev LLM") && l.contains("ollama pull")),
+            "{:?}",
+            lock(&lines)
+        );
+    }
+
+    #[test]
+    fn an_ollama_that_answers_oddly_also_falls_back() {
+        let transport = Arc::new(FakeTransport::default());
+        transport.push(Endpoint::Tags, status(500, "boom"));
+        let (lines, log) = collected();
+        let (_, warm) = pick_assistant(log, OllamaProvider::with_transport(transport));
+        assert!(warm.is_none());
+        assert!(
+            lock(&lines)
+                .iter()
+                .any(|l| l.contains("rule-based dev LLM"))
+        );
+    }
+
+    struct FixedClock;
+
+    impl niva_core::ports::Clock for FixedClock {
+        fn now(&self) -> std::time::SystemTime {
+            std::time::SystemTime::UNIX_EPOCH
+        }
+    }
+
+    /// A model that always asks for a shutdown, then a close (what a hostile
+    /// or confused real model could do).
+    struct RiskyLlm {
+        script: Mutex<Vec<ToolCall>>,
+    }
+
+    impl LlmProvider for RiskyLlm {
+        fn chat(&self, _request: &ChatRequest) -> Result<ChatReply, LlmError> {
+            let call = lock(&self.script).remove(0);
+            Ok(ChatReply {
+                text: String::new(),
+                calls: vec![call],
+            })
+        }
+    }
+
+    #[test]
+    fn a_real_llm_in_a_debug_build_still_only_ever_acts_on_the_dry_run_pc() {
+        // PR 2c wires the Ollama provider into debug builds through
+        // `assistant_with`. Whatever model it is, the PC stays the dry-run one.
+        use niva_core::assistant::ConfirmInput;
+        use niva_core::state_machine::RequestInput;
+
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink: LogSink = {
+            let lines = lines.clone();
+            Arc::new(move |line| lock(&lines).push(line))
+        };
+        let llm = RiskyLlm {
+            script: Mutex::new(vec![
+                call("power_action", vec![arg("action", text("shutdown"))]),
+                call("close_app", vec![arg("name", text("spotify"))]),
+            ]),
+        };
+        let assistant = assistant_with(sink, Arc::new(llm), Arc::new(FixedClock));
+        for req in [1, 2] {
+            let input = RequestInput::User {
+                text: "do it".into(),
+                slot: None,
+            };
+            assert!(!assistant.start_request(req, &input).is_empty());
+            assistant.record_confirmation(ConfirmInput::Click(true));
+            assert!(!assistant.run_tools(req).is_empty());
+        }
+        let lines = lock(&lines);
+        assert!(
+            lines.iter().filter(|l| l.contains("would")).count() >= 2,
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().all(|l| l.contains(DRY_RUN_MARKER)),
+            "every adapter line is a dry-run line: {lines:?}"
         );
     }
 

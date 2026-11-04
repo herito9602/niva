@@ -1,7 +1,10 @@
 // Fails if the release binary contains any trace of the debug command or of
 // the debug-only dev adapters (the dev LLM and the dry-run PC, search and
-// reminders; app/src-tauri/src/dev.rs).
+// reminders; app/src-tauri/src/dev.rs), or if the evaluation tooling can reach
+// the app build: the `testing` fakes of niva-core and the YAML reader are
+// behind the `eval` feature of the app (PR 2c) and must not be in its graph.
 // Usage: node scripts/check-release-binary.mjs [path-to-niva.exe]
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -20,10 +23,54 @@ const needles = [
   "dev assistant",
   "Dev summary",
   "niva://dev-log",
+  // The Ollama wiring is debug-only until PR 2d (release answers "not
+  // available yet"): its log lines and the eval runner must not be in it.
+  "niva-ollama",
+  "niva-eval",
+  // The adapter itself (address, endpoint, model): none of it may be linked in.
+  "127.0.0.1:11434",
+  "/api/chat",
+  "qwen3.5:4b-q4_K_M",
+  "fake script exhausted",
 ];
 const found = needles.filter((n) => text.includes(n));
 if (found.length > 0) {
   console.error(`release binary ${exe} contains: ${found.join(", ")}`);
   process.exit(1);
 }
-console.log(`ok: ${exe} has no debug command or dev adapter strings`);
+
+// Feature graph of the app build (no `--features`): the fakes of niva-core
+// (`testing`) and the eval-only YAML reader must not be in it.
+function cargoTree(args) {
+  const run = spawnSync(process.platform === "win32" ? "cargo.exe" : "cargo", ["tree", "-p", "niva", ...args], {
+    cwd: resolve(here, "../.."),
+    encoding: "utf8",
+  });
+  if (run.error) {
+    console.error(`could not run cargo to check the feature graph: ${run.error.message}`);
+    process.exit(1);
+  }
+  return run;
+}
+const core = cargoTree(["-e", "features", "-i", "niva-core"]);
+if (core.status !== 0 || core.stdout.includes('feature "testing"')) {
+  console.error('the app build enables niva-core\'s "testing" feature (the fakes):');
+  console.error(core.stdout || core.stderr);
+  process.exit(1);
+}
+// Fail closed: the only accepted outcome is cargo saying the package is not in
+// the graph. Any other failure (cargo missing, a broken manifest) must not pass.
+const yaml = cargoTree(["-i", "serde_norway"]);
+if (yaml.status === 0) {
+  console.error("the app build depends on serde_norway (eval-only):");
+  console.error(yaml.stdout);
+  process.exit(1);
+}
+if (!yaml.stderr.includes("did not match any packages")) {
+  console.error("could not confirm that serde_norway is absent from the app build:");
+  console.error(yaml.stderr);
+  process.exit(1);
+}
+console.log(
+  `ok: ${exe} has no debug command, dev adapter or eval strings, and the app feature graph has no "testing" fakes`,
+);

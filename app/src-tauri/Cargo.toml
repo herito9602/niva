@@ -3,6 +3,7 @@ name = "niva"
 version = "0.1.0"
 description = "Niva desktop app"
 edition = "2024"
+default-run = "niva"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -20,9 +21,31 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order`: the key order of the tool schemas is part of the prompt the
+# model sees (Ollama renders them into the chat template), so it must be the
+# order E1 measured, not alphabetical.
+serde_json = { version = "1", features = ["preserve_order"] }
 niva-core = { path = "../../crates/niva-core" }
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+# Plain-HTTP client for the local Ollama adapter (blocking, no async stack, no
+# TLS: the only peer is 127.0.0.1).
+ureq = { version = "3", default-features = false }
+# `niva-eval` only (feature `eval`): reads eval/commands.yaml.
+serde_norway = { version = "0.9", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+# GetLocalTime, for the local time the system prompt states.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_SystemInformation"] }
+
+[features]
+# The E1 eval runner. Off in every app build: it turns on the fakes of
+# `niva-core` (`testing`) and the YAML reader, neither of which may ship.
+eval = ["dep:serde_norway", "niva-core/testing"]
+
+[[bin]]
+name = "niva-eval"
+path = "src/bin/niva-eval.rs"
+required-features = ["eval"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "time", "sync", "macros", "test-util"] }

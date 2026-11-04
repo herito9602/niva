@@ -530,7 +530,10 @@ mod tests {
                 Arc::new(AssistantRequests::with_spawn(
                     assistant,
                     sink,
-                    Box::new(|job| job()),
+                    Box::new(|job| {
+                        job();
+                        true
+                    }),
                 ))
             })
         }
