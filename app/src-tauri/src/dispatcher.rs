@@ -121,6 +121,10 @@ impl Core {
 
     #[cfg(debug_assertions)]
     fn reset(&mut self) {
+        // The request in flight ends with the reset, and with it a held sleep.
+        if let Some(req) = self.state.request_id {
+            self.runner.requests().cancel(req);
+        }
         self.runner.cancel_all();
         self.state = State::reset_from(&self.state);
         self.apply(vec![Effect::HideIsland]);
@@ -199,13 +203,26 @@ mod tests {
     }
 
     fn rig_with(debug_build: bool, requests: impl FnOnce(EventSink) -> Arc<dyn Requests>) -> Rig {
+        rig_build(debug_build, requests, None)
+    }
+
+    /// Like `rig_with`, with an activity source for the sleep countdown (none:
+    /// the runner's default, which fails closed).
+    fn rig_build(
+        debug_build: bool,
+        requests: impl FnOnce(EventSink) -> Arc<dyn Requests>,
+        activity: Option<Arc<dyn niva_core::ports::InputActivity>>,
+    ) -> Rig {
         let (tx, rx) = mpsc::unbounded_channel();
         let host = Arc::new(FakeHost::default());
         let ui = Arc::new(FakeUi::default());
         let sink: EventSink = Arc::new(move |event| {
             let _ = tx.send(Input::Event(event));
         });
-        let runner = EffectRunner::new(sink.clone(), host.clone(), requests(sink));
+        let mut runner = EffectRunner::new(sink.clone(), host.clone(), requests(sink));
+        if let Some(activity) = activity {
+            runner = runner.with_activity(activity);
+        }
         let mut core = Core::new(runner, ui.clone(), Box::new(|| 1_000));
         for event in startup_events(debug_build) {
             core.handle(Input::Event(event));
@@ -543,6 +560,15 @@ mod tests {
                 self.send(Event::TextSubmitted { text: text.into() });
             }
 
+            /// A spoken yes on the open confirm listen.
+            fn say_text_yes(&mut self) {
+                let id = self.listen_id();
+                self.send(Event::Transcript {
+                    id,
+                    text: "yes".into(),
+                });
+            }
+
             fn caption(&self) -> String {
                 self.ui.last_view().caption.unwrap_or_default()
             }
@@ -561,6 +587,191 @@ mod tests {
                     Event::Reject { id }
                 });
             }
+        }
+
+        // --- sleep countdown through the whole loop (debug build, dry-run PC) ---
+
+        use crate::test_support::FakeActivity;
+
+        /// The dev assistant (dry-run PC) with a fake activity source. The log
+        /// collects what the dry-run PC says it would do.
+        fn sleep_rig() -> (Rig, Arc<FakeActivity>, Arc<Mutex<Vec<String>>>) {
+            let lines = Arc::new(Mutex::new(Vec::new()));
+            let log: crate::dev::LogSink = {
+                let lines = lines.clone();
+                Arc::new(move |line| lines.lock().unwrap().push(line))
+            };
+            let activity = Arc::new(FakeActivity::default());
+            let rig = rig_build(
+                true,
+                |sink| {
+                    let assistant = crate::dev::assistant(log);
+                    Arc::new(AssistantRequests::with_spawn(
+                        assistant,
+                        sink,
+                        Box::new(|job| {
+                            job();
+                            true
+                        }),
+                    ))
+                },
+                Some(activity.clone()),
+            );
+            (rig, activity, lines)
+        }
+
+        fn slept(lines: &Arc<Mutex<Vec<String>>>) -> usize {
+            lines
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.contains("would sleep the PC"))
+                .count()
+        }
+
+        fn countdown_shown(r: &Rig) -> crate::ui_adapter::CountdownView {
+            r.ui.last_view().countdown.expect("a countdown in the view")
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn suspende_la_pc_asks_then_counts_down_in_spanish_and_sleeps_at_the_end() {
+            let (mut r, _activity, lines) = sleep_rig();
+            r.type_text("suspendé la PC");
+            assert_eq!(r.caption(), "¿Suspender el PC?");
+            r.click(true);
+            assert_eq!(r.phase(), Phase::Countdown);
+            assert_eq!(
+                r.caption(),
+                "Suspendiendo en 10 segundos. Presiona una tecla o mueve el mouse para cancelar."
+            );
+            // The deadline is in the view (the clock reads 1 000 ms).
+            assert_eq!(countdown_shown(&r).ends_at, 11_000);
+            assert_eq!(r.ui.last_view().state, "acting");
+            r.advance(ms(9_999)).await;
+            assert_eq!(r.phase(), Phase::Countdown);
+            assert_eq!(slept(&lines), 0, "nothing slept before the deadline");
+            r.advance(ms(1)).await;
+            assert_eq!(slept(&lines), 1);
+            assert_eq!(r.ui.last_view().state, "success");
+            assert_eq!(r.caption(), "Suspendiendo el PC.");
+            assert_eq!(r.ui.last_view().countdown, None);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn input_after_the_grace_period_cancels_and_the_pc_never_sleeps() {
+            let (mut r, activity, lines) = sleep_rig();
+            r.type_text("put the pc to sleep");
+            r.click(true);
+            r.advance(ms(1_500)).await;
+            assert_eq!(r.phase(), Phase::Countdown);
+            activity.touch();
+            r.advance(ms(100)).await;
+            assert_eq!(r.phase(), Phase::Success);
+            assert_eq!(r.caption(), "Suspend cancelled.");
+            r.advance(ms(30_000)).await;
+            assert_eq!(slept(&lines), 0);
+            let reads = activity.reads();
+            r.advance(ms(30_000)).await;
+            assert_eq!(activity.reads(), reads, "no polling at rest");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn jitter_right_after_the_accept_click_does_not_cancel() {
+            let (mut r, activity, lines) = sleep_rig();
+            r.type_text("sleep");
+            r.click(true);
+            for _ in 0..9 {
+                activity.touch();
+                r.advance(ms(100)).await;
+            }
+            assert_eq!(r.phase(), Phase::Countdown, "the jitter was not input");
+            r.advance(ms(9_100)).await;
+            assert_eq!(slept(&lines), 1);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn the_shortcut_cancels_the_countdown() {
+            let (mut r, _activity, lines) = sleep_rig();
+            r.type_text("sleep");
+            r.click(true);
+            r.advance(ms(3_000)).await;
+            r.send(Event::Shortcut);
+            assert_eq!(r.caption(), "Suspend cancelled.");
+            r.advance(ms(30_000)).await;
+            assert_eq!(slept(&lines), 0);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn holding_the_audio_does_not_make_the_countdown_vanish_or_change_its_length() {
+            let (mut r, _activity, lines) = sleep_rig();
+            r.core.set_media_mode(MediaMode::Held);
+            r.type_text("sleep");
+            // The held prompt: its watchdog (5 s) ends it, then the click.
+            r.advance(ms(5_000)).await;
+            r.click(true);
+            assert_eq!(r.phase(), Phase::Countdown);
+            let ends_at = countdown_shown(&r).ends_at;
+            // The announcement is never "done" (held), its own watchdog fires at
+            // 5 s: the countdown is still there, with the same deadline.
+            r.advance(ms(5_000)).await;
+            assert_eq!(r.phase(), Phase::Countdown);
+            assert_eq!(countdown_shown(&r).ends_at, ends_at);
+            assert_eq!(slept(&lines), 0);
+            r.advance(ms(5_000)).await;
+            assert_eq!(slept(&lines), 1, "10 s after it started, speech or not");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn an_unreadable_activity_source_never_suspends_and_says_so() {
+            let (mut r, activity, lines) = sleep_rig();
+            activity.set_unreadable(true);
+            r.type_text("suspende la pc");
+            r.click(true);
+            assert_eq!(r.ui.last_view().state, "error");
+            assert_eq!(
+                r.caption(),
+                "No pude comprobar tu actividad, así que no suspendí el PC."
+            );
+            r.advance(ms(30_000)).await;
+            assert_eq!(slept(&lines), 0);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_runner_without_an_activity_source_fails_closed_in_the_real_loop() {
+            let mut r = dev_rig();
+            r.type_text("sleep");
+            r.click(true);
+            assert_eq!(r.ui.last_view().state, "error");
+            assert!(r.caption().contains("did not suspend"), "{}", r.caption());
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_reset_during_the_countdown_stops_everything() {
+            let (mut r, activity, lines) = sleep_rig();
+            r.type_text("sleep");
+            r.click(true);
+            r.advance(ms(2_000)).await;
+            r.core.handle(Input::Reset);
+            r.pump();
+            assert_eq!(r.phase(), Phase::Idle);
+            let reads = activity.reads();
+            r.advance(ms(30_000)).await;
+            assert_eq!(slept(&lines), 0);
+            assert_eq!(activity.reads(), reads, "the poller stopped with the reset");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn lock_has_no_countdown_and_restart_stays_click_only() {
+            let (mut r, activity, _lines) = sleep_rig();
+            r.type_text("lock the pc");
+            r.say_text_yes();
+            assert_eq!(r.caption(), "Locking the PC.");
+            assert_eq!(activity.reads(), 0, "nothing was watched");
+            r.type_text("restart the pc");
+            assert_eq!(r.core.state().listen_id, None);
+            r.click(true);
+            assert_eq!(r.caption(), "Restarting the PC.");
+            assert_eq!(activity.reads(), 0);
         }
 
         #[tokio::test(start_paused = true)]
@@ -796,6 +1007,40 @@ mod tests {
             assert_eq!(r.ui.last_view().state, "error");
             assert_eq!(r.caption(), "I couldn't find a running app with that name.");
         }
+    }
+
+    /// Remembers which requests the reducer gave up on.
+    #[derive(Default)]
+    struct RecordsCancels {
+        cancelled: Mutex<Vec<u64>>,
+    }
+
+    impl Requests for RecordsCancels {
+        fn start(&self, _req: u64, _input: niva_core::state_machine::RequestInput) {}
+        fn run_tools(&self, _req: u64) {}
+        fn finish_countdown(&self, _req: u64) {}
+        fn cancel(&self, req: u64) {
+            self.cancelled.lock().unwrap().push(req);
+        }
+        fn observe(&self, _state: &State, _event: &Event) {}
+        fn lang(&self) -> niva_core::replies::Lang {
+            niva_core::replies::DEFAULT_LANG
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[tokio::test(start_paused = true)]
+    async fn a_reset_ends_the_request_in_flight_so_a_held_sleep_is_dropped() {
+        let recorder = Arc::new(RecordsCancels::default());
+        let mut r = rig_with(true, {
+            let recorder = recorder.clone();
+            move |_| recorder
+        });
+        r.reach_thinking();
+        let req = r.req();
+        r.core.handle(Input::Reset);
+        r.pump();
+        assert_eq!(*recorder.cancelled.lock().unwrap(), vec![req]);
     }
 
     #[cfg(debug_assertions)]

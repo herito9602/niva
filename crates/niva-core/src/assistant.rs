@@ -22,8 +22,8 @@ use crate::ports::{
 use crate::prompt;
 use crate::replies::{self, DEFAULT_LANG, Lang, Msg};
 use crate::safety::{
-    Approval, Channel, ConfirmationAnswer, ConfirmationId, ExecError, RiskyRequest, SafetyGate,
-    Validated,
+    Approval, Channel, ConfirmationAnswer, ConfirmationId, ExecError, HeldPower, RiskyRequest,
+    SafetyGate, Validated,
 };
 use crate::state_machine::{
     Answer, Event, PendingSlot, Phase, RequestInput, State, Template, ToolVerdict, ToolsOutcome,
@@ -114,7 +114,14 @@ pub struct Assistant {
     /// so a test can interleave a newer request deterministically.
     #[cfg(test)]
     after_begin: Mutex<Option<AfterBeginHook>>,
+    /// Test-only: called right before a held sleep is stored, with its id.
+    #[cfg(test)]
+    before_hold: Mutex<Option<AfterBeginHook>>,
 }
+
+/// How many cancelled request ids the session remembers. A request can only
+/// be late by a worker that is still running, and workers are few.
+const CANCELLED_MEMORY: usize = 32;
 
 #[derive(Default)]
 struct Session {
@@ -130,6 +137,25 @@ struct Session {
     /// The user's answer to the open confirmation, spent by one execution.
     answer: Option<ConfirmationAnswer>,
     search: Option<SearchContext>,
+    /// An approved sleep waiting for its countdown. Taken out (once) by
+    /// `finish_countdown`, dropped by `cancel_request` and by a new request:
+    /// dropping it IS the cancel, there is nothing left to resume.
+    held: Option<Held>,
+    /// The newest ids `cancel_request` ended, oldest first, at most
+    /// `CANCELLED_MEMORY`. A worker that was already running when its request
+    /// was cancelled must not store an approval afterwards.
+    cancelled: VecDeque<u64>,
+}
+
+/// The approval of an accepted sleep and what the reply says around it.
+struct Held {
+    req: u64,
+    lang: Lang,
+    /// Reply lines of what ran before the sleep.
+    ran: Vec<String>,
+    /// Reply lines of the risky calls after the sleep, which will not run.
+    skipped: Vec<String>,
+    power: HeldPower,
 }
 
 /// A validated response waiting to run (and for its risky calls to be
@@ -143,6 +169,9 @@ struct Plan {
     /// Reply lines of what ran, in order.
     lines: Vec<String>,
     failed: bool,
+    /// Set when the accepted risky call was a sleep: it is held for its
+    /// countdown instead of executed.
+    countdown: Option<HeldPower>,
 }
 
 struct PlannedRisky {
@@ -244,6 +273,8 @@ impl Assistant {
             session: Mutex::default(),
             #[cfg(test)]
             after_begin: Mutex::new(None),
+            #[cfg(test)]
+            before_hold: Mutex::new(None),
         }
     }
 
@@ -314,6 +345,22 @@ impl Assistant {
     #[cfg(not(test))]
     fn paused_after_begin(&self, _req: u64) {}
 
+    #[cfg(test)]
+    fn paused_before_hold(&self, req: u64) {
+        let hook = self.before_hold.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            hook(req);
+        }
+    }
+
+    #[cfg(not(test))]
+    fn paused_before_hold(&self, _req: u64) {}
+
+    #[cfg(test)]
+    fn cancelled_len(&self) -> usize {
+        self.session().cancelled.len()
+    }
+
     /// Registers a user request as the newest and resets what the previous one
     /// left, in ONE critical section: the currency check and every session
     /// write share the lock, so an older worker can never wipe the state a
@@ -333,6 +380,8 @@ impl Assistant {
         session.plan = None;
         session.answer = None;
         session.search = None;
+        // A new request ends any unfinished countdown: its approval is dropped.
+        session.held = None;
         Some(lang)
     }
 
@@ -497,6 +546,7 @@ impl Assistant {
             risky,
             lines: Vec::new(),
             failed: false,
+            countdown: None,
         });
         vec![Event::ToolCalls { req, verdict }]
     }
@@ -589,6 +639,9 @@ impl Assistant {
         if plan.failed {
             return vec![plan.done_event()];
         }
+        if let Some(power) = plan.countdown.take() {
+            return self.hold_for_countdown(req, plan, power);
+        }
         match plan.risky.front() {
             Some(next) => {
                 let outcome = ToolsOutcome::RiskyRemaining {
@@ -605,6 +658,93 @@ impl Assistant {
             }
             None => vec![plan.done_event()],
         }
+    }
+
+    /// The accepted sleep waits for its countdown: the PC is not touched. The
+    /// approval is kept in the session; the reducer starts the countdown and
+    /// only its deadline leads to `finish_countdown`.
+    fn hold_for_countdown(&self, req: u64, plan: Plan, power: HeldPower) -> Vec<Event> {
+        let lang = plan.lang;
+        let skipped: Vec<String> = plan
+            .risky
+            .iter()
+            .map(|risky| replies::render(&risky.cancelled(), lang))
+            .collect();
+        let cancel_text = if plan.lines.is_empty() && skipped.is_empty() {
+            None
+        } else {
+            let mut parts = plan.lines.clone();
+            parts.push(replies::template(Template::SleepCancelled, lang).to_string());
+            parts.extend(skipped.iter().cloned());
+            Some(replies::bound_reply(&parts.join(" ")))
+        };
+        self.paused_before_hold(req);
+        let mut session = self.session();
+        if session.latest_req != req || session.cancelled.contains(&req) {
+            // Dropped with the approval: nothing is left to run.
+            return Vec::new();
+        }
+        session.held = Some(Held {
+            req,
+            lang,
+            ran: plan.lines,
+            skipped,
+            power,
+        });
+        vec![Event::ToolsDone {
+            req,
+            outcome: ToolsOutcome::SleepCountdown { cancel_text },
+        }]
+    }
+
+    /// The countdown of `req` ended with nobody cancelling: release the held
+    /// sleep to the PC. The reducer asks for this once, from its deadline; the
+    /// approval is taken out of the session first, so asking again, or after a
+    /// cancel, a newer request or the end of the request, does nothing.
+    pub fn finish_countdown(&self, req: u64) -> Vec<Event> {
+        let held = {
+            let mut session = self.session();
+            // Only the newest request may release: a held approval of an older
+            // one is stale for good, so it is dropped.
+            let newest = session.latest_req == req;
+            match session.held.take() {
+                Some(held) if held.req == req && newest => held,
+                Some(held) if held.req == req => return Vec::new(),
+                other => {
+                    session.held = other;
+                    return Vec::new();
+                }
+            }
+        };
+        let Held {
+            lang,
+            mut ran,
+            skipped,
+            power,
+            ..
+        } = held;
+        let failed = match self.gate.release_held(power, &*self.pc) {
+            Ok(()) => {
+                ran.push(replies::render(
+                    &Msg::PowerDone {
+                        action: PowerKind::Sleep,
+                    },
+                    lang,
+                ));
+                false
+            }
+            Err(_) => {
+                ran.push(replies::render(&Msg::ToolFailed, lang));
+                true
+            }
+        };
+        ran.extend(skipped);
+        let text = replies::bound_reply(&ran.join(" "));
+        vec![if failed {
+            Event::FailureText { req, text }
+        } else {
+            Event::Reply { req, text }
+        }]
     }
 
     fn take_plan(&self, req: u64) -> Option<Plan> {
@@ -703,6 +843,8 @@ impl Assistant {
                     Err(ExecError::Pc(_)) => plan.fail(&Msg::ToolFailed),
                 }
             }
+            // A sleep waits for its countdown (owner decision 2026-11-04).
+            Ok(Approval::Sleep(held)) => plan.countdown = Some(held),
             Ok(Approval::Power(approved)) => {
                 let action = approved.action().kind();
                 match self.gate.execute_power(approved, &*self.pc) {
@@ -746,9 +888,19 @@ impl Assistant {
     /// answer meant for it.
     pub fn cancel_request(&self, req: u64) {
         let mut session = self.session();
+        if !session.cancelled.contains(&req) {
+            if session.cancelled.len() == CANCELLED_MEMORY {
+                session.cancelled.pop_front();
+            }
+            session.cancelled.push_back(req);
+        }
         if session.plan.as_ref().is_some_and(|plan| plan.req == req) {
             session.plan = None;
             session.answer = None;
+        }
+        // The request is over, however it ended: a held sleep goes with it.
+        if session.held.as_ref().is_some_and(|held| held.req == req) {
+            session.held = None;
         }
     }
 

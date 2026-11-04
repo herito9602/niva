@@ -1,5 +1,6 @@
 //! Niva assistant core: pure logic with no I/O.
 
+pub mod activity;
 pub mod assistant;
 pub mod ports;
 pub mod prompt;

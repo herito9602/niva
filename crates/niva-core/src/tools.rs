@@ -137,6 +137,16 @@ impl PowerKind {
             PowerKind::Lock | PowerKind::Sleep => false,
         }
     }
+
+    /// Sleep is not executed when the user accepts: it waits for a countdown
+    /// that any input can cancel (owner decision 2026-11-04). The gate holds
+    /// the approval instead of calling the PC (`Approval::Sleep`).
+    pub const fn needs_countdown(self) -> bool {
+        match self {
+            PowerKind::Sleep => true,
+            PowerKind::Lock | PowerKind::Restart | PowerKind::Shutdown => false,
+        }
+    }
 }
 
 /// A volume change. `Set` carries an already clamped level.

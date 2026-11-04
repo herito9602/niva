@@ -18,6 +18,8 @@ mod tests_activation;
 #[cfg(test)]
 mod tests_confirm;
 #[cfg(test)]
+mod tests_countdown;
+#[cfg(test)]
 mod tests_input;
 #[cfg(test)]
 mod tests_races;
@@ -28,7 +30,8 @@ mod tests_speech;
 #[cfg(test)]
 mod tests_tools;
 
-/// The 8 assistant states. They map 1:1 to the 8 mascot poses.
+/// The assistant states. Eight map 1:1 to the 8 mascot poses; `Countdown` (the
+/// sleep countdown) is shown with the `acting` pose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Idle,
@@ -39,10 +42,15 @@ pub enum Phase {
     Success,
     Error,
     ReminderAlert,
+    /// An approved sleep waits for its 10 s countdown, which any input can
+    /// cancel. A phase of its own, not a sub-state of `Acting`, so that every
+    /// event x state cell is written down and nothing inherits an `Acting`
+    /// handler by accident.
+    Countdown,
 }
 
 impl Phase {
-    pub const ALL: [Phase; 8] = [
+    pub const ALL: [Phase; 9] = [
         Phase::Idle,
         Phase::Listening,
         Phase::Thinking,
@@ -51,6 +59,7 @@ impl Phase {
         Phase::Success,
         Phase::Error,
         Phase::ReminderAlert,
+        Phase::Countdown,
     ];
 
     /// Column of this state in the transition matrix. The match is exhaustive
@@ -66,6 +75,7 @@ impl Phase {
             Phase::Success => 5,
             Phase::Error => 6,
             Phase::ReminderAlert => 7,
+            Phase::Countdown => 8,
         }
     }
 }
@@ -116,6 +126,10 @@ pub struct State {
     /// (`Event::Accept { id }`), so a late or repeated click for an earlier
     /// prompt is dropped instead of answering the next one.
     pub confirm_id: Option<u64>,
+    /// Identity of the sleep countdown (present exactly in `Countdown`). The
+    /// host echoes it in `CountdownReady`/`Cancel`/`Fault`, so a late event of
+    /// an earlier countdown is dropped.
+    pub countdown_id: Option<u64>,
     /// The reply for the open confirmation if it ends without an accept
     /// (reject, shortcut, timeout). `None`: the "cancelled" template.
     pub cancel_text: Option<String>,
@@ -162,6 +176,7 @@ impl Default for State {
             summarizing: false,
             confirm_click_only: false,
             confirm_id: None,
+            countdown_id: None,
             cancel_text: None,
             alert_count: 0,
             chime_id: None,
@@ -199,6 +214,9 @@ pub enum ReplyKind {
     AskFollowUp,
     /// Reminder alert.
     Alert,
+    /// The sleep countdown announcement: nothing waits for it (the deadline
+    /// is a timer of its own and never depends on the speech).
+    Countdown,
 }
 
 /// Localized template ids; the host renders them in the reply language.
@@ -210,6 +228,12 @@ pub enum Template {
     ActionDone,
     SearchUnavailable,
     ReminderAlert,
+    /// "Suspending in 10 seconds. Press a key or move the mouse to cancel."
+    SleepCountdown,
+    /// "Suspend cancelled."
+    SleepCancelled,
+    /// The host could not watch for input, so nothing was suspended.
+    SleepNotWatched,
 }
 
 /// What a `Speak` effect says.
@@ -250,10 +274,13 @@ pub enum TimerKind {
     /// `Speak`, never by the reducer, so it has no fixed duration. Its token is
     /// the id of the `Speak` it guards.
     SpeakWatchdog,
+    /// 10 s sleep countdown. Started only after the host said it is watching
+    /// the user's input (`Event::CountdownReady`).
+    Countdown,
 }
 
 impl TimerKind {
-    pub const ALL: [TimerKind; 10] = [
+    pub const ALL: [TimerKind; 11] = [
         TimerKind::NoSpeech,
         TimerKind::MaxUtterance,
         TimerKind::SttTimeout,
@@ -264,6 +291,7 @@ impl TimerKind {
         TimerKind::Settle,
         TimerKind::AlertEnd,
         TimerKind::SpeakWatchdog,
+        TimerKind::Countdown,
     ];
 
     pub const fn duration(self) -> Option<Duration> {
@@ -278,6 +306,7 @@ impl TimerKind {
             TimerKind::Settle => Some(Duration::from_secs(3)),
             TimerKind::AlertEnd => Some(Duration::from_secs(30)),
             TimerKind::SpeakWatchdog => None,
+            TimerKind::Countdown => Some(Duration::from_secs(10)),
         }
     }
 }
@@ -316,6 +345,13 @@ pub enum ToolsOutcome {
         cancel_text: Option<String>,
     },
     Failed,
+    /// The accepted risky call was a sleep: it is held, not executed. The
+    /// reducer starts the countdown; `cancel_text` is what to say if it is
+    /// cancelled (what already ran, then that the sleep was cancelled), `None`
+    /// for the plain template.
+    SleepCountdown {
+        cancel_text: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -408,6 +444,20 @@ pub enum Event {
     },
     /// Click on the reminder alert.
     Dismiss,
+    /// The host captured its baseline and now watches the user's input for
+    /// countdown `id`: the 10 s deadline starts.
+    CountdownReady {
+        id: u64,
+    },
+    /// Cancel countdown `id`: input seen by the host's poller, the debug
+    /// window, or (slice 3) a spoken "cancel" from the voice layer.
+    CountdownCancel {
+        id: u64,
+    },
+    /// The host cannot watch (the activity source failed): fail closed.
+    CountdownFault {
+        id: u64,
+    },
 }
 
 /// Input of a `StartRequest` effect.
@@ -474,6 +524,19 @@ pub enum Effect {
     },
     /// Emit `ReminderDue` for the queued batch (sent on every entry to idle).
     DrainReminders,
+    /// Capture a baseline of the user's input and poll it for countdown `id`;
+    /// answer `CountdownReady{id}` (or `CountdownFault{id}` if it cannot).
+    WatchInput {
+        id: u64,
+    },
+    /// Stop polling. Sent on every exit from the countdown.
+    StopWatchingInput,
+    /// The deadline passed with nobody cancelling: run the held sleep for
+    /// `req`. The only effect that can end in the OS call, and the reducer
+    /// emits it in exactly one place (the `Countdown` timer firing).
+    FinishCountdown {
+        req: u64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -524,9 +587,13 @@ impl State {
         if was_speaking || from == Phase::ReminderAlert {
             fx.push(Effect::StopSpeaking);
         }
+        // Watching ends whenever the countdown is left, however it is left.
+        if from == Phase::Countdown {
+            fx.push(Effect::StopWatchingInput);
+        }
         let continues_request = matches!(
             to,
-            Phase::Thinking | Phase::Acting | Phase::ConfirmationNeeded
+            Phase::Thinking | Phase::Acting | Phase::ConfirmationNeeded | Phase::Countdown
         );
         if !continues_request && let Some(req) = self.request_id.take() {
             fx.push(Effect::CancelRequest { req });
@@ -539,6 +606,7 @@ impl State {
         self.summarizing = false;
         self.confirm_click_only = false;
         self.confirm_id = None;
+        self.countdown_id = None;
         self.cancel_text = None;
         self.alert_count = 0;
         self.chime_id = None;
@@ -662,6 +730,9 @@ pub fn reduce(mut state: State, event: Event) -> (State, Vec<Effect>) {
         Event::ReminderDue { count, silent } => state.on_reminder_due(count, silent, &mut fx),
         Event::Dismiss => state.on_dismiss(&mut fx),
         Event::ChimeDone { .. } => state.on_chime_done(&mut fx),
+        Event::CountdownReady { .. } => state.on_countdown_ready(&mut fx),
+        Event::CountdownCancel { .. } => state.on_countdown_cancel(&mut fx),
+        Event::CountdownFault { .. } => state.on_countdown_fault(&mut fx),
     }
     (state, fx)
 }
@@ -697,6 +768,10 @@ impl State {
             Event::ChimeDone { id } => self.chime_id != Some(*id),
             // A click answers one confirmation only: the one it was rendered for.
             Event::Accept { id } | Event::Reject { id } => self.confirm_id != Some(*id),
+            // Bound to the countdown that is running now.
+            Event::CountdownReady { id }
+            | Event::CountdownCancel { id }
+            | Event::CountdownFault { id } => self.countdown_id != Some(*id),
             Event::Wake
             | Event::Shortcut
             | Event::TextSubmitted { .. }
@@ -731,7 +806,11 @@ impl State {
                     self.enter_listening(fx);
                 }
             }
-            Phase::Listening | Phase::Thinking | Phase::Acting | Phase::ConfirmationNeeded => {}
+            Phase::Listening
+            | Phase::Thinking
+            | Phase::Acting
+            | Phase::ConfirmationNeeded
+            | Phase::Countdown => {}
         }
     }
 
@@ -740,6 +819,8 @@ impl State {
             Phase::Idle | Phase::Success | Phase::Error | Phase::ReminderAlert => self.activate(fx),
             Phase::Listening | Phase::Thinking | Phase::Acting => self.transition(Phase::Idle, fx),
             Phase::ConfirmationNeeded => self.reject(fx),
+            // The shortcut cancels a sleep countdown.
+            Phase::Countdown => self.cancel_countdown(fx),
         }
     }
 
@@ -758,7 +839,8 @@ impl State {
             | Phase::ConfirmationNeeded
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => {}
+            | Phase::ReminderAlert
+            | Phase::Countdown => {}
         }
     }
 
@@ -797,7 +879,8 @@ impl State {
             | Phase::Acting
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => {}
+            | Phase::ReminderAlert
+            | Phase::Countdown => {}
         }
     }
 
@@ -813,7 +896,8 @@ impl State {
             | Phase::Acting
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => {}
+            | Phase::ReminderAlert
+            | Phase::Countdown => {}
         }
     }
 
@@ -829,7 +913,8 @@ impl State {
             | Phase::Acting
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => {}
+            | Phase::ReminderAlert
+            | Phase::Countdown => {}
         }
     }
 
@@ -861,7 +946,8 @@ impl State {
             | Phase::Acting
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => {}
+            | Phase::ReminderAlert
+            | Phase::Countdown => {}
         }
     }
 
@@ -874,7 +960,8 @@ impl State {
             | Phase::Acting
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => {}
+            | Phase::ReminderAlert
+            | Phase::Countdown => {}
         }
     }
 
@@ -903,7 +990,8 @@ impl State {
             | Phase::Acting
             | Phase::ConfirmationNeeded
             | Phase::Success
-            | Phase::Error => fx.push(Effect::EnqueueReminder { count }),
+            | Phase::Error
+            | Phase::Countdown => fx.push(Effect::EnqueueReminder { count }),
         }
     }
 
@@ -916,7 +1004,8 @@ impl State {
             | Phase::Acting
             | Phase::ConfirmationNeeded
             | Phase::Success
-            | Phase::Error => {}
+            | Phase::Error
+            | Phase::Countdown => {}
         }
     }
 
@@ -932,7 +1021,8 @@ impl State {
             | Phase::Acting
             | Phase::ConfirmationNeeded
             | Phase::Success
-            | Phase::Error => {}
+            | Phase::Error
+            | Phase::Countdown => {}
         }
     }
 
@@ -957,7 +1047,7 @@ impl State {
                     self.think_about(text, fx);
                 }
             }
-            Phase::Acting | Phase::ConfirmationNeeded => {}
+            Phase::Acting | Phase::ConfirmationNeeded | Phase::Countdown => {}
         }
     }
 
@@ -1008,7 +1098,8 @@ impl State {
             | Phase::ConfirmationNeeded
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => return,
+            | Phase::ReminderAlert
+            | Phase::Countdown => return,
         }
         // The summary call is no-tools: any tool call in its answer is invalid.
         let verdict = if self.summarizing {
@@ -1042,7 +1133,8 @@ impl State {
             | Phase::ConfirmationNeeded
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => return,
+            | Phase::ReminderAlert
+            | Phase::Countdown => return,
         }
         match outcome {
             ToolsOutcome::Completed => {
@@ -1066,6 +1158,7 @@ impl State {
                 self.finish_request();
                 self.enter_error(Template::Error, fx);
             }
+            ToolsOutcome::SleepCountdown { cancel_text } => self.start_countdown(cancel_text, fx),
         }
     }
 
@@ -1080,7 +1173,8 @@ impl State {
             | Phase::ConfirmationNeeded
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => {}
+            | Phase::ReminderAlert
+            | Phase::Countdown => {}
         }
     }
 
@@ -1092,7 +1186,8 @@ impl State {
             | Phase::ConfirmationNeeded
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => {}
+            | Phase::ReminderAlert
+            | Phase::Countdown => {}
         }
     }
 
@@ -1107,7 +1202,8 @@ impl State {
             | Phase::ConfirmationNeeded
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => {}
+            | Phase::ReminderAlert
+            | Phase::Countdown => {}
         }
     }
 
@@ -1120,7 +1216,8 @@ impl State {
             | Phase::ConfirmationNeeded
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => return,
+            | Phase::ReminderAlert
+            | Phase::Countdown => return,
         }
         if self.followup_turn {
             // One follow-up turn only: a second ambiguity ends the request.
@@ -1172,6 +1269,8 @@ impl State {
                     self.end_alert_if_finished(fx);
                 }
             }
+            // Nothing waits for the countdown announcement.
+            ReplyKind::Countdown => {}
         }
     }
 
@@ -1193,7 +1292,8 @@ impl State {
                 | Phase::ConfirmationNeeded
                 | Phase::Success
                 | Phase::Error
-                | Phase::ReminderAlert => {}
+                | Phase::ReminderAlert
+                | Phase::Countdown => {}
             },
             TimerKind::MaxUtterance => match self.phase {
                 Phase::Listening => {
@@ -1209,7 +1309,8 @@ impl State {
                 | Phase::ConfirmationNeeded
                 | Phase::Success
                 | Phase::Error
-                | Phase::ReminderAlert => {}
+                | Phase::ReminderAlert
+                | Phase::Countdown => {}
             },
             TimerKind::SttTimeout => match self.phase {
                 Phase::Listening => self.enter_error(Template::Error, fx),
@@ -1219,7 +1320,8 @@ impl State {
                 | Phase::ConfirmationNeeded
                 | Phase::Success
                 | Phase::Error
-                | Phase::ReminderAlert => {}
+                | Phase::ReminderAlert
+                | Phase::Countdown => {}
             },
             // `transition` cancels the in-flight request.
             TimerKind::Llm => match self.phase {
@@ -1233,13 +1335,16 @@ impl State {
                 | Phase::ConfirmationNeeded
                 | Phase::Success
                 | Phase::Error
-                | Phase::ReminderAlert => {}
+                | Phase::ReminderAlert
+                | Phase::Countdown => {}
             },
             TimerKind::Tool => match self.phase {
                 Phase::Acting => {
                     let template = self.failure_template();
                     self.enter_error(template, fx);
                 }
+                // The host never said it is watching: fail closed.
+                Phase::Countdown => self.enter_error(Template::SleepNotWatched, fx),
                 Phase::Idle
                 | Phase::Listening
                 | Phase::Thinking
@@ -1256,7 +1361,8 @@ impl State {
                 | Phase::ConfirmationNeeded
                 | Phase::Success
                 | Phase::Error
-                | Phase::ReminderAlert => {}
+                | Phase::ReminderAlert
+                | Phase::Countdown => {}
             },
             TimerKind::Confirm => match self.phase {
                 Phase::ConfirmationNeeded => self.reject(fx),
@@ -1266,7 +1372,8 @@ impl State {
                 | Phase::Acting
                 | Phase::Success
                 | Phase::Error
-                | Phase::ReminderAlert => {}
+                | Phase::ReminderAlert
+                | Phase::Countdown => {}
             },
             TimerKind::Settle => match self.phase {
                 Phase::Success | Phase::Error => self.transition(Phase::Idle, fx),
@@ -1275,7 +1382,8 @@ impl State {
                 | Phase::Thinking
                 | Phase::Acting
                 | Phase::ConfirmationNeeded
-                | Phase::ReminderAlert => {}
+                | Phase::ReminderAlert
+                | Phase::Countdown => {}
             },
             TimerKind::AlertEnd => match self.phase {
                 Phase::ReminderAlert => self.transition(Phase::Idle, fx),
@@ -1285,7 +1393,19 @@ impl State {
                 | Phase::Acting
                 | Phase::ConfirmationNeeded
                 | Phase::Success
-                | Phase::Error => {}
+                | Phase::Error
+                | Phase::Countdown => {}
+            },
+            TimerKind::Countdown => match self.phase {
+                Phase::Countdown => self.finish_countdown(fx),
+                Phase::Idle
+                | Phase::Listening
+                | Phase::Thinking
+                | Phase::Acting
+                | Phase::ConfirmationNeeded
+                | Phase::Success
+                | Phase::Error
+                | Phase::ReminderAlert => {}
             },
         }
     }
@@ -1314,8 +1434,110 @@ impl State {
             Phase::Success | Phase::Error => self.transition(Phase::Idle, fx),
             // LLM and tools do not need the sidecar; the alert chime is
             // played from Rust; idle just becomes degraded.
-            Phase::Idle | Phase::Thinking | Phase::Acting | Phase::ReminderAlert => {}
+            Phase::Idle
+            | Phase::Thinking
+            | Phase::Acting
+            | Phase::ReminderAlert
+            | Phase::Countdown => {}
         }
+    }
+
+    /// The held sleep starts its countdown. The request stays open (the
+    /// assistant holds the approval under it). There is no deadline yet: only
+    /// the 5 s guard runs until the host says it is watching.
+    fn start_countdown(&mut self, cancel_text: Option<String>, fx: &mut Vec<Effect>) {
+        let id = self.alloc_id();
+        self.transition(Phase::Countdown, fx);
+        self.countdown_id = Some(id);
+        self.cancel_text = cancel_text;
+        self.start_timer(TimerKind::Tool, fx);
+        fx.push(Effect::WatchInput { id });
+    }
+
+    /// The host watches the user's input: start the 10 s deadline and say so.
+    /// A second ready for an armed countdown changes nothing.
+    fn on_countdown_ready(&mut self, fx: &mut Vec<Effect>) {
+        match self.phase {
+            Phase::Countdown => {
+                if self.timers.iter().any(|t| t.kind == TimerKind::Countdown) {
+                    return;
+                }
+                self.cancel_timer(TimerKind::Tool, fx);
+                self.start_timer(TimerKind::Countdown, fx);
+                self.speak(
+                    ReplyKind::Countdown,
+                    Say::Template(Template::SleepCountdown),
+                    fx,
+                );
+            }
+            Phase::Idle
+            | Phase::Listening
+            | Phase::Thinking
+            | Phase::Acting
+            | Phase::ConfirmationNeeded
+            | Phase::Success
+            | Phase::Error
+            | Phase::ReminderAlert => {}
+        }
+    }
+
+    /// Input, the debug window or (slice 3) a spoken "cancel" cancelled the
+    /// countdown.
+    fn on_countdown_cancel(&mut self, fx: &mut Vec<Effect>) {
+        match self.phase {
+            Phase::Countdown => self.cancel_countdown(fx),
+            Phase::Idle
+            | Phase::Listening
+            | Phase::Thinking
+            | Phase::Acting
+            | Phase::ConfirmationNeeded
+            | Phase::Success
+            | Phase::Error
+            | Phase::ReminderAlert => {}
+        }
+    }
+
+    /// The host cannot watch: fail closed, truthfully. `transition` ends the
+    /// request, which makes the assistant drop the held sleep.
+    fn on_countdown_fault(&mut self, fx: &mut Vec<Effect>) {
+        match self.phase {
+            Phase::Countdown => self.enter_error(Template::SleepNotWatched, fx),
+            Phase::Idle
+            | Phase::Listening
+            | Phase::Thinking
+            | Phase::Acting
+            | Phase::ConfirmationNeeded
+            | Phase::Success
+            | Phase::Error
+            | Phase::ReminderAlert => {}
+        }
+    }
+
+    /// Cancel (input, shortcut, debug window, later voice): the sleep does not
+    /// happen and Niva says so. `request_id` stays set on purpose: `transition`
+    /// then emits `CancelRequest`, which is what makes the assistant drop the
+    /// held approval, so a cancelled countdown can never be resumed.
+    fn cancel_countdown(&mut self, fx: &mut Vec<Effect>) {
+        let say = match self.cancel_text.take() {
+            Some(text) => Say::Text(text),
+            None => Say::Template(Template::SleepCancelled),
+        };
+        self.enter_success(say, fx);
+    }
+
+    /// The deadline fired and nobody cancelled: the one place that emits
+    /// `FinishCountdown`. The phase moves to `Acting` (the OS call is the tool
+    /// run now), so a cancel that arrives after this finds another phase.
+    fn finish_countdown(&mut self, fx: &mut Vec<Effect>) {
+        let Some(req) = self.request_id else {
+            // Cannot happen (the countdown owns its request); never finish
+            // without one.
+            self.enter_error(Template::SleepNotWatched, fx);
+            return;
+        };
+        self.transition(Phase::Acting, fx);
+        self.start_timer(TimerKind::Tool, fx);
+        fx.push(Effect::FinishCountdown { req });
     }
 
     /// Reject, Shortcut or timeout in `confirmation-needed`: the request ends,

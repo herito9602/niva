@@ -38,6 +38,7 @@ pub enum OutcomeName {
     SearchResult,
     RiskyRemaining,
     Failed,
+    SleepCountdown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -53,6 +54,7 @@ pub enum TimerName {
     Settle,
     AlertEnd,
     SpeakWatchdog,
+    Countdown,
 }
 
 impl TimerName {
@@ -68,6 +70,7 @@ impl TimerName {
             TimerName::Settle => TimerKind::Settle,
             TimerName::AlertEnd => TimerKind::AlertEnd,
             TimerName::SpeakWatchdog => TimerKind::SpeakWatchdog,
+            TimerName::Countdown => TimerKind::Countdown,
         }
     }
 }
@@ -133,6 +136,13 @@ pub enum DebugEvent {
         ready: bool,
     },
     Dismiss,
+    /// The host is watching the input: the 10 s deadline starts. The window
+    /// stands in for the host's poller; the id is the running countdown's.
+    CountdownReady,
+    /// Cancel the sleep countdown (the debug window's stand-in for input).
+    CountdownCancel,
+    /// The host could not watch: the countdown fails closed.
+    CountdownFault,
     /// Back to a fresh idle state (voice flag kept).
     Reset,
     /// Hold the stubbed audio (`true`) or let it end at once (`false`).
@@ -159,6 +169,7 @@ impl DebugEvent {
         let listen = state.listen_id.unwrap_or(0);
         let speak = state.speak_id.unwrap_or(0);
         let req = state.request_id.unwrap_or(0);
+        let countdown = state.countdown_id.unwrap_or(0);
         Some(match self {
             DebugEvent::Wake => Event::Wake,
             DebugEvent::Shortcut => Event::Shortcut,
@@ -189,6 +200,9 @@ impl DebugEvent {
                     OutcomeName::Completed => ToolsOutcome::Completed,
                     OutcomeName::SearchResult => ToolsOutcome::SearchResult,
                     OutcomeName::Failed => ToolsOutcome::Failed,
+                    OutcomeName::SleepCountdown => {
+                        ToolsOutcome::SleepCountdown { cancel_text: None }
+                    }
                     OutcomeName::RiskyRemaining => ToolsOutcome::RiskyRemaining {
                         prompt: CONFIRM_PROMPT.into(),
                         click_only: false,
@@ -235,6 +249,9 @@ impl DebugEvent {
             },
             DebugEvent::VoiceReady { ready } => Event::VoiceReadinessChanged { ready: *ready },
             DebugEvent::Dismiss => Event::Dismiss,
+            DebugEvent::CountdownReady => Event::CountdownReady { id: countdown },
+            DebugEvent::CountdownCancel => Event::CountdownCancel { id: countdown },
+            DebugEvent::CountdownFault => Event::CountdownFault { id: countdown },
             DebugEvent::Reset | DebugEvent::SetMedia { .. } => return None,
         })
     }
@@ -632,6 +649,7 @@ mod tests {
             ("settle", TimerKind::Settle),
             ("alert_end", TimerKind::AlertEnd),
             ("speak_watchdog", TimerKind::SpeakWatchdog),
+            ("countdown", TimerKind::Countdown),
         ] {
             let event = parse(&format!(r#"{{"type":"watchdog","kind":"{name}"}}"#))
                 .resolve(&State::default())
@@ -641,7 +659,59 @@ mod tests {
                 "{name}"
             );
         }
-        assert_eq!(TimerKind::ALL.len(), 10);
+        assert_eq!(TimerKind::ALL.len(), 11);
+    }
+
+    #[test]
+    fn countdown_events_carry_the_id_of_the_running_countdown() {
+        // The debug window cannot know the id: it is resolved from the state,
+        // exactly as the host's poller echoes it.
+        let mut state = State::default();
+        state.countdown_id = Some(41);
+        assert_eq!(
+            parse(r#"{"type":"countdown_cancel"}"#)
+                .resolve(&state)
+                .unwrap(),
+            Event::CountdownCancel { id: 41 }
+        );
+        assert_eq!(
+            parse(r#"{"type":"countdown_ready"}"#)
+                .resolve(&state)
+                .unwrap(),
+            Event::CountdownReady { id: 41 }
+        );
+        assert_eq!(
+            parse(r#"{"type":"countdown_fault"}"#)
+                .resolve(&state)
+                .unwrap(),
+            Event::CountdownFault { id: 41 }
+        );
+    }
+
+    #[test]
+    fn a_countdown_event_without_a_countdown_resolves_to_id_zero_which_is_dropped() {
+        let idle = State::default();
+        let event = parse(r#"{"type":"countdown_cancel"}"#)
+            .resolve(&idle)
+            .unwrap();
+        assert_eq!(event, Event::CountdownCancel { id: 0 });
+        let (after, fx) = reduce(idle.clone(), event);
+        assert_eq!(after, idle);
+        assert!(fx.is_empty());
+    }
+
+    #[test]
+    fn the_sleep_countdown_outcome_and_its_timer_can_be_sent_from_the_window() {
+        let state = after(&[]);
+        assert_eq!(
+            parse(r#"{"type":"tools_done","outcome":"sleep_countdown"}"#)
+                .resolve(&state)
+                .unwrap(),
+            Event::ToolsDone {
+                req: 0,
+                outcome: ToolsOutcome::SleepCountdown { cancel_text: None }
+            }
+        );
     }
 
     #[test]

@@ -233,6 +233,30 @@ pub fn template(template: Template, lang: Lang) -> &'static str {
         (Template::SearchUnavailable, Lang::Es) => "No puedo buscar ahora mismo.",
         (Template::ReminderAlert, Lang::En) => "Reminder.",
         (Template::ReminderAlert, Lang::Es) => "Recordatorio.",
+        (Template::SleepCountdown, Lang::En) => {
+            "Suspending in 10 seconds. Press a key or move the mouse to cancel."
+        }
+        (Template::SleepCountdown, Lang::Es) => {
+            "Suspendiendo en 10 segundos. Presiona una tecla o mueve el mouse para cancelar."
+        }
+        (Template::SleepCancelled, Lang::En) => "Suspend cancelled.",
+        (Template::SleepCancelled, Lang::Es) => "Suspensión cancelada.",
+        (Template::SleepNotWatched, Lang::En) => {
+            "I couldn't check for your input, so I did not suspend the PC."
+        }
+        (Template::SleepNotWatched, Lang::Es) => {
+            "No pude comprobar tu actividad, así que no suspendí el PC."
+        }
+    }
+}
+
+/// What the island shows while the sleep countdown runs: `{n}` is replaced by the
+/// whole seconds left, counted down in the view from a deadline (not by one
+/// event per second).
+pub fn countdown_display(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Suspending in {n} s. Press a key or move the mouse to cancel.",
+        Lang::Es => "Suspendiendo en {n} s. Presiona una tecla o mueve el mouse para cancelar.",
     }
 }
 

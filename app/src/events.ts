@@ -22,6 +22,13 @@ export interface ViewPayload {
   caption?: string;
   confirm?: { id: number; prompt: string; expiresAt?: number };
   reminder?: { id: number; text: string };
+  /**
+   * A sleep countdown (shown with the `acting` pose). The island counts down
+   * from `endsAt` (epoch ms); the host sends no event per second. `text` is the
+   * localized message and `{n}` stands for the whole seconds left; `seconds` is
+   * the length of the countdown, i.e. the widest number.
+   */
+  countdown?: { endsAt: number; seconds: number; text: string };
 }
 
 export interface IslandPayload {

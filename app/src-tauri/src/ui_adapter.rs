@@ -44,7 +44,9 @@ fn say_text(say: &Say, lang: Lang) -> String {
     }
 }
 
-/// Name of a state in `niva://view` (the mascot spec's state names).
+/// Name of a state in `niva://view` (the mascot spec's state names). The sleep
+/// countdown is shown with the `acting` pose: the view carries a `countdown`
+/// next to it, and the mascot needs no ninth look.
 fn phase_name(phase: Phase) -> &'static str {
     match phase {
         Phase::Idle => "idle",
@@ -55,6 +57,7 @@ fn phase_name(phase: Phase) -> &'static str {
         Phase::Success => "success",
         Phase::Error => "error",
         Phase::ReminderAlert => "reminder-alert",
+        Phase::Countdown => "acting",
     }
 }
 
@@ -68,6 +71,20 @@ pub struct ConfirmView {
     /// (after `speak_done`).
     #[serde(rename = "expiresAt", skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+}
+
+/// The sleep countdown the island shows. It counts down from `ends_at` in the
+/// view; the reducer sends no event per second.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CountdownView {
+    /// Epoch milliseconds when the countdown ends.
+    #[serde(rename = "endsAt")]
+    pub ends_at: u64,
+    /// Length of the countdown in seconds (the widest number the text shows).
+    pub seconds: u64,
+    /// The island text, in the request's language; `{n}` stands for the whole
+    /// seconds left.
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -86,6 +103,8 @@ pub struct ViewPayload {
     pub confirm: Option<ConfirmView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reminder: Option<ReminderView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub countdown: Option<CountdownView>,
 }
 
 impl ViewPayload {
@@ -95,6 +114,7 @@ impl ViewPayload {
             caption: None,
             confirm: None,
             reminder: None,
+            countdown: None,
         }
     }
 }
@@ -132,6 +152,8 @@ pub struct ViewModel {
     caption: Option<String>,
     confirm_prompt: Option<String>,
     expires_at: Option<u64>,
+    /// Epoch ms when the sleep countdown ends; set when its timer starts.
+    countdown_ends_at: Option<u64>,
     last: ViewPayload,
 }
 
@@ -149,6 +171,7 @@ impl ViewModel {
             caption: None,
             confirm_prompt: None,
             expires_at: None,
+            countdown_ends_at: None,
             last: ViewPayload::idle(),
         }
     }
@@ -176,6 +199,7 @@ impl ViewModel {
             }
             self.confirm_prompt = None;
             self.expires_at = None;
+            self.countdown_ends_at = None;
         }
         let mut shown = Vec::new();
         let mut hidden = Vec::new();
@@ -195,6 +219,13 @@ impl ViewModel {
                 } => {
                     let length = TimerKind::Confirm.duration().unwrap_or_default();
                     self.expires_at = Some(now_ms + length.as_millis() as u64);
+                }
+                Effect::StartTimer {
+                    kind: TimerKind::Countdown,
+                    ..
+                } => {
+                    let length = TimerKind::Countdown.duration().unwrap_or_default();
+                    self.countdown_ends_at = Some(now_ms + length.as_millis() as u64);
                 }
                 Effect::ShowIsland => shown.push(UiEvent::Island { visible: true }),
                 Effect::HideIsland => hidden.push(UiEvent::Island { visible: false }),
@@ -228,11 +259,23 @@ impl ViewModel {
                 n => format!("{n} reminders due"),
             },
         });
+        let countdown = match (state.phase, self.countdown_ends_at) {
+            (Phase::Countdown, Some(ends_at)) => Some(CountdownView {
+                ends_at,
+                seconds: TimerKind::Countdown
+                    .duration()
+                    .unwrap_or_default()
+                    .as_secs(),
+                text: replies::countdown_display(self.lang).to_owned(),
+            }),
+            _ => None,
+        };
         ViewPayload {
             state: phase_name(state.phase),
             caption: self.caption.clone(),
             confirm,
             reminder,
+            countdown,
         }
     }
 }
@@ -483,13 +526,16 @@ mod tests {
             Template::ActionDone,
             Template::SearchUnavailable,
             Template::ReminderAlert,
+            Template::SleepCountdown,
+            Template::SleepCancelled,
+            Template::SleepNotWatched,
         ];
         let captions: Vec<&str> = all.iter().map(|&t| template_caption(t)).collect();
         for (i, c) in captions.iter().enumerate() {
             assert!(!c.is_empty());
             assert!(!captions[..i].contains(c), "duplicate caption {c}");
         }
-        assert_eq!(captions.len(), 6);
+        assert_eq!(captions.len(), 9);
     }
 
     #[test]
@@ -637,6 +683,145 @@ mod tests {
                 "confirm": {"id": confirm_id, "prompt": "Close Notepad?"},
             })
         );
+    }
+
+    // --- sleep countdown (owner decision 2026-11-04) ---------------------------
+
+    /// Drives the reducer to an accepted sleep (`Countdown`, host not ready yet).
+    fn accepted_sleep(sim: &mut Sim) {
+        sim.thinking();
+        let req = sim.req();
+        sim.send(Event::ToolCalls {
+            req,
+            verdict: ToolVerdict::Confirm {
+                prompt: "Put the PC to sleep?".into(),
+                click_only: false,
+                cancel_text: None,
+            },
+        });
+        let speak = sim.state.speak_id.expect("the prompt is playing");
+        sim.send(Event::SpeakDone { id: speak });
+        let confirm = sim.state.confirm_id.expect("a confirmation");
+        sim.send(Event::Accept { id: confirm });
+        sim.send(Event::ToolsDone {
+            req,
+            outcome: ToolsOutcome::SleepCountdown { cancel_text: None },
+        });
+    }
+
+    fn countdown_id(sim: &Sim) -> u64 {
+        sim.state.countdown_id.expect("a countdown")
+    }
+
+    #[test]
+    fn the_countdown_phase_is_shown_with_the_acting_pose() {
+        let mut sim = Sim::ready();
+        accepted_sleep(&mut sim);
+        assert_eq!(sim.state.phase, Phase::Countdown);
+        assert_eq!(phase_name(Phase::Countdown), "acting");
+    }
+
+    #[test]
+    fn the_view_carries_no_countdown_until_the_host_is_watching() {
+        let mut sim = Sim::ready();
+        accepted_sleep(&mut sim);
+        let events = sim.at(1_000, Event::Wake);
+        assert!(events.is_empty());
+        assert_eq!(sim.view.last.countdown, None);
+        assert_eq!(sim.view.last.state, "acting");
+    }
+
+    #[test]
+    fn the_deadline_is_published_when_the_deadline_timer_starts() {
+        let mut sim = Sim::ready();
+        accepted_sleep(&mut sim);
+        let id = countdown_id(&sim);
+        let events = sim.at(5_000, Event::CountdownReady { id });
+        let view = view_of(&events);
+        assert_eq!(view.state, "acting");
+        assert_eq!(
+            view.countdown,
+            Some(CountdownView {
+                ends_at: 15_000,
+                seconds: 10,
+                text: "Suspending in {n} s. Press a key or move the mouse to cancel.".into(),
+            })
+        );
+        assert_eq!(
+            view.caption.as_deref(),
+            Some("Suspending in 10 seconds. Press a key or move the mouse to cancel.")
+        );
+    }
+
+    #[test]
+    fn the_countdown_text_follows_the_request_language() {
+        let mut sim = Sim::ready();
+        sim.view.set_lang(Lang::Es);
+        accepted_sleep(&mut sim);
+        let id = countdown_id(&sim);
+        let events = sim.at(0, Event::CountdownReady { id });
+        let view = view_of(&events);
+        assert_eq!(
+            view.countdown.clone().unwrap().text,
+            "Suspendiendo en {n} s. Presiona una tecla o mueve el mouse para cancelar."
+        );
+        assert_eq!(
+            view.caption.as_deref(),
+            Some("Suspendiendo en 10 segundos. Presiona una tecla o mueve el mouse para cancelar.")
+        );
+    }
+
+    #[test]
+    fn the_countdown_json_matches_the_documented_shape() {
+        let mut sim = Sim::ready();
+        accepted_sleep(&mut sim);
+        let id = countdown_id(&sim);
+        let events = sim.at(2_000, Event::CountdownReady { id });
+        assert_eq!(
+            serde_json::to_value(view_of(&events)).unwrap(),
+            json!({
+                "state": "acting",
+                "caption": "Suspending in 10 seconds. Press a key or move the mouse to cancel.",
+                "countdown": {
+                    "endsAt": 12_000,
+                    "seconds": 10,
+                    "text": "Suspending in {n} s. Press a key or move the mouse to cancel.",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn the_countdown_leaves_the_view_when_it_is_cancelled_or_finished() {
+        let mut sim = Sim::ready();
+        accepted_sleep(&mut sim);
+        let id = countdown_id(&sim);
+        sim.send(Event::CountdownReady { id });
+        let events = sim.send(Event::CountdownCancel { id });
+        let view = view_of(&events);
+        assert_eq!(view.state, "success");
+        assert_eq!(view.countdown, None);
+        assert_eq!(view.caption.as_deref(), Some("Suspend cancelled."));
+
+        let mut sim = Sim::ready();
+        accepted_sleep(&mut sim);
+        let id = countdown_id(&sim);
+        sim.send(Event::CountdownReady { id });
+        let token = sim
+            .state
+            .timers
+            .iter()
+            .find(|t| t.kind == TimerKind::Countdown)
+            .expect("the deadline")
+            .token;
+        let events = sim.send(Event::Watchdog {
+            kind: TimerKind::Countdown,
+            token,
+        });
+        let view = view_of(&events);
+        assert_eq!(view.state, "acting");
+        assert_eq!(view.countdown, None);
+        assert_eq!(view.caption, None);
     }
 
     #[test]

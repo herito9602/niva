@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { VIEW_EVENT, type ViewPayload } from "../events";
+import { countdownLeft } from "../island";
+import { useNow } from "../state/useNow";
 import { ALL_STATES, EVENT_BUTTONS, STATE_SCRIPTS, answerEvent, rawEvent, type DebugEvent } from "./events";
 import {
   DEV_LOG_EVENT,
@@ -29,6 +31,7 @@ export default function DebugWindow() {
   const [text, setText] = useState("");
   const [log, setLog] = useState<string[]>([]);
   const lastView = useRef<ViewPayload | null>(null);
+  const now = useNow(Boolean(view?.countdown));
 
   useEffect(() => {
     const subs = [
@@ -84,6 +87,11 @@ export default function DebugWindow() {
         <span className="caption">{view?.caption ?? ""}</span>
         {view?.confirm && <span className="extra">confirm: {view.confirm.prompt}</span>}
         {view?.reminder && <span className="extra">reminder: {view.reminder.text}</span>}
+        {view?.countdown && (
+          <span className="extra">
+            sleep countdown: {countdownLeft(view.countdown.endsAt, now)} s left (the PC is dry-run and never sleeps)
+          </span>
+        )}
       </section>
 
       <section>
@@ -106,6 +114,12 @@ export default function DebugWindow() {
           />
           <button type="submit">Send</button>
         </form>
+        {view?.countdown && (
+          <div className="row confirm">
+            <button onClick={() => dispatch({ type: "countdown_cancel" })}>Cancel countdown</button>
+            <span className="extra">Any key or mouse input cancels it too, after 1 s.</span>
+          </div>
+        )}
         {view?.state === "confirmation-needed" && view.confirm && (
           <div className="row confirm">
             <button

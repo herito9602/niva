@@ -33,6 +33,9 @@ pub trait Requests: Send + Sync {
     /// Runs the validated tools of `req` (after a safe verdict, or after a
     /// confirmation was accepted).
     fn run_tools(&self, req: u64);
+    /// The sleep countdown of `req` ended with nobody cancelling: run the held
+    /// sleep. Asked for by the reducer's `FinishCountdown` effect only.
+    fn finish_countdown(&self, req: u64);
     /// The reducer finished or dropped `req`.
     fn cancel(&self, req: u64);
     /// Sees each event with the state just before the reducer handles it.
@@ -65,6 +68,8 @@ impl Requests for Unavailable {
 
     fn run_tools(&self, _req: u64) {}
 
+    fn finish_countdown(&self, _req: u64) {}
+
     fn cancel(&self, _req: u64) {}
 
     fn observe(&self, _state: &State, _event: &Event) {}
@@ -83,6 +88,7 @@ pub struct Ignore;
 impl Requests for Ignore {
     fn start(&self, _req: u64, _input: RequestInput) {}
     fn run_tools(&self, _req: u64) {}
+    fn finish_countdown(&self, _req: u64) {}
     fn cancel(&self, _req: u64) {}
     fn observe(&self, _state: &State, _event: &Event) {}
     fn lang(&self) -> Lang {
@@ -201,6 +207,15 @@ impl Requests for AssistantRequests {
         }
     }
 
+    fn finish_countdown(&self, req: u64) {
+        let assistant = self.assistant.clone();
+        let accepted = (self.spawn)(self.job(req, move || assistant.finish_countdown(req)));
+        if !accepted {
+            // Refused: say so now, and drop the held sleep so it cannot run later.
+            self.refuse(req);
+        }
+    }
+
     fn cancel(&self, req: u64) {
         // Mark it abandoned BEFORE clearing the plan: a worker that dequeues
         // between the two steps must already see the skip, or it could start
@@ -259,6 +274,15 @@ mod tests {
             }]
         );
         assert_eq!(requests.lang(), DEFAULT_LANG);
+    }
+
+    #[test]
+    fn a_release_build_never_finishes_a_countdown() {
+        // No assistant, no held approval, no PC: finishing says and does nothing.
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let requests = Unavailable::new(sink_into(&events));
+        requests.finish_countdown(7);
+        assert!(events.lock().unwrap().is_empty());
     }
 
     #[cfg(debug_assertions)]
@@ -342,6 +366,155 @@ mod tests {
             let requests =
                 AssistantRequests::with_pool(assistant, sink, WorkerPool::new(workers, queue));
             (requests, events_rx, started_rx, release_tx)
+        }
+
+        // --- sleep countdown on the worker pool -----------------------------
+
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        fn sleep_call() -> ToolCall {
+            ToolCall {
+                name: "power_action".into(),
+                args: [("action".to_string(), ArgValue::Str("sleep".into()))].into(),
+            }
+        }
+
+        /// A held sleep, and the handles a test needs around it.
+        struct SleepRig {
+            requests: AssistantRequests,
+            events: std::sync::mpsc::Receiver<Event>,
+            refuse: Arc<AtomicBool>,
+            lines: Arc<Mutex<Vec<String>>>,
+        }
+
+        /// Requests over the dry-run PC whose pool refuses work while `refuse`
+        /// is set; the model asks for a sleep. The request is accepted and its
+        /// tools ran, so the sleep is held. Returns what the PC did.
+        fn held_sleep() -> SleepRig {
+            use niva_core::assistant::ConfirmInput;
+
+            let lines = Arc::new(Mutex::new(Vec::new()));
+            let log: crate::dev::LogSink = {
+                let lines = lines.clone();
+                Arc::new(move |line| lines.lock().unwrap().push(line))
+            };
+            let llm = SlowLlm {
+                started: channel().0,
+                release: Mutex::new({
+                    let (tx, rx) = sync_channel(8);
+                    tx.send(()).unwrap();
+                    rx
+                }),
+                calls: vec![sleep_call()],
+            };
+            let assistant = Assistant::new(Arc::new(llm), Arc::new(crate::dev::DryRunPc::new(log)));
+            let (tx, events) = channel();
+            let sink: EventSink = Arc::new(move |event| {
+                let _ = tx.send(event);
+            });
+            let refuse = Arc::new(AtomicBool::new(false));
+            let spawn_refuse = refuse.clone();
+            let requests = AssistantRequests::with_spawn(
+                assistant,
+                sink,
+                Box::new(move |job| {
+                    if spawn_refuse.load(Ordering::SeqCst) {
+                        return false;
+                    }
+                    job();
+                    true
+                }),
+            );
+            requests.start(1, user("put the pc to sleep"));
+            assert!(matches!(
+                events.recv_timeout(Duration::from_secs(5)).unwrap(),
+                Event::ToolCalls { req: 1, .. }
+            ));
+            requests
+                .assistant
+                .record_confirmation(ConfirmInput::Click(true));
+            requests.run_tools(1);
+            assert_eq!(
+                events.recv_timeout(Duration::from_secs(5)).unwrap(),
+                Event::ToolsDone {
+                    req: 1,
+                    outcome: niva_core::state_machine::ToolsOutcome::SleepCountdown {
+                        cancel_text: None
+                    }
+                }
+            );
+            SleepRig {
+                requests,
+                events,
+                refuse,
+                lines,
+            }
+        }
+
+        fn slept(lines: &Arc<Mutex<Vec<String>>>) -> usize {
+            lines
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.contains("would sleep the PC"))
+                .count()
+        }
+
+        #[test]
+        fn accepting_a_sleep_does_not_run_it_and_finishing_runs_it_once_on_the_pool() {
+            let SleepRig {
+                requests,
+                events,
+                lines,
+                ..
+            } = held_sleep();
+            assert_eq!(slept(&lines), 0, "nothing slept before the deadline");
+            requests.finish_countdown(1);
+            assert_eq!(
+                events.recv_timeout(Duration::from_secs(5)).unwrap(),
+                Event::Reply {
+                    req: 1,
+                    text: "Putting the PC to sleep.".into()
+                }
+            );
+            assert_eq!(slept(&lines), 1);
+            requests.finish_countdown(1);
+            assert!(events.recv_timeout(Duration::from_millis(200)).is_err());
+            assert_eq!(slept(&lines), 1, "a second finish does nothing");
+        }
+
+        #[test]
+        fn cancelling_the_request_drops_the_held_sleep() {
+            let SleepRig {
+                requests,
+                events,
+                lines,
+                ..
+            } = held_sleep();
+            requests.cancel(1);
+            requests.finish_countdown(1);
+            assert!(events.recv_timeout(Duration::from_millis(200)).is_err());
+            assert_eq!(slept(&lines), 0);
+        }
+
+        #[test]
+        fn a_refused_finish_fails_the_request_and_drops_the_held_sleep() {
+            let SleepRig {
+                requests,
+                events,
+                refuse,
+                lines,
+            } = held_sleep();
+            refuse.store(true, Ordering::SeqCst);
+            requests.finish_countdown(1);
+            match events.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Event::FailureText { req: 1, text } => assert!(text.contains("busy"), "{text}"),
+                other => panic!("{other:?}"),
+            }
+            refuse.store(false, Ordering::SeqCst);
+            requests.finish_countdown(1);
+            assert!(events.recv_timeout(Duration::from_millis(200)).is_err());
+            assert_eq!(slept(&lines), 0, "the approval was dropped, not queued");
         }
 
         #[test]

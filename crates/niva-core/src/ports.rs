@@ -154,6 +154,20 @@ pub trait Clock: Send + Sync {
     }
 }
 
+/// The activity source could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActivityError;
+
+/// When the user last gave keyboard or mouse input, for the sleep countdown
+/// (owner decision 2026-11-04). Narrow on purpose: it says THAT input happened,
+/// never which key or where the mouse is. The Windows adapter reads
+/// `GetLastInputInfo`; there is no keyboard hook.
+pub trait InputActivity: Send + Sync {
+    /// An opaque stamp that changes whenever the user gives input. Only
+    /// equality between two readings means anything.
+    fn input_stamp(&self) -> Result<u64, ActivityError>;
+}
+
 /// Where UI events go. Generic over the event type so the core does not
 /// depend on the host's view model (the host implements `UiPort<UiEvent>`).
 pub trait UiPort<E>: Send + Sync {

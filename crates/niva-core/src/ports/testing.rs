@@ -9,9 +9,9 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use super::{
-    ChatReply, ChatRequest, Clock, CloseOutcome, LlmError, LlmProvider, LocalDateTime, PcActions,
-    PcError, ProcessInfo, ReminderError, ReminderStore, SearchError, SearchProvider, UiPort,
-    VolumeResult,
+    ActivityError, ChatReply, ChatRequest, Clock, CloseOutcome, InputActivity, LlmError,
+    LlmProvider, LocalDateTime, PcActions, PcError, ProcessInfo, ReminderError, ReminderStore,
+    SearchError, SearchProvider, UiPort, VolumeResult,
 };
 use crate::safety::{Approved, CloseApp, Power};
 use crate::tools::{PowerKind, ReminderTime, VolumeChange};
@@ -262,5 +262,46 @@ impl<E: Clone> FakeUi<E> {
 impl<E: Send> UiPort<E> for FakeUi<E> {
     fn publish(&self, event: E) {
         lock(&self.events).push(event);
+    }
+}
+
+/// Activity source whose stamp the test moves by hand.
+pub struct FakeActivity {
+    stamp: Mutex<u64>,
+    unreadable: Mutex<bool>,
+    reads: Mutex<usize>,
+}
+
+impl FakeActivity {
+    pub fn new(stamp: u64) -> Self {
+        FakeActivity {
+            stamp: Mutex::new(stamp),
+            unreadable: Mutex::new(false),
+            reads: Mutex::new(0),
+        }
+    }
+
+    /// The user gave input.
+    pub fn touch(&self) {
+        *lock(&self.stamp) += 1;
+    }
+
+    pub fn set_unreadable(&self, unreadable: bool) {
+        *lock(&self.unreadable) = unreadable;
+    }
+
+    /// How many times the source was read.
+    pub fn reads(&self) -> usize {
+        *lock(&self.reads)
+    }
+}
+
+impl InputActivity for FakeActivity {
+    fn input_stamp(&self) -> Result<u64, ActivityError> {
+        *lock(&self.reads) += 1;
+        if *lock(&self.unreadable) {
+            return Err(ActivityError);
+        }
+        Ok(*lock(&self.stamp))
     }
 }

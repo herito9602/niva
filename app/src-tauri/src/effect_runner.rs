@@ -13,6 +13,12 @@
 //! - A final reply stays up long enough to read: the `Settle` that follows its
 //!   speech is stretched to `niva_core::reading` (see [`ReadingHold`]).
 //!
+//! - `WatchInput{id}` reads a baseline of the user's input and polls it every
+//!   100 ms until `StopWatchingInput` (or until it saw input or lost the
+//!   source); an unreadable source is a `CountdownFault`, never silence. There
+//!   is no task, and no read, when no countdown runs.
+//! - `FinishCountdown{req}` goes to the [`Requests`] handler, nowhere else.
+//!
 //! Stubs until later slices (all logged): `Speak` has no TTS (the speech
 //! "ends" at once, see [`MediaMode`]), `Chime` plays no sound, `Listen`,
 //! `CancelListen`, `ForceEndOfSpeech` (slice 3) and `EnqueueReminder`,
@@ -21,6 +27,8 @@
 
 use std::{sync::Arc, time::Duration};
 
+use niva_core::activity::{InputWatch, POLL_INTERVAL, Watch};
+use niva_core::ports::{ActivityError, InputActivity};
 use niva_core::reading::{reading_time, settle_delay};
 use niva_core::state_machine::{Effect, Event, ReplyKind, Say, TimerKind};
 use tokio::task::JoinHandle;
@@ -81,6 +89,16 @@ struct ReadingHold {
     reading: Duration,
 }
 
+/// The activity source of a runner nobody gave one: it cannot be read, so a
+/// countdown fails closed (no suspend) instead of running unwatched.
+struct NoActivity;
+
+impl InputActivity for NoActivity {
+    fn input_stamp(&self) -> Result<u64, ActivityError> {
+        Err(ActivityError)
+    }
+}
+
 pub struct EffectRunner {
     sink: EventSink,
     host: Arc<dyn Host>,
@@ -91,6 +109,10 @@ pub struct EffectRunner {
     watchdog: Option<(u64, JoinHandle<()>)>,
     /// Set by a final `Speak`, consumed by the `Settle` that follows it.
     reading: Option<ReadingHold>,
+    /// Where the user's input is read (sleep countdown).
+    activity: Arc<dyn InputActivity>,
+    /// The poller of the running countdown, if any.
+    watcher: Option<JoinHandle<()>>,
 }
 
 impl EffectRunner {
@@ -103,7 +125,16 @@ impl EffectRunner {
             timers: Vec::new(),
             watchdog: None,
             reading: None,
+            activity: Arc::new(NoActivity),
+            watcher: None,
         }
+    }
+
+    /// Where the sleep countdown reads the user's input. Without one every
+    /// countdown fails closed.
+    pub fn with_activity(mut self, activity: Arc<dyn InputActivity>) -> Self {
+        self.activity = activity;
+        self
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -136,6 +167,7 @@ impl EffectRunner {
         }
         self.disarm_watchdog(None);
         self.reading = None;
+        self.stop_watching();
     }
 
     fn run_one(&mut self, effect: Effect) {
@@ -152,6 +184,9 @@ impl EffectRunner {
             Effect::StartRequest { req, input } => self.requests.start(req, input),
             Effect::RunTool { req } => self.requests.run_tools(req),
             Effect::CancelRequest { req } => self.requests.cancel(req),
+            Effect::WatchInput { id } => self.watch_input(id),
+            Effect::StopWatchingInput => self.stop_watching(),
+            Effect::FinishCountdown { req } => self.requests.finish_countdown(req),
             Effect::Chime { id } => {
                 if self.mode == MediaMode::Instant {
                     (self.sink)(Event::ChimeDone { id });
@@ -160,6 +195,50 @@ impl EffectRunner {
                 }
             }
             other => eprintln!("[niva] stub effect (later slice): {other:?}"),
+        }
+    }
+
+    /// Takes the baseline of the user's input, tells the reducer it is watching
+    /// (or that it cannot) and polls until stopped. The task ends by itself
+    /// after the first input or the first failed read.
+    fn watch_input(&mut self, id: u64) {
+        self.stop_watching();
+        let source = self.activity.clone();
+        let mut watch = match InputWatch::start(&*source) {
+            Ok(watch) => watch,
+            Err(_) => {
+                (self.sink)(Event::CountdownFault { id });
+                return;
+            }
+        };
+        (self.sink)(Event::CountdownReady { id });
+        let sink = self.sink.clone();
+        let started = tokio::time::Instant::now();
+        self.watcher = Some(tokio::spawn(async move {
+            // Fixed ticks from the baseline (no drift, and the first one does not
+            // depend on when the task is first polled).
+            let mut next = started;
+            loop {
+                next += POLL_INTERVAL;
+                tokio::time::sleep_until(next).await;
+                match watch.poll(started.elapsed(), &*source) {
+                    Watch::Quiet => {}
+                    Watch::Input => {
+                        sink(Event::CountdownCancel { id });
+                        break;
+                    }
+                    Watch::Unreadable => {
+                        sink(Event::CountdownFault { id });
+                        break;
+                    }
+                }
+            }
+        }));
+    }
+
+    fn stop_watching(&mut self) {
+        if let Some(task) = self.watcher.take() {
+            task.abort();
         }
     }
 
@@ -271,6 +350,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
+    use crate::test_support::FakeActivity;
 
     #[derive(Default)]
     struct FakeHost {
@@ -303,6 +383,9 @@ mod tests {
         }
         fn cancel(&self, req: u64) {
             self.calls.lock().unwrap().push(format!("cancel {req}"));
+        }
+        fn finish_countdown(&self, req: u64) {
+            self.calls.lock().unwrap().push(format!("finish {req}"));
         }
         fn observe(&self, _: &niva_core::state_machine::State, _: &Event) {}
         fn lang(&self) -> niva_core::replies::Lang {
@@ -549,7 +632,7 @@ mod tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, 9);
+        assert_eq!(checked, 10);
     }
 
     #[tokio::test(start_paused = true)]
@@ -823,6 +906,145 @@ mod tests {
             speak(2, text_of_len(10)),
         ]);
         r.runner.cancel_all();
+        advance(ms(60_000)).await;
+        assert!(drain(&mut r.rx).is_empty());
+    }
+
+    // --- sleep countdown: watching the user's input -----------------------
+
+    fn watching_rig() -> (Rig, Arc<FakeActivity>) {
+        let mut r = rig();
+        let activity = Arc::new(FakeActivity::default());
+        r.runner = EffectRunner::new(r.runner.sink.clone(), r.host.clone(), r.requests.clone())
+            .with_activity(activity.clone());
+        (r, activity)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nothing_polls_the_input_before_a_watch_is_asked_for() {
+        let (mut r, activity) = watching_rig();
+        advance(ms(60_000)).await;
+        assert_eq!(activity.reads(), 0);
+        assert!(drain(&mut r.rx).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_watch_takes_the_baseline_answers_ready_and_polls_every_100_ms() {
+        let (mut r, activity) = watching_rig();
+        r.runner.run(vec![Effect::WatchInput { id: 3 }]);
+        assert_eq!(drain(&mut r.rx), vec![Event::CountdownReady { id: 3 }]);
+        assert_eq!(activity.reads(), 1, "the baseline");
+        advance(ms(100)).await;
+        assert_eq!(activity.reads(), 2);
+        advance(ms(900)).await;
+        assert_eq!(activity.reads(), 11);
+        assert!(drain(&mut r.rx).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn mouse_jitter_right_after_the_accept_click_does_not_cancel() {
+        let (mut r, activity) = watching_rig();
+        r.runner.run(vec![Effect::WatchInput { id: 3 }]);
+        drain(&mut r.rx);
+        for _ in 0..9 {
+            activity.touch();
+            advance(ms(100)).await;
+        }
+        advance(ms(8_000)).await;
+        assert!(drain(&mut r.rx).is_empty(), "the jitter was not input");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn input_after_the_grace_period_cancels_once_and_polling_stops() {
+        let (mut r, activity) = watching_rig();
+        r.runner.run(vec![Effect::WatchInput { id: 3 }]);
+        drain(&mut r.rx);
+        advance(ms(1_500)).await;
+        activity.touch();
+        advance(ms(100)).await;
+        assert_eq!(drain(&mut r.rx), vec![Event::CountdownCancel { id: 3 }]);
+        let reads = activity.reads();
+        activity.touch();
+        advance(ms(5_000)).await;
+        assert_eq!(activity.reads(), reads, "no polling after the cancel");
+        assert!(drain(&mut r.rx).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unreadable_source_at_the_start_is_a_fault_and_never_ready() {
+        let (mut r, activity) = watching_rig();
+        activity.set_unreadable(true);
+        r.runner.run(vec![Effect::WatchInput { id: 3 }]);
+        assert_eq!(drain(&mut r.rx), vec![Event::CountdownFault { id: 3 }]);
+        advance(ms(5_000)).await;
+        assert_eq!(activity.reads(), 1, "no polling without a baseline");
+        assert!(drain(&mut r.rx).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_source_that_fails_later_is_a_fault_and_polling_stops() {
+        let (mut r, activity) = watching_rig();
+        r.runner.run(vec![Effect::WatchInput { id: 3 }]);
+        drain(&mut r.rx);
+        advance(ms(300)).await;
+        activity.set_unreadable(true);
+        advance(ms(100)).await;
+        assert_eq!(drain(&mut r.rx), vec![Event::CountdownFault { id: 3 }]);
+        let reads = activity.reads();
+        advance(ms(5_000)).await;
+        assert_eq!(activity.reads(), reads);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stopping_the_watch_stops_the_polling() {
+        let (mut r, activity) = watching_rig();
+        r.runner.run(vec![Effect::WatchInput { id: 3 }]);
+        drain(&mut r.rx);
+        advance(ms(500)).await;
+        r.runner.run(vec![Effect::StopWatchingInput]);
+        let reads = activity.reads();
+        activity.touch();
+        advance(ms(60_000)).await;
+        assert_eq!(activity.reads(), reads);
+        assert!(drain(&mut r.rx).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_second_watch_replaces_the_first() {
+        let (mut r, activity) = watching_rig();
+        r.runner.run(vec![Effect::WatchInput { id: 3 }]);
+        advance(ms(2_000)).await;
+        r.runner.run(vec![Effect::WatchInput { id: 4 }]);
+        drain(&mut r.rx);
+        advance(ms(1_500)).await;
+        activity.touch();
+        advance(ms(100)).await;
+        assert_eq!(drain(&mut r.rx), vec![Event::CountdownCancel { id: 4 }]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_all_stops_the_watch() {
+        let (mut r, activity) = watching_rig();
+        r.runner.run(vec![Effect::WatchInput { id: 3 }]);
+        drain(&mut r.rx);
+        r.runner.cancel_all();
+        let reads = activity.reads();
+        advance(ms(60_000)).await;
+        assert_eq!(activity.reads(), reads);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_runner_with_no_activity_source_fails_closed() {
+        let mut r = rig();
+        r.runner.run(vec![Effect::WatchInput { id: 7 }]);
+        assert_eq!(drain(&mut r.rx), vec![Event::CountdownFault { id: 7 }]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn finishing_the_countdown_goes_to_the_requests_handler_and_nowhere_else() {
+        let mut r = rig();
+        r.runner.run(vec![Effect::FinishCountdown { req: 9 }]);
+        assert_eq!(*r.requests.calls.lock().unwrap(), vec!["finish 9"]);
         advance(ms(60_000)).await;
         assert!(drain(&mut r.rx).is_empty());
     }

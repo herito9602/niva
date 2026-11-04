@@ -113,6 +113,19 @@ The system MUST hide the island when an interaction ends and show it again on th
 - WHEN the idle period elapses (and the message has had its reading time)
 - THEN the island is hidden and the tray icon remains
 
+### Requirement: Countdown display
+While a sleep countdown runs, the island MUST show the seconds remaining, computed from a deadline in the view (not from one event per second), with the existing acting pose and the existing message-fit layout. It MUST work with reduced motion and MUST stay click-through (no buttons).
+
+#### Scenario: Seconds go down
+- GIVEN the view carries a countdown that ends at time T
+- WHEN time passes
+- THEN the island shows the whole seconds left until T, and the pill does not resize while the number changes
+
+#### Scenario: Reduced motion
+- GIVEN the system asks for reduced motion
+- WHEN the countdown runs
+- THEN the number still counts down (it is text, not motion)
+
 ## Assumptions to confirm
 - Auto-hide idle period: 3 s settle after the speech, stretched to the reading time of long replies (design "Reading time").
 - Behavior on multi-monitor setups is unspecified; v1 uses the primary display.
