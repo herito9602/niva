@@ -79,10 +79,13 @@ Closest competitor found: voice-first Windows companion with an island, sold as 
 
 
 ## Owner decision on sleep (2026-11-04)
-- [ ] **Sleep stays voice-confirmable, with a 10 s countdown** (own safety PR before PR 2d): after "yes", show and say the countdown; the OS call happens only at the end and only if nobody cancelled. Any key or mouse input cancels, detected with `GetLastInputInfo` (no global keyboard hook); the shortcut cancels too; voice "cancel" joins in slice 3. Restart and shutdown stay click-only; lock has no countdown. Replaces the click-only idea from the PR 2c review.
+- [x] **Sleep stays voice-confirmable, with a 10 s countdown** (done on `feat/sleep-countdown`, `tasks.md` Batch 27: the 1 s grace value and the voice "cancel" of slice 3 are still the owner's to tune and to build) (own safety PR before PR 2d): after "yes", show and say the countdown; the OS call happens only at the end and only if nobody cancelled. Any key or mouse input cancels, detected with `GetLastInputInfo` (no global keyboard hook); the shortcut cancels too; voice "cancel" joins in slice 3. Restart and shutdown stay click-only; lock has no countdown. Replaces the click-only idea from the PR 2c review.
 - [ ] **Decide whether "me voy a dormir" is a valid request**: the owner uses it as one, so E1 case `adv-es-me-voy-a-dormir` may be mislabeled. Any change to the case must be recorded, not silent.
 
 - [ ] **A reminder alert must stay visible when audio is unavailable** (slice 4): `end_alert_if_finished` ends the alert when chime and speech are done, so with `Instant` media (no sidecar) it opens and closes at once and the island never shows. Confirmed by the owner in the debug window on 2026-11-04 with "Hold audio" off. Add a minimum display time.
+
+## From the sleep countdown review (2026-11-04)
+- [ ] **The countdown fault reply drops earlier results of the same plan** (`crates/niva-core/src/state_machine.rs`, `on_countdown_fault`; `crates/niva-core/src/assistant.rs`, `hold_for_countdown`): if a volume change ran before the sleep and the input cannot be read, the reply says "I did not suspend the PC" without saying the volume changed. The reducer only has the `SleepNotWatched` template; keeping the lines needs a `fault_text` in `ToolsOutcome::SleepCountdown` and in `State`, plus a test. Not a few-line fix, so left out of the review round.
 
 ## From PR 2c review (2026-11-04)
 - [ ] **Re-warm the model after a reducer timeout, a `keep_alive` expiry or an Ollama restart** (PR 2d, when it wires release): nothing re-warms it today (`warm_up` runs once from `build_requests` in `app/src-tauri/src/lib.rs`; `keep_alive` is set in `app/src-tauri/src/adapters/ollama/wire.rs`), so the first request after 30 idle minutes is a cold load inside the 15 s budget.
@@ -90,3 +93,5 @@ Closest competitor found: voice-first Windows companion with an island, sold as 
 - [ ] **A queued job does not get its remaining deadline** (`app/src-tauri/src/worker_pool.rs`, `app/src-tauri/src/requests.rs`): a job that waited in the queue still gets the full `CHAT_TIMEOUT` (`app/src-tauri/src/adapters/ollama.rs`) when it starts, instead of what is left of the reducer's 15 s.
 - [ ] **A late success in the 15-16 s window leaves a stale plan** (`app/src-tauri/src/requests.rs`, `crates/niva-core/src/assistant.rs`): the reducer gives up at 15 s but the call may still succeed before `CHAT_TIMEOUT` fires at 16 s, and the plan it leaves is not cleared.
 - [ ] **A worker panic waits for the full timer and only reaches stderr** (`app/src-tauri/src/worker_pool.rs`): the worker survives the panic, but the request gets no event until the reducer's Llm timer fires, and the user sees nothing about it.
+
+- [ ] **The memory of cancelled requests can evict an id** (`assistant.rs:124`, `:683`, `:892`, capped at 32): a worker stuck for R while 32+ other ids are refused lets a cancelled R store a held sleep. No sleep follows: the reducer drops events of an id that is not current, so no countdown starts, and the next `begin_user` clears it. Replace the bounded list with a monotonic watermark or a session generation, and test refusal after 32 other cancels.
