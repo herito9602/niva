@@ -14,6 +14,8 @@ pub(super) const CONFIRM_ID: u64 = 5;
 pub(super) const NEXT_CONFIRM: u64 = 60;
 pub(super) const SPEAK_ID: u64 = 7;
 pub(super) const CHIME_ID: u64 = 8;
+/// Countdown id of the `Countdown` fixture.
+pub(super) const COUNTDOWN_ID: u64 = 9;
 pub(super) const NEXT_ID: u64 = 100;
 /// Token of the timers already running in a fixture, and of the first timer a
 /// reduction starts from it.
@@ -98,7 +100,21 @@ pub(super) fn state_in(phase: Phase) -> State {
             s.chime_id = Some(CHIME_ID);
             s.timers = running(&[TimerKind::AlertEnd]);
         }
+        // Armed: the host is watching and the 10 s deadline is running.
+        Phase::Countdown => {
+            s.request_id = Some(REQ_ID);
+            s.countdown_id = Some(COUNTDOWN_ID);
+            s.timers = running(&[TimerKind::Countdown]);
+        }
     }
+    s
+}
+
+/// `Countdown` before the host answered: only the 5 s guard runs, there is no
+/// deadline yet.
+pub(super) fn countdown_unarmed() -> State {
+    let mut s = state_in(Phase::Countdown);
+    s.timers = running(&[TimerKind::Tool]);
     s
 }
 
@@ -214,6 +230,16 @@ pub(super) fn assert_invariants(s: &State, context: &str) {
         }
         Phase::Listening => assert!(s.listen_id.is_some(), "{context}: {s:?}"),
         Phase::Acting => assert!(s.request_id.is_some(), "{context}: {s:?}"),
+        Phase::Countdown => {
+            assert!(s.request_id.is_some(), "{context}: {s:?}");
+            // Exactly one of the guard (host not watching yet) and the deadline.
+            let guard = s.timers.iter().any(|t| t.kind == TimerKind::Tool);
+            let deadline = s.timers.iter().any(|t| t.kind == TimerKind::Countdown);
+            assert!(
+                guard != deadline,
+                "{context}: the guard or the deadline, never both or neither: {s:?}"
+            );
+        }
         Phase::ConfirmationNeeded => assert!(s.request_id.is_some(), "{context}: {s:?}"),
         Phase::Thinking => assert!(
             s.request_id.is_some() || s.pending.is_some(),
@@ -226,8 +252,20 @@ pub(super) fn assert_invariants(s: &State, context: &str) {
         "{context}: a confirmation id exists exactly while one is open: {s:?}"
     );
     assert!(
-        s.cancel_text.is_none() || s.phase == Phase::ConfirmationNeeded,
-        "{context}: a cancel text belongs to an open confirmation: {s:?}"
+        s.countdown_id.is_some() == (s.phase == Phase::Countdown),
+        "{context}: a countdown id exists exactly during the countdown: {s:?}"
+    );
+    assert!(
+        s.countdown_id.is_none_or(|id| id < s.next_id),
+        "{context}: countdown id was never issued: {s:?}"
+    );
+    assert!(
+        s.timers.iter().all(|t| t.kind != TimerKind::Countdown) || s.phase == Phase::Countdown,
+        "{context}: only the countdown owns the deadline timer: {s:?}"
+    );
+    assert!(
+        s.cancel_text.is_none() || matches!(s.phase, Phase::ConfirmationNeeded | Phase::Countdown),
+        "{context}: a cancel text belongs to an open confirmation or countdown: {s:?}"
     );
     assert!(
         s.confirm_id.is_none_or(|id| id < s.next_confirm),
@@ -273,8 +311,10 @@ fn default_state_is_idle_with_voice_down() {
 }
 
 #[test]
-fn there_are_exactly_eight_states() {
-    assert_eq!(Phase::ALL.len(), 8);
+fn there_are_exactly_nine_states() {
+    // The eight mascot states plus the sleep countdown, which the view shows
+    // with the `acting` pose (see `ui_adapter`).
+    assert_eq!(Phase::ALL.len(), 9);
     for (i, phase) in Phase::ALL.iter().enumerate() {
         assert_eq!(phase.index(), i);
     }

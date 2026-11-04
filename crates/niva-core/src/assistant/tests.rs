@@ -175,6 +175,22 @@ struct Rig {
     /// `RunTool` is parked here instead of running (a tool run that hangs).
     hold_tools: bool,
     held_tools: Vec<u64>,
+    /// `FinishCountdown` is parked here instead of running (a queued worker).
+    hold_finish: bool,
+    /// How the host answers `WatchInput`.
+    watch: HostWatch,
+    /// The host is polling the user's input right now.
+    watching: bool,
+    /// How many times `WatchInput` was asked.
+    watches: usize,
+}
+
+/// The host's answer to `WatchInput`.
+#[derive(Clone, Copy)]
+enum HostWatch {
+    Ready,
+    Fault,
+    Silent,
 }
 
 impl Rig {
@@ -228,6 +244,10 @@ impl Rig {
             held: Vec::new(),
             hold_tools: false,
             held_tools: Vec::new(),
+            hold_finish: false,
+            watch: HostWatch::Ready,
+            watching: false,
+            watches: 0,
         };
         rig.send(Event::VoiceReadinessChanged { ready: true });
         rig
@@ -270,6 +290,20 @@ impl Rig {
             Effect::RunTool { req } if self.hold_tools => self.held_tools.push(req),
             Effect::RunTool { req } => self.queue.extend(self.assistant.run_tools(req)),
             Effect::CancelRequest { req } => self.assistant.cancel_request(req),
+            Effect::WatchInput { id } => {
+                self.watching = true;
+                self.watches += 1;
+                match self.watch {
+                    HostWatch::Ready => self.queue.push_back(Event::CountdownReady { id }),
+                    HostWatch::Fault => self.queue.push_back(Event::CountdownFault { id }),
+                    HostWatch::Silent => {}
+                }
+            }
+            Effect::StopWatchingInput => self.watching = false,
+            Effect::FinishCountdown { .. } if self.hold_finish => {}
+            Effect::FinishCountdown { req } => {
+                self.queue.extend(self.assistant.finish_countdown(req));
+            }
             Effect::Chime { id } => self.queue.push_back(Event::ChimeDone { id }),
             _ => {}
         }
@@ -1388,6 +1422,18 @@ fn hold_after_begin(assistant: &Assistant, held: u64) -> (Receiver<()>, Sender<(
     (entered, release)
 }
 
+/// Worker `held` stops right before it stores a held sleep.
+fn hold_before_hold(assistant: &Assistant, held: u64) -> (Receiver<()>, Sender<()>) {
+    let (gate, entered, release) = Gate::new();
+    let hook: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |req| {
+        if req == held {
+            gate.pass();
+        }
+    });
+    *assistant.before_hold.lock().unwrap() = Some(hook);
+    (entered, release)
+}
+
 #[test]
 fn a_worker_paused_after_registering_cannot_wipe_a_newer_plan() {
     let llm = Arc::new(FakeLlm::new(vec![
@@ -1907,4 +1953,417 @@ fn the_pending_slot_context_follows_the_real_prompt() {
             .unwrap()
             .starts_with(PENDING_REMINDER_MARKER)
     );
+}
+
+// --- sleep countdown (owner decision 2026-11-04) ----------------------------
+
+fn countdown_id(r: &Rig) -> u64 {
+    r.state.countdown_id.expect("a countdown")
+}
+
+/// Sleep requested and accepted by voice: the countdown is running.
+fn counting_down(script: Script) -> Rig {
+    let mut r = Rig::new(script, &PROCS);
+    r.type_text("put the pc to sleep");
+    assert_eq!(r.phase(), Phase::ConfirmationNeeded);
+    assert_eq!(r.last(), "Put the PC to sleep?");
+    r.say("yes");
+    r
+}
+
+#[test]
+fn accepting_a_sleep_starts_a_countdown_and_does_not_touch_the_pc() {
+    let r = counting_down(vec![calls(vec![power("sleep")])]);
+    assert_eq!(r.phase(), Phase::Countdown);
+    assert_eq!(
+        r.last(),
+        "Suspending in 10 seconds. Press a key or move the mouse to cancel."
+    );
+    assert!(r.watching, "the host is watching the input");
+    assert!(r.pc.calls().is_empty(), "{:?}", r.pc.calls());
+}
+
+#[test]
+fn the_pc_sleeps_once_when_the_deadline_passes_and_not_before() {
+    let mut r = counting_down(vec![calls(vec![power("sleep")])]);
+    // Everything that is not the deadline leaves the PC alone.
+    r.send(Event::Wake);
+    r.send(Event::ReminderDue {
+        count: 1,
+        silent: false,
+    });
+    r.type_text("something else");
+    assert_eq!(r.phase(), Phase::Countdown);
+    assert!(r.pc.calls().is_empty());
+    r.fire(TimerKind::Countdown);
+    assert_eq!(r.phase(), Phase::Success);
+    assert_eq!(r.last(), "Putting the PC to sleep.");
+    assert_eq!(r.pc.calls(), vec![PcCall::Power(PowerKind::Sleep)]);
+    assert!(!r.watching, "the poller stops when the countdown ends");
+}
+
+#[test]
+fn a_click_accept_counts_down_the_same_way() {
+    let mut r = Rig::new(vec![calls(vec![power("sleep")])], &PROCS);
+    r.type_text("sleep");
+    r.click(true);
+    assert_eq!(r.phase(), Phase::Countdown);
+    assert!(r.pc.calls().is_empty());
+}
+
+#[test]
+fn a_cancel_before_the_deadline_never_sleeps_and_says_cancelled() {
+    let mut r = counting_down(vec![calls(vec![power("sleep")])]);
+    let req = r.state.request_id.expect("a request");
+    let id = countdown_id(&r);
+    r.send(Event::CountdownCancel { id });
+    assert_eq!(r.phase(), Phase::Success);
+    assert_eq!(r.last(), "Suspend cancelled.");
+    assert!(!r.watching);
+    // The approval is gone: finishing it (a late or replayed effect) does nothing.
+    assert!(r.assistant.finish_countdown(req).is_empty());
+    assert!(r.pc.calls().is_empty(), "{:?}", r.pc.calls());
+}
+
+#[test]
+fn a_cancelled_countdown_cannot_be_resumed_by_its_old_timer_or_a_replay() {
+    let mut r = counting_down(vec![calls(vec![power("sleep")])]);
+    let req = r.state.request_id.expect("a request");
+    let token = r
+        .state
+        .timers
+        .iter()
+        .find(|t| t.kind == TimerKind::Countdown)
+        .expect("the deadline")
+        .token;
+    let id = countdown_id(&r);
+    r.send(Event::CountdownCancel { id });
+    r.send(Event::Watchdog {
+        kind: TimerKind::Countdown,
+        token,
+    });
+    r.send(Event::CountdownReady { id });
+    r.queue.extend(r.assistant.run_tools(req));
+    r.queue.extend(r.assistant.finish_countdown(req));
+    r.send(Event::Accept { id: 1 });
+    assert!(r.pc.calls().is_empty(), "{:?}", r.pc.calls());
+    assert_eq!(r.phase(), Phase::Success);
+}
+
+#[test]
+fn the_shortcut_cancels_the_countdown() {
+    let mut r = counting_down(vec![calls(vec![power("sleep")])]);
+    r.send(Event::Shortcut);
+    assert_eq!(r.last(), "Suspend cancelled.");
+    assert!(r.pc.calls().is_empty());
+    assert!(!r.watching);
+}
+
+#[test]
+fn a_cancel_that_races_the_deadline_gives_exactly_one_result() {
+    // Cancel handled first: no OS call, ever.
+    let mut r = counting_down(vec![calls(vec![power("sleep")])]);
+    let id = countdown_id(&r);
+    let token = r
+        .state
+        .timers
+        .iter()
+        .find(|t| t.kind == TimerKind::Countdown)
+        .unwrap()
+        .token;
+    r.send(Event::CountdownCancel { id });
+    r.send(Event::Watchdog {
+        kind: TimerKind::Countdown,
+        token,
+    });
+    assert!(r.pc.calls().is_empty());
+    assert_eq!(r.last(), "Suspend cancelled.");
+
+    // Deadline handled first: one OS call, and the late cancel changes nothing.
+    let mut r = counting_down(vec![calls(vec![power("sleep")])]);
+    let id = countdown_id(&r);
+    r.fire(TimerKind::Countdown);
+    r.send(Event::CountdownCancel { id });
+    assert_eq!(r.pc.calls(), vec![PcCall::Power(PowerKind::Sleep)]);
+    assert_eq!(r.last(), "Putting the PC to sleep.");
+}
+
+#[test]
+fn the_held_approval_runs_once_even_if_finish_is_asked_twice() {
+    let mut r = counting_down(vec![calls(vec![power("sleep")])]);
+    let req = r.state.request_id.expect("a request");
+    r.fire(TimerKind::Countdown);
+    assert!(r.assistant.finish_countdown(req).is_empty());
+    assert!(r.assistant.finish_countdown(req + 1).is_empty());
+    assert_eq!(r.pc.calls(), vec![PcCall::Power(PowerKind::Sleep)]);
+}
+
+#[test]
+fn finishing_for_another_request_does_not_release_the_approval() {
+    let r = counting_down(vec![calls(vec![power("sleep")])]);
+    let req = r.state.request_id.expect("a request");
+    assert!(r.assistant.finish_countdown(req + 5).is_empty());
+    assert!(r.pc.calls().is_empty());
+    // ...and the right request still can, once.
+    assert!(!r.assistant.finish_countdown(req).is_empty());
+    assert_eq!(r.pc.calls(), vec![PcCall::Power(PowerKind::Sleep)]);
+}
+
+#[test]
+fn a_new_request_drops_the_approval_of_an_unfinished_countdown() {
+    let r = counting_down(vec![calls(vec![power("sleep")]), say_text("hi")]);
+    let req = r.state.request_id.expect("a request");
+    let newer = RequestInput::User {
+        text: "hello".into(),
+        slot: None,
+    };
+    assert!(!r.assistant.start_request(req + 10, &newer).is_empty());
+    assert!(r.assistant.finish_countdown(req).is_empty());
+    assert!(r.pc.calls().is_empty());
+}
+
+#[test]
+fn ending_the_request_by_any_other_way_drops_the_approval() {
+    // Shortcut after the deadline moved the reducer to Acting: the worker may
+    // still be queued, but the request is over and the approval is dropped.
+    let mut r = counting_down(vec![calls(vec![power("sleep")])]);
+    let req = r.state.request_id.expect("a request");
+    r.hold_finish = true;
+    r.fire(TimerKind::Countdown);
+    r.send(Event::Shortcut);
+    assert_eq!(r.phase(), Phase::Idle);
+    assert!(r.assistant.finish_countdown(req).is_empty());
+    assert!(r.pc.calls().is_empty());
+}
+
+#[test]
+fn a_cancel_that_lands_while_the_worker_is_about_to_hold_leaves_nothing_to_resume() {
+    // The worker took the plan and is just before storing the approval when
+    // the reducer cancels the request: the cancelled id must not hold anything.
+    let mut r = Rig::new(vec![calls(vec![power("sleep")])], &PROCS);
+    r.type_text("sleep");
+    r.hold_tools = true;
+    r.click(true);
+    let req = r.held_tools.remove(0);
+    let (entered, release) = hold_before_hold(&r.assistant, req);
+    let assistant = r.assistant.clone();
+    let late = std::thread::scope(|scope| {
+        let worker = scope.spawn(move || assistant.run_tools(req));
+        entered.recv().expect("the worker is about to hold");
+        r.assistant.cancel_request(req);
+        release.send(()).expect("release the worker");
+        worker.join().expect("worker")
+    });
+    assert_eq!(late, Vec::new(), "a cancelled request reports nothing");
+    assert!(r.assistant.finish_countdown(req).is_empty());
+    assert!(r.pc.calls().is_empty(), "{:?}", r.pc.calls());
+}
+
+#[test]
+fn a_request_that_was_not_cancelled_still_holds_when_another_one_was() {
+    let mut r = Rig::new(vec![calls(vec![power("sleep")])], &PROCS);
+    r.type_text("sleep");
+    r.hold_tools = true;
+    r.click(true);
+    let req = r.held_tools.remove(0);
+    r.assistant.cancel_request(req + 100);
+    let events = r.assistant.run_tools(req);
+    assert!(
+        matches!(
+            events.as_slice(),
+            [Event::ToolsDone {
+                outcome: ToolsOutcome::SleepCountdown { .. },
+                ..
+            }]
+        ),
+        "{events:?}"
+    );
+    assert!(!r.assistant.finish_countdown(req).is_empty());
+    assert_eq!(r.pc.calls(), vec![PcCall::Power(PowerKind::Sleep)]);
+}
+
+#[test]
+fn the_memory_of_cancelled_requests_is_bounded() {
+    let r = Rig::new(vec![], &PROCS);
+    for req in 0..10_000 {
+        r.assistant.cancel_request(req);
+    }
+    assert!(
+        r.assistant.cancelled_len() <= 32,
+        "{}",
+        r.assistant.cancelled_len()
+    );
+}
+
+#[test]
+fn finishing_requires_the_request_to_still_be_the_newest() {
+    let r = counting_down(vec![calls(vec![power("sleep")])]);
+    let req = r.state.request_id.expect("a request");
+    // A summary call of a newer request registers without touching the held
+    // approval; the old countdown must not release anymore.
+    let summary = r
+        .assistant
+        .start_request(req + 3, &RequestInput::SearchSummary);
+    assert!(!summary.is_empty());
+    assert!(r.assistant.finish_countdown(req).is_empty());
+    assert!(r.assistant.finish_countdown(req + 3).is_empty());
+    assert!(r.pc.calls().is_empty(), "{:?}", r.pc.calls());
+}
+
+#[test]
+fn a_host_that_cannot_watch_never_suspends_and_says_so() {
+    let mut r = Rig::new(vec![calls(vec![power("sleep")])], &PROCS);
+    r.watch = HostWatch::Fault;
+    r.type_text("sleep");
+    r.say("yes");
+    assert_eq!(r.phase(), Phase::Error);
+    assert_eq!(
+        r.last(),
+        "I couldn't check for your input, so I did not suspend the PC."
+    );
+    assert!(r.pc.calls().is_empty());
+    assert!(!r.watching);
+}
+
+#[test]
+fn a_host_that_never_answers_never_suspends_either() {
+    let mut r = Rig::new(vec![calls(vec![power("sleep")])], &PROCS);
+    r.watch = HostWatch::Silent;
+    r.type_text("sleep");
+    r.say("yes");
+    assert_eq!(r.phase(), Phase::Countdown);
+    assert!(
+        r.state
+            .timers
+            .iter()
+            .all(|t| t.kind != TimerKind::Countdown)
+    );
+    r.fire(TimerKind::Tool);
+    assert_eq!(r.phase(), Phase::Error);
+    assert_eq!(
+        r.last(),
+        "I couldn't check for your input, so I did not suspend the PC."
+    );
+    assert!(r.pc.calls().is_empty());
+}
+
+#[test]
+fn the_countdown_speaks_the_language_of_the_request() {
+    let mut r = Rig::new(vec![calls(vec![power("sleep")])], &PROCS);
+    r.type_text("suspende el pc por favor");
+    assert_eq!(r.last(), "¿Suspender el PC?");
+    r.say("sí");
+    assert_eq!(
+        r.last(),
+        "Suspendiendo en 10 segundos. Presiona una tecla o mueve el mouse para cancelar."
+    );
+    let id = countdown_id(&r);
+    r.send(Event::CountdownCancel { id });
+    assert_eq!(r.last(), "Suspensión cancelada.");
+}
+
+#[test]
+fn earlier_results_stay_in_the_reply_when_the_countdown_is_cancelled_or_finished() {
+    let script = || vec![calls(vec![volume(30), power("sleep")])];
+    let mut r = Rig::new(script(), &PROCS);
+    r.type_text("volume 30 and sleep");
+    assert_eq!(r.last(), "Put the PC to sleep?");
+    r.click(true);
+    assert_eq!(r.phase(), Phase::Countdown);
+    let id = countdown_id(&r);
+    r.send(Event::CountdownCancel { id });
+    assert_eq!(r.last(), "Volume at 30%. Suspend cancelled.");
+
+    let mut r = Rig::new(script(), &PROCS);
+    r.type_text("volume 30 and sleep");
+    r.click(true);
+    r.fire(TimerKind::Countdown);
+    assert_eq!(r.last(), "Volume at 30%. Putting the PC to sleep.");
+}
+
+#[test]
+fn a_risky_call_after_the_sleep_is_reported_as_not_done() {
+    let script = || vec![calls(vec![power("sleep"), close("spotify")])];
+    let mut r = Rig::new(script(), &PROCS);
+    r.type_text("sleep and close spotify");
+    r.click(true);
+    r.fire(TimerKind::Countdown);
+    assert_eq!(
+        r.last(),
+        "Putting the PC to sleep. Cancelled closing Spotify.exe."
+    );
+    assert_eq!(r.pc.calls(), vec![PcCall::Power(PowerKind::Sleep)]);
+
+    let mut r = Rig::new(script(), &PROCS);
+    r.type_text("sleep and close spotify");
+    r.click(true);
+    let id = countdown_id(&r);
+    r.send(Event::CountdownCancel { id });
+    assert_eq!(
+        r.last(),
+        "Suspend cancelled. Cancelled closing Spotify.exe."
+    );
+    assert!(r.pc.calls().is_empty());
+}
+
+#[test]
+fn a_pc_that_fails_to_sleep_says_so() {
+    struct Failing(FakePc);
+    impl PcActions for Failing {
+        fn open_app(&self, name: &str) -> Result<(), PcError> {
+            self.0.open_app(name)
+        }
+        fn running_processes(&self) -> Vec<ProcessInfo> {
+            self.0.running_processes()
+        }
+        fn close_app(&self, a: Approved<CloseApp>) -> Result<CloseOutcome, PcError> {
+            self.0.close_app(a)
+        }
+        fn set_volume(&self, c: VolumeChange) -> Result<VolumeResult, PcError> {
+            self.0.set_volume(c)
+        }
+        fn power(&self, _: Approved<Power>) -> Result<(), PcError> {
+            Err(PcError::Failed("denied".into()))
+        }
+    }
+    let mut r = Rig::new(vec![calls(vec![power("sleep")])], &PROCS);
+    r.assistant = Arc::new(Assistant::new(
+        r.llm.clone(),
+        Arc::new(Failing(FakePc::with_processes(&PROCS))),
+    ));
+    r.type_text("sleep");
+    r.say("yes");
+    r.fire(TimerKind::Countdown);
+    assert_eq!(r.phase(), Phase::Error);
+    assert_eq!(r.last(), en(&Msg::ToolFailed));
+}
+
+#[test]
+fn lock_restart_and_shutdown_still_have_no_countdown() {
+    for (action, kind) in [
+        ("lock", PowerKind::Lock),
+        ("restart", PowerKind::Restart),
+        ("shutdown", PowerKind::Shutdown),
+    ] {
+        let mut r = Rig::new(vec![calls(vec![power(action)])], &PROCS);
+        r.type_text(action);
+        r.click(true);
+        assert_ne!(r.phase(), Phase::Countdown, "{action}");
+        assert_eq!(r.pc.calls(), vec![PcCall::Power(kind)], "{action}");
+        assert!(
+            !r.watching && r.watches == 0,
+            "{action}: nothing was watched"
+        );
+    }
+}
+
+#[test]
+fn nothing_watches_the_input_at_rest() {
+    let mut r = counting_down(vec![calls(vec![power("sleep")])]);
+    assert_eq!(r.watches, 1);
+    r.fire(TimerKind::Countdown);
+    assert!(!r.watching);
+    r.type_text("open notepad");
+    assert!(!r.watching);
+    assert_eq!(r.watches, 1, "no second watch without a second countdown");
 }

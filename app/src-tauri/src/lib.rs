@@ -19,6 +19,8 @@ mod worker_pool;
 mod capabilities_tests;
 #[cfg(test)]
 mod island_contract_tests;
+#[cfg(test)]
+mod test_support;
 
 use std::{
     sync::Arc,
@@ -205,8 +207,14 @@ pub fn run() {
                 })
             };
             let requests = build_requests(app.handle(), sink.clone());
+            // The sleep countdown reads the user's last input time (no hook). Without
+            // a source the runner fails every countdown closed.
+            let runner = EffectRunner::new(sink, host, requests);
+            #[cfg(windows)]
+            let runner =
+                runner.with_activity(Arc::new(adapters::windows_activity::WindowsActivity));
             let core = Core::new(
-                EffectRunner::new(sink, host, requests),
+                runner,
                 Arc::new(TauriUiAdapter::new(
                     Arc::new(app.handle().clone()),
                     cfg!(debug_assertions),

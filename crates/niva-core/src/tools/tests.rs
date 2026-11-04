@@ -624,3 +624,10 @@ fn key_static(key: &str) -> &'static str {
         other => panic!("unexpected key {other}"),
     }
 }
+
+#[test]
+fn only_sleep_needs_the_countdown() {
+    for kind in PowerKind::ALL {
+        assert_eq!(kind.needs_countdown(), kind == PowerKind::Sleep, "{kind:?}");
+    }
+}

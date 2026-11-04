@@ -762,6 +762,8 @@ mod tests {
             ("bloquea la compu", "lock"),
             ("put the pc to sleep", "sleep"),
             ("suspende el pc", "sleep"),
+            ("suspendé la PC", "sleep"),
+            ("suspendé la compu por favor", "sleep"),
             ("restart the pc", "restart"),
             ("reinicia la compu", "restart"),
             ("shut down the pc", "shutdown"),

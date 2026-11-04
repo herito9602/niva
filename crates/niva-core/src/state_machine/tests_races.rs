@@ -270,10 +270,12 @@ fn expected(kind: TimerKind, phase: Phase) -> Want {
         TimerKind::SttTimeout => only(&[Listening], Want::Goes(Error)),
         TimerKind::Llm => only(&[Thinking], Want::Goes(Error)),
         TimerKind::FollowUp => only(&[Thinking], Want::Goes(Idle)),
-        TimerKind::Tool => only(&[Acting], Want::Goes(Error)),
+        // In an unarmed countdown the guard means the host never answered.
+        TimerKind::Tool => only(&[Acting, Countdown], Want::Goes(Error)),
         TimerKind::Confirm => only(&[ConfirmationNeeded], Want::Goes(Success)),
         TimerKind::Settle => only(&[Success, Error], Want::Goes(Idle)),
         TimerKind::AlertEnd => only(&[ReminderAlert], Want::Goes(Idle)),
+        TimerKind::Countdown => only(&[Countdown], Want::Goes(Acting)),
         // Covered by `the_speak_watchdog_cell_matches_speak_done`.
         TimerKind::SpeakWatchdog => Want::Nothing,
     }
@@ -312,7 +314,8 @@ fn a_running_timer_that_fires_in_the_wrong_state_is_only_forgotten() {
             cells += 1;
         }
     }
-    assert_eq!(cells, 9 * 8);
+    // Every kind except the speak watchdog, in every phase.
+    assert_eq!(cells, (TimerKind::ALL.len() - 1) * Phase::ALL.len());
 }
 
 #[test]
@@ -339,6 +342,7 @@ fn the_speak_watchdog_cell_matches_speak_done_in_every_speaking_state() {
             Phase::ConfirmationNeeded => ReplyKind::ConfirmPrompt,
             Phase::Thinking => ReplyKind::AskFollowUp,
             Phase::ReminderAlert => ReplyKind::Alert,
+            Phase::Countdown => ReplyKind::Countdown,
         };
         let talking = speaking(state_in(phase), 9, kind);
         let (via_done, fx_done) = step(&talking, Event::SpeakDone { id: 9 });

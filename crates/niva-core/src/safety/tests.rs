@@ -398,13 +398,16 @@ fn a_voice_yes_approves_a_close_lock_or_sleep() {
         gate.approve(close, voice(4)),
         Ok(Approval::Close(_))
     ));
-    for action in ["lock", "sleep"] {
-        let request = risky(&power_call(action), &[], 5);
-        assert!(
-            matches!(gate.approve(request, voice(5)), Ok(Approval::Power(_))),
-            "{action}"
-        );
-    }
+    let lock = risky(&power_call("lock"), &[], 5);
+    assert!(matches!(
+        gate.approve(lock, voice(5)),
+        Ok(Approval::Power(_))
+    ));
+    let sleep = risky(&power_call("sleep"), &[], 5);
+    assert!(matches!(
+        gate.approve(sleep, voice(5)),
+        Ok(Approval::Sleep(_))
+    ));
 }
 
 #[test]
@@ -875,4 +878,136 @@ fn two_risky_calls_of_one_response_never_share_a_confirmation_id() {
         Err(ApprovalError::WrongConfirmation)
     );
     assert!(gate.approve(first, answer_to_first).is_ok());
+}
+
+// Sleep countdown (owner decision 2026-11-04): an approved sleep is a
+// `HeldPower`, never an `Approved<Power>`. Only `release_held` reaches
+// `PcActions::power` for it.
+
+fn approved_power(call: &ToolCall, id: u64, answer: ConfirmationAnswer) -> Approved<Power> {
+    let request = risky(call, &[], id);
+    let Ok(Approval::Power(approved)) = SafetyGate::new().approve(request, answer) else {
+        panic!("expected an approved power action");
+    };
+    approved
+}
+
+fn held_sleep(id: u64, answer: ConfirmationAnswer) -> HeldPower {
+    let request = risky(&power_call("sleep"), &[], id);
+    let Ok(Approval::Sleep(held)) = SafetyGate::new().approve(request, answer) else {
+        panic!("expected a held sleep");
+    };
+    held
+}
+
+#[test]
+fn approving_a_sleep_gives_a_held_value_by_voice_and_by_click() {
+    for (answer, how) in [(voice(8), "voice"), (click(8), "click")] {
+        let held = held_sleep(8, answer);
+        assert_eq!(held.confirmation_id(), cid(8), "{how}");
+    }
+}
+
+#[test]
+fn approving_any_other_power_action_still_gives_an_approved_power() {
+    for (action, kind, answer) in [
+        ("lock", PowerKind::Lock, voice(9)),
+        ("restart", PowerKind::Restart, click(9)),
+        ("shutdown", PowerKind::Shutdown, click(9)),
+    ] {
+        let approved = approved_power(&power_call(action), 9, answer);
+        assert_eq!(approved.action().kind(), kind, "{action}");
+    }
+}
+
+#[test]
+fn a_wrong_or_denied_answer_does_not_hold_a_sleep() {
+    let gate = SafetyGate::new();
+    let wrong = risky(&power_call("sleep"), &[], 8);
+    assert_eq!(
+        gate.approve(wrong, voice(9)),
+        Err(ApprovalError::WrongConfirmation)
+    );
+    let denied = risky(&power_call("sleep"), &[], 8);
+    let answer = ConfirmationAnswer {
+        accepted: false,
+        ..voice(8)
+    };
+    assert_eq!(
+        gate.approve(denied, answer),
+        Err(ApprovalError::NotConfirmed)
+    );
+}
+
+#[test]
+fn execute_power_still_refuses_a_sleep_and_never_touches_the_pc() {
+    // Defense in depth: `approve` never yields an `Approved<Power>` holding a
+    // sleep, so this one is built by hand from inside the crate.
+    let pc = FakePc::with_processes(&[]);
+    let approved = Approved::new(
+        Power {
+            kind: PowerKind::Sleep,
+        },
+        cid(8),
+    );
+    let result = SafetyGate::new().execute_power(approved, &pc);
+    assert!(matches!(result, Err(PcError::Failed(_))), "{result:?}");
+    assert!(
+        pc.calls().is_empty(),
+        "sleep reached the PC: {:?}",
+        pc.calls()
+    );
+}
+
+#[test]
+fn the_other_power_actions_still_execute_at_once() {
+    for (action, kind, answer) in [
+        ("lock", PowerKind::Lock, voice(9)),
+        ("restart", PowerKind::Restart, click(9)),
+        ("shutdown", PowerKind::Shutdown, click(9)),
+    ] {
+        let pc = FakePc::with_processes(&[]);
+        let approved = approved_power(&power_call(action), 9, answer);
+        assert_eq!(SafetyGate::new().execute_power(approved, &pc), Ok(()));
+        assert_eq!(pc.calls(), vec![PcCall::Power(kind)], "{action}");
+    }
+}
+
+#[test]
+fn releasing_a_held_sleep_calls_the_pc_once_with_sleep() {
+    let pc = FakePc::with_processes(&[]);
+    let gate = SafetyGate::new();
+    let held = held_sleep(8, voice(8));
+    assert_eq!(held.confirmation_id(), cid(8));
+    assert!(pc.calls().is_empty(), "holding must not call the PC");
+    assert_eq!(gate.release_held(held, &pc), Ok(()));
+    assert_eq!(pc.calls(), vec![PcCall::Power(PowerKind::Sleep)]);
+}
+
+#[test]
+fn a_failing_pc_reports_the_error_of_the_release() {
+    struct Refusing;
+    impl PcActions for Refusing {
+        fn open_app(&self, _: &str) -> Result<(), PcError> {
+            Err(PcError::NotFound)
+        }
+        fn running_processes(&self) -> Vec<ProcessInfo> {
+            Vec::new()
+        }
+        fn close_app(&self, _: Approved<CloseApp>) -> Result<CloseOutcome, PcError> {
+            Err(PcError::NotFound)
+        }
+        fn set_volume(&self, _: VolumeChange) -> Result<crate::ports::VolumeResult, PcError> {
+            Err(PcError::NotFound)
+        }
+        fn power(&self, _: Approved<Power>) -> Result<(), PcError> {
+            Err(PcError::Failed("denied".into()))
+        }
+    }
+    let gate = SafetyGate::new();
+    let held = held_sleep(8, voice(8));
+    assert_eq!(
+        gate.release_held(held, &Refusing),
+        Err(PcError::Failed("denied".into()))
+    );
 }

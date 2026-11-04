@@ -284,7 +284,7 @@ fn the_reminder_list_counts_and_names_the_reminders() {
 }
 
 #[test]
-fn the_six_reducer_templates_render_in_both_languages() {
+fn the_nine_reducer_templates_render_in_both_languages() {
     let all = [
         Template::VoiceNotReady,
         Template::Error,
@@ -292,6 +292,9 @@ fn the_six_reducer_templates_render_in_both_languages() {
         Template::ActionDone,
         Template::SearchUnavailable,
         Template::ReminderAlert,
+        Template::SleepCountdown,
+        Template::SleepCancelled,
+        Template::SleepNotWatched,
     ];
     for t in all {
         let es = template(t, Lang::Es);
@@ -315,6 +318,49 @@ fn english_templates_keep_the_texts_the_host_showed_before() {
         "I can't search right now."
     );
     assert_eq!(template(Template::ReminderAlert, Lang::En), "Reminder.");
+}
+
+#[test]
+fn the_sleep_countdown_texts_are_truthful_in_both_languages() {
+    assert_eq!(
+        template(Template::SleepCountdown, Lang::En),
+        "Suspending in 10 seconds. Press a key or move the mouse to cancel."
+    );
+    assert_eq!(
+        template(Template::SleepCountdown, Lang::Es),
+        "Suspendiendo en 10 segundos. Presiona una tecla o mueve el mouse para cancelar."
+    );
+    // A cancel says it was cancelled, never "done".
+    assert_eq!(
+        template(Template::SleepCancelled, Lang::En),
+        "Suspend cancelled."
+    );
+    assert_eq!(
+        template(Template::SleepCancelled, Lang::Es),
+        "Suspensión cancelada."
+    );
+    for lang in [Lang::En, Lang::Es] {
+        let cancelled = template(Template::SleepCancelled, lang);
+        assert!(!cancelled.contains(template(Template::ActionDone, lang)));
+        // The failure to watch says the PC was NOT suspended.
+        let unwatched = template(Template::SleepNotWatched, lang);
+        assert!(
+            unwatched.contains("not suspend") || unwatched.contains("no suspendí"),
+            "{unwatched}"
+        );
+    }
+}
+
+#[test]
+fn the_island_countdown_text_has_the_seconds_placeholder_in_both_languages() {
+    for lang in [Lang::En, Lang::Es] {
+        let text = countdown_display(lang);
+        assert_eq!(text.matches("{n}").count(), 1, "{text}");
+        assert!(
+            text.contains("cancel") || text.contains("cancelar"),
+            "{text}"
+        );
+    }
 }
 
 // --- language detection (D1 text heuristic) -----------------------------
