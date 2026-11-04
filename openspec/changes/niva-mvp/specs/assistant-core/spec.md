@@ -70,7 +70,7 @@ The core MUST signal an error state to the user when the provider is unreachable
 - THEN no action runs and the mascot shows error/confused
 
 ### Requirement: Replies are short (owner decision 2026-11-03)
-Every spoken or shown reply MUST be at most about 400 characters, the same bound as the web-search summary. For LLM free-text replies the core MUST enforce it twice: the system prompt asks for short replies, and a hard cap cuts anything longer (at a word boundary, with an ellipsis) before it is spoken or shown. Templates and search summaries already respect the bound.
+Every spoken or shown reply MUST be at most about 400 characters, the same bound as the web-search summary. For LLM free-text replies the core MUST enforce it twice: the system prompt asks for short replies, and a hard cap cuts anything longer before it is spoken or shown: at the last sentence end that keeps a useful part of the text (no ellipsis), otherwise at a whole word with an ellipsis, and never inside a word (only a single token longer than the bound has no place to cut). The cap covers the model's free text, the search summary together with the lines of the other calls, and the template lines of a long reminder list. Templates and search summaries already respect the bound.
 
 #### Scenario: Chatty model
 - GIVEN the model answers a chat request with 1500 characters

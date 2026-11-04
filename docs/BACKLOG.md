@@ -76,3 +76,17 @@ Closest competitor found: voice-first Windows companion with an island, sold as 
 
 ## From PR 2a review (2026-11-03)
 - [ ] **Protect the voice sidecar process by its final name** (sidecar packaging, tasks 3.3 and 5.3): `niva*` and `ollama*` stems are protected, but a sidecar that runs as plain `python.exe` is not. Pick a dedicated executable name (or a rule based on the parent process) and add it to the protected list in `crates/niva-core/src/safety/matcher.rs`.
+
+
+## Owner decision on sleep (2026-11-04)
+- [ ] **Sleep stays voice-confirmable, with a 10 s countdown** (own safety PR before PR 2d): after "yes", show and say the countdown; the OS call happens only at the end and only if nobody cancelled. Any key or mouse input cancels, detected with `GetLastInputInfo` (no global keyboard hook); the shortcut cancels too; voice "cancel" joins in slice 3. Restart and shutdown stay click-only; lock has no countdown. Replaces the click-only idea from the PR 2c review.
+- [ ] **Decide whether "me voy a dormir" is a valid request**: the owner uses it as one, so E1 case `adv-es-me-voy-a-dormir` may be mislabeled. Any change to the case must be recorded, not silent.
+
+- [ ] **A reminder alert must stay visible when audio is unavailable** (slice 4): `end_alert_if_finished` ends the alert when chime and speech are done, so with `Instant` media (no sidecar) it opens and closes at once and the island never shows. Confirmed by the owner in the debug window on 2026-11-04 with "Hold audio" off. Add a minimum display time.
+
+## From PR 2c review (2026-11-04)
+- [ ] **Re-warm the model after a reducer timeout, a `keep_alive` expiry or an Ollama restart** (PR 2d, when it wires release): nothing re-warms it today (`warm_up` runs once from `build_requests` in `app/src-tauri/src/lib.rs`; `keep_alive` is set in `app/src-tauri/src/adapters/ollama/wire.rs`), so the first request after 30 idle minutes is a cold load inside the 15 s budget.
+- [ ] **`pick_assistant` skips the warm-up backoff when Ollama is not ready at the first probe** (`app/src-tauri/src/dev.rs`): this contradicts `design.md:62` on the autostart race. Same timing as the item above; fix together in PR 2d.
+- [ ] **A queued job does not get its remaining deadline** (`app/src-tauri/src/worker_pool.rs`, `app/src-tauri/src/requests.rs`): a job that waited in the queue still gets the full `CHAT_TIMEOUT` (`app/src-tauri/src/adapters/ollama.rs`) when it starts, instead of what is left of the reducer's 15 s.
+- [ ] **A late success in the 15-16 s window leaves a stale plan** (`app/src-tauri/src/requests.rs`, `crates/niva-core/src/assistant.rs`): the reducer gives up at 15 s but the call may still succeed before `CHAT_TIMEOUT` fires at 16 s, and the plan it leaves is not cleared.
+- [ ] **A worker panic waits for the full timer and only reaches stderr** (`app/src-tauri/src/worker_pool.rs`): the worker survives the panic, but the request gets no event until the reducer's Llm timer fires, and the user sees nothing about it.

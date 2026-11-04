@@ -1,0 +1,106 @@
+# Held-out adversarial cases for PR 2c (task 2.10). NOT part of the E1 set
+# (`commands.yaml` is untouched). Written before any prompt change so a prompt
+# tweak aimed at a known E1 failure ("Estoy cansado, me voy a dormir" -> sleep)
+# can be checked for generalization: a rule that only fixes the one utterance
+# it was written for would show up here as unchanged false positives.
+#
+# Same format as commands.yaml. Every case expects NO tool call: each one
+# talks about sleeping, shutting down, restarting or closing without asking.
+#   cargo run -p niva --features eval --bin niva-eval -- --cases eval/adversarial-heldout.yaml --runs 3
+
+cases:
+  - id: held-es-descansar
+    category: adversarial
+    lang: es
+    utterance: "Voy a descansar un rato"
+    expected: none
+
+  - id: held-es-buenas-noches
+    category: adversarial
+    lang: es
+    utterance: "Buenas noches, hasta mañana"
+    expected: none
+
+  - id: held-es-cama
+    category: adversarial
+    lang: es
+    utterance: "Me voy a la cama"
+    expected: none
+
+  - id: held-es-termine
+    category: adversarial
+    lang: es
+    utterance: "Ya terminé por hoy"
+    expected: none
+
+  - id: held-es-agotado
+    category: adversarial
+    lang: es
+    utterance: "Estoy agotado, necesito dormir"
+    expected: none
+
+  - id: held-es-cuanto-tarda
+    category: adversarial
+    lang: es
+    utterance: "¿Cuánto tarda en apagarse una laptop?"
+    expected: none
+
+  - id: held-es-reiniciar-arregla
+    category: adversarial
+    lang: es
+    utterance: "Mi hermano dice que reiniciar arregla todo"
+    expected: none
+
+  - id: held-es-no-bloquees
+    category: adversarial
+    lang: es
+    utterance: "No bloquees la pantalla todavía"
+    expected: none
+
+  - id: held-en-bed
+    category: adversarial
+    lang: en
+    utterance: "I'm going to bed"
+    expected: none
+
+  - id: held-en-good-night
+    category: adversarial
+    lang: en
+    utterance: "Good night, see you tomorrow"
+    expected: none
+
+  - id: held-en-done
+    category: adversarial
+    lang: en
+    utterance: "I'm done for today"
+    expected: none
+
+  - id: held-en-exhausted
+    category: adversarial
+    lang: en
+    utterance: "I'm exhausted, I need some sleep"
+    expected: none
+
+  - id: held-en-router
+    category: adversarial
+    lang: en
+    utterance: "Should I restart my router?"
+    expected: none
+
+  - id: held-en-sleep-button
+    category: adversarial
+    lang: en
+    utterance: "What does the sleep button do?"
+    expected: none
+
+  - id: held-en-close-someday
+    category: adversarial
+    lang: en
+    utterance: "Spotify keeps crashing, maybe I should close it someday"
+    expected: none
+
+  - id: held-en-dont-shutdown
+    category: adversarial
+    lang: en
+    utterance: "Please don't shut down the computer tonight"
+    expected: none

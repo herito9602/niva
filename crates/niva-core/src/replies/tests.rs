@@ -57,6 +57,7 @@ fn samples() -> Vec<Msg> {
         Msg::CancelledClose { exe: app() },
         Msg::LlmUnavailable,
         Msg::NotAvailableYet,
+        Msg::Busy,
     ];
     all.extend(PowerKind::ALL.map(|action| Msg::CancelledPower { action }));
     all.extend(PowerKind::ALL.map(|action| Msg::ConfirmPower { action }));
@@ -101,16 +102,17 @@ fn variant_name(msg: &Msg) -> &'static str {
         Msg::CancelledPower { .. } => "CancelledPower",
         Msg::LlmUnavailable => "LlmUnavailable",
         Msg::NotAvailableYet => "NotAvailableYet",
+        Msg::Busy => "Busy",
     }
 }
 
 #[test]
 fn every_message_variant_has_a_sample() {
-    // 35 variants; the power messages are sampled once per action.
+    // 36 variants; the power messages are sampled once per action.
     let mut names: Vec<&str> = samples().iter().map(variant_name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 35, "a variant has no sample: {names:?}");
+    assert_eq!(names.len(), 36, "a variant has no sample: {names:?}");
 }
 
 #[test]
@@ -360,4 +362,116 @@ fn language_codes() {
     assert_eq!(Lang::Es.code(), "es");
     assert_eq!(Lang::En.code(), "en");
     assert_eq!(Lang::default(), DEFAULT_LANG);
+}
+
+// ---------------------------------------------------------------------------
+// Task 2.4a: replies are short (spec `assistant-core`, "Replies are short")
+// ---------------------------------------------------------------------------
+
+fn chars(text: &str) -> usize {
+    text.chars().count()
+}
+
+#[test]
+fn a_short_reply_is_returned_untouched_apart_from_trimming() {
+    assert_eq!(bound_reply("  Hello there.  "), "Hello there.");
+    let exact = "a".repeat(REPLY_MAX_CHARS);
+    assert_eq!(bound_reply(&exact), exact);
+}
+
+#[test]
+fn a_1500_character_reply_is_cut_to_the_bound() {
+    let long = "The quick brown fox jumps over the lazy dog and keeps running. ".repeat(24);
+    assert!(chars(&long) > 1400);
+    let bounded = bound_reply(&long);
+    assert!(chars(&bounded) <= REPLY_MAX_CHARS, "{}", chars(&bounded));
+    assert!(chars(&bounded) > REPLY_MAX_CHARS / 2, "cut far too early");
+}
+
+#[test]
+fn the_cut_prefers_a_sentence_boundary_and_adds_no_ellipsis() {
+    let sentence = "This is a complete sentence about nothing in particular. ";
+    let long = sentence.repeat(30);
+    let bounded = bound_reply(&long);
+    assert!(bounded.ends_with("particular."), "{bounded:?}");
+    assert!(!bounded.contains('…'));
+    assert!(chars(&bounded) <= REPLY_MAX_CHARS);
+}
+
+#[test]
+fn without_a_usable_sentence_end_the_cut_is_on_a_word_with_an_ellipsis() {
+    let long = "word ".repeat(300);
+    let bounded = bound_reply(&long);
+    assert!(bounded.ends_with("word…"), "{bounded:?}");
+    assert!(chars(&bounded) <= REPLY_MAX_CHARS);
+}
+
+#[test]
+fn the_cut_never_ends_inside_a_word() {
+    // Vary the length so the bound lands at every offset inside a long word.
+    for pad in 0..40 {
+        let long = format!("{}{}", "a ".repeat(pad), "internationalization ".repeat(40));
+        let bounded = bound_reply(&long);
+        let body = bounded.trim_end_matches('…');
+        let last = body.split_whitespace().last().unwrap();
+        assert!(
+            last == "a" || last == "internationalization",
+            "pad {pad}: ends with {last:?}"
+        );
+        assert!(chars(&bounded) <= REPLY_MAX_CHARS, "pad {pad}");
+    }
+}
+
+#[test]
+fn a_sentence_end_too_early_to_be_useful_is_not_used() {
+    // One short sentence, then a long run-on: keeping only "Hi." would be silly.
+    let long = format!("Hi. {}", "and then something else happened ".repeat(40));
+    let bounded = bound_reply(&long);
+    assert!(chars(&bounded) > REPLY_MAX_CHARS / 2, "{bounded:?}");
+    assert!(bounded.ends_with('…'));
+}
+
+#[test]
+fn decimals_and_abbreviations_without_a_following_space_are_not_sentence_ends() {
+    let long = format!("{}3.5 is the value we want ", "number ".repeat(52));
+    let long = long.repeat(4);
+    let bounded = bound_reply(&long);
+    assert!(
+        !bounded.trim_end_matches('…').ends_with("3."),
+        "{bounded:?}"
+    );
+}
+
+#[test]
+fn a_closing_quote_stays_with_its_sentence() {
+    let long = format!(
+        "{} \"This is the end of the quote.\" {}",
+        "filler words ".repeat(20),
+        "more text after the quote ".repeat(40)
+    );
+    let bounded = bound_reply(&long);
+    assert!(bounded.ends_with("quote.\""), "{bounded:?}");
+}
+
+#[test]
+fn accents_and_multibyte_text_are_cut_on_character_boundaries() {
+    let long = "¿Qué tal estás? Todo está muy bien, gracias por preguntar. ".repeat(30);
+    let bounded = bound_reply(&long);
+    assert!(chars(&bounded) <= REPLY_MAX_CHARS);
+    assert!(bounded.ends_with('.') || bounded.ends_with('?') || bounded.ends_with('…'));
+}
+
+#[test]
+fn one_giant_token_is_hard_cut_with_an_ellipsis_within_the_bound() {
+    let bounded = bound_reply(&"x".repeat(1000));
+    assert_eq!(chars(&bounded), REPLY_MAX_CHARS);
+    assert!(bounded.ends_with('…'));
+}
+
+#[test]
+fn trailing_commas_are_dropped_before_the_ellipsis() {
+    let long = "alpha, beta, gamma, delta, ".repeat(40);
+    let bounded = bound_reply(&long);
+    assert!(!bounded.ends_with(",…"), "{bounded:?}");
+    assert!(bounded.ends_with('…'));
 }

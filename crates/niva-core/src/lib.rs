@@ -2,6 +2,7 @@
 
 pub mod assistant;
 pub mod ports;
+pub mod prompt;
 pub mod reading;
 pub mod replies;
 pub mod safety;

@@ -16,9 +16,10 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::ports::{
-    ChatRequest, CloseOutcome, LlmError, LlmProvider, PcActions, PcError, ReminderError,
-    ReminderStore, SearchProvider,
+    ChatRequest, Clock, CloseOutcome, LlmError, LlmProvider, LocalDateTime, PcActions, PcError,
+    ReminderError, ReminderStore, SearchProvider,
 };
+use crate::prompt;
 use crate::replies::{self, DEFAULT_LANG, Lang, Msg};
 use crate::safety::{
     Approval, Channel, ConfirmationAnswer, ConfirmationId, ExecError, RiskyRequest, SafetyGate,
@@ -35,8 +36,6 @@ use crate::tools::{
 #[cfg(test)]
 mod tests;
 
-/// Longest `web_search` summary, in characters (design "Safety Gate").
-const SUMMARY_MAX_CHARS: usize = 400;
 #[cfg(test)]
 type AfterBeginHook = Arc<dyn Fn(u64) + Send + Sync>;
 
@@ -108,6 +107,7 @@ pub struct Assistant {
     pc: Arc<dyn PcActions>,
     search: Option<Arc<dyn SearchProvider>>,
     reminders: Option<Arc<dyn ReminderStore>>,
+    clock: Option<Arc<dyn Clock>>,
     gate: SafetyGate,
     session: Mutex<Session>,
     /// Test-only: called by a worker right after it registered, with its id,
@@ -173,12 +173,14 @@ fn failure(req: u64, msg: &Msg, lang: Lang) -> Event {
 }
 
 /// "I can't search right now.", after the lines of the calls that did run.
+/// Bounded like every free-form reply: the lines of the other calls can echo
+/// long model-written text (reminders).
 fn search_unavailable(req: u64, lang: Lang, ran: &[String]) -> Event {
     let mut parts = ran.to_vec();
     parts.push(replies::template(Template::SearchUnavailable, lang).to_string());
     Event::FailureText {
         req,
-        text: parts.join(" "),
+        text: replies::bound_reply(&parts.join(" ")),
     }
 }
 
@@ -207,14 +209,14 @@ impl Plan {
                 .iter()
                 .map(|risky| replies::render(&risky.cancelled(), self.lang)),
         );
-        Some(parts.join(" "))
+        Some(replies::bound_reply(&parts.join(" ")))
     }
 
     fn done_event(&self) -> Event {
         let text = if self.lines.is_empty() {
             replies::template(Template::ActionDone, self.lang).to_string()
         } else {
-            self.lines.join(" ")
+            replies::bound_reply(&self.lines.join(" "))
         };
         if self.failed {
             Event::FailureText {
@@ -237,6 +239,7 @@ impl Assistant {
             pc,
             search: None,
             reminders: None,
+            clock: None,
             gate: SafetyGate::new(),
             session: Mutex::default(),
             #[cfg(test)]
@@ -251,6 +254,14 @@ impl Assistant {
 
     pub fn with_reminders(mut self, reminders: Arc<dyn ReminderStore>) -> Self {
         self.reminders = Some(reminders);
+        self
+    }
+
+    /// Lets the system prompt state the user's local date and time (design
+    /// "Data flow"). Without a clock, or with one that does not know the time
+    /// zone, the prompt has no time line.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = Some(clock);
         self
     }
 
@@ -360,8 +371,9 @@ impl Assistant {
             return self.plan_pinned(req, exe, lang);
         }
 
+        let now = self.clock.as_ref().and_then(|clock| clock.local_now());
         let request = ChatRequest {
-            system: system_prompt(lang, slot),
+            system: system_prompt(lang, slot, now.as_ref()),
             user: text.to_string(),
             allow_tools: true,
         };
@@ -375,9 +387,10 @@ impl Assistant {
                 if text.is_empty() {
                     vec![failure(req, &Msg::InvalidRequest, lang)]
                 } else {
+                    // Free model text: bounded before it is spoken or shown.
                     vec![Event::Reply {
                         req,
-                        text: text.to_string(),
+                        text: replies::bound_reply(text),
                     }]
                 }
             }
@@ -717,12 +730,11 @@ impl Assistant {
         }
         match outcome {
             Ok(reply) if !reply.text.trim().is_empty() => {
-                let summary: String = reply.text.trim().chars().take(SUMMARY_MAX_CHARS).collect();
                 let mut parts = context.lines;
-                parts.push(summary);
+                parts.push(reply.text.trim().to_string());
                 vec![Event::Reply {
                     req,
-                    text: parts.join(" "),
+                    text: replies::bound_reply(&parts.join(" ")),
                 }]
             }
             // The other calls of the response already ran: say so.
@@ -841,16 +853,10 @@ fn pick_candidate<'a>(answer: &str, candidates: &'a [String]) -> Option<&'a Stri
     }
 }
 
-fn system_prompt(lang: Lang, slot: Option<&PendingSlot>) -> String {
-    let language = match lang {
-        Lang::Es => "Spanish",
-        Lang::En => "English",
-    };
-    let mut prompt = format!(
-        "You are Niva, a voice assistant for a Windows PC. Reply in {language}. \
-         Call a tool only when the user asks for an action; otherwise answer \
-         briefly in plain text. Never say an action was done."
-    );
+/// The tool-calling prompt (`prompt::system_prompt`, as E1 measured it), then
+/// the one-turn pending context of a follow-up answer.
+fn system_prompt(lang: Lang, slot: Option<&PendingSlot>, now: Option<&LocalDateTime>) -> String {
+    let mut prompt = prompt::system_prompt(lang, now);
     match slot {
         Some(PendingSlot::Reminder { text: Some(text) }) => prompt.push_str(&format!(
             "\n{PENDING_REMINDER_MARKER} \"{}\". The user is now giving the missing details.",
