@@ -9,8 +9,9 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use super::{
-    ChatReply, ChatRequest, Clock, CloseOutcome, LlmError, LlmProvider, PcActions, PcError,
-    ProcessInfo, ReminderError, ReminderStore, SearchError, SearchProvider, UiPort, VolumeResult,
+    ChatReply, ChatRequest, Clock, CloseOutcome, LlmError, LlmProvider, LocalDateTime, PcActions,
+    PcError, ProcessInfo, ReminderError, ReminderStore, SearchError, SearchProvider, UiPort,
+    VolumeResult,
 };
 use crate::safety::{Approved, CloseApp, Power};
 use crate::tools::{PowerKind, ReminderTime, VolumeChange};
@@ -207,13 +208,21 @@ impl ReminderStore for FakeReminders {
 /// Clock that only moves when told to.
 pub struct FakeClock {
     now: Mutex<SystemTime>,
+    local: Mutex<Option<LocalDateTime>>,
 }
 
 impl FakeClock {
     pub fn at(now: SystemTime) -> Self {
         FakeClock {
             now: Mutex::new(now),
+            local: Mutex::new(None),
         }
+    }
+
+    /// Makes `local_now` answer (the default clock does not know the time zone).
+    pub fn with_local(self, local: LocalDateTime) -> Self {
+        *lock(&self.local) = Some(local);
+        self
     }
 
     pub fn advance(&self, by: Duration) {
@@ -224,6 +233,10 @@ impl FakeClock {
 impl Clock for FakeClock {
     fn now(&self) -> SystemTime {
         *lock(&self.now)
+    }
+
+    fn local_now(&self) -> Option<LocalDateTime> {
+        *lock(&self.local)
     }
 }
 

@@ -35,6 +35,86 @@ impl Lang {
     }
 }
 
+/// Longest reply the island shows or the voice speaks, in characters (spec
+/// `assistant-core` "Replies are short"; the island reading time relies on
+/// it). Templates and search summaries respect it by construction; free text
+/// from the model goes through [`bound_reply`].
+pub const REPLY_MAX_CHARS: usize = 400;
+
+/// A sentence cut shorter than this is not worth keeping: the reply would
+/// shrink to a greeting. A word cut is used instead.
+const MIN_SENTENCE_CHARS: usize = REPLY_MAX_CHARS / 4;
+
+/// Cuts a model reply to [`REPLY_MAX_CHARS`] (spec `assistant-core`, "Replies
+/// are short"). Text within the bound is only trimmed. A longer text is cut at
+/// the last sentence end that keeps a useful amount of it, with no ellipsis;
+/// failing that, at the last whole word, trailing commas dropped, with an
+/// ellipsis that counts toward the bound. The island must never show a cut
+/// inside a word. The one exception is a single token longer than the bound
+/// (no space to cut at): it is cut hard and marked with the ellipsis.
+pub fn bound_reply(text: &str) -> String {
+    let text = text.trim();
+    if text.chars().count() <= REPLY_MAX_CHARS {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    match sentence_end(&chars) {
+        Some(end) => chars[..end].iter().collect(),
+        None => word_cut(&chars),
+    }
+}
+
+/// The end (exclusive) of the last sentence that fits: a `.`, `!`, `?` or
+/// `…`, optional closing quotes or brackets, then a space (so `3.5` and
+/// `e.g.`-style runs are not ends).
+fn sentence_end(chars: &[char]) -> Option<usize> {
+    let mut best = None;
+    for (at, c) in chars.iter().enumerate().take(REPLY_MAX_CHARS) {
+        if !matches!(c, '.' | '!' | '?' | '…') {
+            continue;
+        }
+        let mut end = at + 1;
+        while chars
+            .get(end)
+            .is_some_and(|c| matches!(c, '"' | '\'' | ')' | ']' | '”' | '’'))
+        {
+            end += 1;
+        }
+        let at_boundary = chars.get(end).is_none_or(|c| c.is_whitespace());
+        if end <= REPLY_MAX_CHARS && at_boundary && end >= MIN_SENTENCE_CHARS {
+            best = Some(end);
+        }
+    }
+    best
+}
+
+fn word_cut(chars: &[char]) -> String {
+    // One char of room for the ellipsis.
+    let room = REPLY_MAX_CHARS - 1;
+    let head = &chars[..room];
+    // The head's last word is whole only if a space follows it in the text.
+    let whole = chars[room].is_whitespace();
+    let kept: &[char] = if whole {
+        head
+    } else {
+        match head.iter().rposition(|c| c.is_whitespace()) {
+            Some(at) => &head[..at],
+            None => head,
+        }
+    };
+    let mut out: String = kept.iter().collect();
+    let trimmed = out
+        .trim_end_matches(|c: char| {
+            c.is_whitespace() || matches!(c, ',' | ';' | ':' | '-' | '–' | '—')
+        })
+        .len();
+    out.truncate(trimmed);
+    if !out.ends_with(['.', '!', '?']) {
+        out.push('…');
+    }
+    out
+}
+
 /// Used when the text gives no signal (a tie) and there is no pending turn.
 pub const DEFAULT_LANG: Lang = Lang::En;
 
@@ -127,6 +207,8 @@ pub enum Msg {
     LlmUnavailable,
     /// Release builds before the Ollama and Windows adapters exist.
     NotAvailableYet,
+    /// Every worker is busy and the queue is full (a hung provider or tool).
+    Busy,
 }
 
 /// The reducer's template ids, in the request's language. The English texts
@@ -261,6 +343,7 @@ fn render_en(msg: &Msg) -> String {
         .into(),
         Msg::LlmUnavailable => "I can't think right now. Is the language model running?".into(),
         Msg::NotAvailableYet => "Assistant commands are not available yet.".into(),
+        Msg::Busy => "I'm still busy with other requests. Try again in a moment.".into(),
     }
 }
 
@@ -344,6 +427,7 @@ fn render_es(msg: &Msg) -> String {
             "No puedo pensar ahora mismo. ¿Está activo el modelo de lenguaje?".into()
         }
         Msg::NotAvailableYet => "Los comandos del asistente aún no están disponibles.".into(),
+        Msg::Busy => "Sigo ocupado con otras peticiones. Inténtalo de nuevo en un momento.".into(),
     }
 }
 

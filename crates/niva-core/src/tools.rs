@@ -92,7 +92,7 @@ impl ToolName {
     }
 
     /// Argument names the schema allows (`additionalProperties: false`).
-    const fn allowed_args(self) -> &'static [&'static str] {
+    pub(crate) const fn allowed_args(self) -> &'static [&'static str] {
         match self {
             ToolName::OpenApp | ToolName::CloseApp => &["name"],
             ToolName::SetVolume => &["level", "delta", "mute"],

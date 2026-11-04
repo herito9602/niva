@@ -132,10 +132,26 @@ pub trait ReminderStore: Send + Sync {
     fn list(&self) -> Result<Vec<String>, ReminderError>;
 }
 
-/// Wall clock. Time zone and local-time resolution arrive with reminders
-/// (slice 4); the core only needs an instant for now.
+/// A wall-clock reading in the user's time zone, as the OS reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalDateTime {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+}
+
+/// Wall clock. Time zone resolution of reminders arrives with slice 4; until
+/// then the core needs an instant and the local date and time the system
+/// prompt states (design "Data flow").
 pub trait Clock: Send + Sync {
     fn now(&self) -> SystemTime;
+    /// The local date and time, if the adapter knows the time zone. The
+    /// default says no, and the prompt then omits the time line.
+    fn local_now(&self) -> Option<LocalDateTime> {
+        None
+    }
 }
 
 /// Where UI events go. Generic over the event type so the core does not
