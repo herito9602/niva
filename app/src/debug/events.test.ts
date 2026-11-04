@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ALL_STATES, EVENT_BUTTONS, STATE_SCRIPTS, answerEvent, rawEvent } from "./events";
 
-// The 22 message types of the Rust `DebugEvent` that map to reducer events
-// (the 23rd kind, VoiceReadinessChanged, has two buttons: ready and down).
+// The 25 message types of the Rust `DebugEvent` that map to reducer events
+// (VoiceReadinessChanged has two buttons: ready and down).
 const EVENT_TYPES = [
   "wake",
   "shortcut",
@@ -26,12 +26,15 @@ const EVENT_TYPES = [
   "chime_done",
   "voice_ready",
   "dismiss",
+  "countdown_ready",
+  "countdown_cancel",
+  "countdown_fault",
 ];
 
 describe("debug event buttons", () => {
   it("offers at least one button for every reducer event", () => {
     const offered = new Set(EVENT_BUTTONS.map((b) => b.event.type));
-    expect(EVENT_TYPES).toHaveLength(22);
+    expect(EVENT_TYPES).toHaveLength(25);
     for (const type of EVENT_TYPES) {
       expect(offered.has(type), type).toBe(true);
     }
@@ -116,6 +119,17 @@ describe("state scripts", () => {
     for (const state of ALL_STATES.filter((s) => s !== "idle")) {
       const ready = STATE_SCRIPTS[state].find((e) => e.type === "voice_ready");
       expect(ready, state).toEqual({ type: "voice_ready", ready: true });
+    }
+  });
+});
+
+describe("sleep countdown buttons", () => {
+  it("can start a countdown, cancel it and make the host fail", () => {
+    const labels = EVENT_BUTTONS.map((b) => b.event);
+    expect(labels).toContainEqual({ type: "tools_done", outcome: "sleep_countdown" });
+    expect(labels).toContainEqual({ type: "watchdog", kind: "countdown" });
+    for (const type of ["countdown_ready", "countdown_cancel", "countdown_fault"]) {
+      expect(labels).toContainEqual({ type });
     }
   });
 });

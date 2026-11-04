@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CursorPayload, ViewPayload } from "../events";
-import { islandLabel, type SlidePhase } from "../island";
+import { displayLabel, islandLabel, type SlidePhase } from "../island";
 import { MascotCanvas } from "../mascot/MascotCanvas";
+import { useNow } from "../state/useNow";
 import { EDGE_IN_MS, EDGE_OUT_MS, SWAP_FADE_MS, planTextChange } from "./choreography";
 import { EDGE_INTRO_SETTLE_MS, EDGE_RESIZE_SETTLE_MS, edgeIntro, edgeOut, edgeResize, edgeSettled } from "./edge";
 import { COMPACT_LAYOUT, LINE_HEIGHT, MASCOT_SIZE, MAX_TEXT_WIDTH, computeLayout, type Layout } from "./layout";
@@ -134,6 +135,9 @@ function useShapeDriver(
 
 export function Island({ phase, view, getCursor, reducedMotion, scrollClockMs, shapeClockMs }: Props) {
   const target = islandLabel(view);
+  // Only ticks while a sleep countdown is on screen; the pill is laid out for
+  // `target`, which does not change with the seconds.
+  const now = useNow(Boolean(view?.countdown));
   const reduced = usePrefersReducedMotion(reducedMotion);
   const stageRef = useRef<HTMLDivElement>(null);
   const pathRef = useRef<SVGPathElement>(null);
@@ -215,7 +219,7 @@ export function Island({ phase, view, getCursor, reducedMotion, scrollClockMs, s
         style={{ width: layout.textWidth, height: layout.textHeight }}
       >
         <div ref={scrollerRef} className="txt scroller">
-          {shown.text}
+          {displayLabel(view, shown.text, now)}
         </div>
       </div>
     </>

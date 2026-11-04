@@ -17,6 +17,7 @@
     { "label": "Tools done: search result", "event": { "type": "tools_done", "outcome": "search_result" } },
     { "label": "Tools done: risky remaining", "event": { "type": "tools_done", "outcome": "risky_remaining" } },
     { "label": "Tools done: failed", "event": { "type": "tools_done", "outcome": "failed" } },
+    { "label": "Tools done: sleep countdown", "event": { "type": "tools_done", "outcome": "sleep_countdown" } },
     { "label": "Reply", "event": { "type": "reply", "text": "Done" } },
     { "label": "Failure", "event": { "type": "failure" } },
     { "label": "Ask follow-up", "event": { "type": "ask_follow_up", "question": "At what time?" } },
@@ -35,10 +36,14 @@
     { "label": "Watchdog: confirm", "event": { "type": "watchdog", "kind": "confirm" } },
     { "label": "Watchdog: alert end", "event": { "type": "watchdog", "kind": "alert_end" } },
     { "label": "Watchdog: speak", "event": { "type": "watchdog", "kind": "speak_watchdog" } },
+    { "label": "Watchdog: countdown", "event": { "type": "watchdog", "kind": "countdown" } },
     { "label": "Chime done", "event": { "type": "chime_done" } },
     { "label": "Voice ready", "event": { "type": "voice_ready", "ready": true } },
     { "label": "Voice down", "event": { "type": "voice_ready", "ready": false } },
-    { "label": "Dismiss", "event": { "type": "dismiss" } }
+    { "label": "Dismiss", "event": { "type": "dismiss" } },
+    { "label": "Countdown ready", "event": { "type": "countdown_ready" } },
+    { "label": "Countdown cancel", "event": { "type": "countdown_cancel" } },
+    { "label": "Countdown fault", "event": { "type": "countdown_fault" } }
   ],
   "scripts": {
     "idle": [{ "type": "reset" }],
