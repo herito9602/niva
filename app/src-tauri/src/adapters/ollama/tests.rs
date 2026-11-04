@@ -94,6 +94,58 @@ fn a_transport_error_is_a_failure() {
 }
 
 #[test]
+fn a_connection_dropped_mid_request_means_ollama_is_unavailable() {
+    let (llm, _) = provider(vec![Err(TransportError::Dropped)]);
+    assert_eq!(llm.chat(&request(true)), Err(LlmError::Unavailable));
+}
+
+#[test]
+fn a_bad_gateway_or_unavailable_status_is_unavailable() {
+    for code in [502, 503] {
+        let (llm, _) = provider(vec![status(code, "")]);
+        assert_eq!(
+            llm.chat(&request(true)),
+            Err(LlmError::Unavailable),
+            "{code}"
+        );
+    }
+}
+
+#[test]
+fn a_500_stays_a_failure_because_ollama_reports_load_errors_with_it() {
+    let (llm, _) = provider(vec![status(
+        500,
+        r#"{"error":"llama runner process has terminated"}"#,
+    )]);
+    assert!(matches!(llm.chat(&request(true)), Err(LlmError::Failed(_))));
+}
+
+#[test]
+fn ureq_io_errors_that_mean_a_dead_connection_map_to_dropped() {
+    use std::io::{Error, ErrorKind};
+    for kind in [
+        ErrorKind::ConnectionReset,
+        ErrorKind::ConnectionAborted,
+        ErrorKind::BrokenPipe,
+        ErrorKind::UnexpectedEof,
+    ] {
+        let mapped = map_error(ureq::Error::Io(Error::from(kind)));
+        assert_eq!(mapped, TransportError::Dropped, "{kind:?}");
+    }
+    let other = map_error(ureq::Error::Io(Error::from(ErrorKind::PermissionDenied)));
+    assert!(matches!(other, TransportError::Other(_)));
+}
+
+#[test]
+fn the_chat_timeout_outlasts_the_reducer_llm_timer() {
+    use niva_core::state_machine::TimerKind;
+    let llm_timer = TimerKind::Llm
+        .duration()
+        .expect("the Llm timer has a duration");
+    assert!(CHAT_TIMEOUT > llm_timer);
+}
+
+#[test]
 fn a_garbled_body_is_a_failure_not_a_panic() {
     let (llm, _) = provider(vec![ok("<html>proxy error</html>")]);
     assert!(matches!(llm.chat(&request(true)), Err(LlmError::Failed(_))));

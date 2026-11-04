@@ -35,7 +35,10 @@ use tauri::{
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
 #[cfg(debug_assertions)]
-use crate::adapters::ollama::{OllamaProvider, health::start_up};
+use crate::adapters::ollama::{
+    OllamaProvider,
+    health::{APP_MAX_ATTEMPTS, start_up},
+};
 use crate::click_through::{IslandWindow, prepare_island, show_island_window};
 use crate::cursor::CursorPoller;
 use crate::dispatcher::{Core, Input, InputTx, startup_events};
@@ -126,7 +129,8 @@ const _: fn(
 ) -> niva_core::assistant::Assistant = dev::assistant_with;
 
 /// Who answers the reducer's request effects. Debug builds run the assistant
-/// loop on the dev LLM and the dry-run PC (the real adapters are PRs 2c/2d);
+/// loop on the dev LLM and the dry-run PC (the LLM adapter landed in PR 2c; only the Windows adapters are left for
+/// PR 2d);
 /// release builds fail every request safely and contain none of that code.
 #[cfg(debug_assertions)]
 fn build_requests(app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
@@ -143,7 +147,9 @@ fn build_requests(app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
         // Warm the model up in the background (retrying with the app's backoff)
         // so the first command is not slower than the rest.
         thread::spawn(move || {
-            let outcome = start_up(&ollama, Some(6), &thread::sleep, &|line| log(line));
+            let outcome = start_up(&ollama, Some(APP_MAX_ATTEMPTS), &thread::sleep, &|line| {
+                log(line)
+            });
             if let Err(error) = outcome {
                 log(format!("[niva-ollama] warm-up gave up: {error:?}"));
             }

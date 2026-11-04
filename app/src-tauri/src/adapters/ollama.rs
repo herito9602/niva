@@ -31,9 +31,10 @@ mod tests;
 pub const MODEL: &str = "qwen3.5:4b-q4_K_M";
 /// Ollama's default address. Never configurable: loopback only.
 pub const ADDRESS: &str = "127.0.0.1:11434";
-/// Hard limit of one chat call. Just above the reducer's 15 s LLM timer: by the
-/// time this fires the reducer has already given up on the request, and the
-/// worker is free again soon after.
+/// Hard limit of one chat call. Just above the reducer's LLM timer
+/// (`TimerKind::Llm`, 15 s; a test pins the order): by the time this fires the
+/// reducer has already given up on the request, and the worker is free again
+/// soon after.
 pub const CHAT_TIMEOUT: Duration = Duration::from_secs(16);
 /// A cold start loads about 3 GB from disk.
 pub const WARM_UP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -75,6 +76,9 @@ pub enum TransportError {
     /// Nothing listens on the port (Ollama is not running).
     Refused,
     Timeout,
+    /// The connection died mid-request (reset, aborted, broken pipe, early EOF):
+    /// Ollama went away or crashed while answering.
+    Dropped,
     Other(String),
 }
 
@@ -127,6 +131,13 @@ fn map_error(error: ureq::Error) -> TransportError {
         ureq::Error::ConnectionFailed => TransportError::Refused,
         ureq::Error::Io(io) => match io.kind() {
             std::io::ErrorKind::ConnectionRefused => TransportError::Refused,
+            // ureq reports a peer that vanished mid-request as one of these
+            // (`UnexpectedEof` is its own "Peer disconnected"; Windows gives
+            // `ConnectionReset`/`ConnectionAborted`).
+            std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::UnexpectedEof => TransportError::Dropped,
             std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
                 TransportError::Timeout
             }
@@ -284,16 +295,20 @@ fn llm_error(error: TransportError) -> LlmError {
     match error {
         TransportError::Refused => LlmError::Unavailable,
         TransportError::Timeout => LlmError::Timeout,
+        TransportError::Dropped => LlmError::Unavailable,
         TransportError::Other(why) => LlmError::Failed(why),
     }
 }
 
-/// 200 is a reply; 404 is a model Ollama does not have (so, unavailable);
-/// anything else is a failure with Ollama's own reason.
+/// 200 is a reply; 404 is a model Ollama does not have and 502/503 mean the
+/// server (or something in front of it) cannot serve right now: all
+/// unavailable. A 500 stays a failure: Ollama uses it for load errors such as
+/// "requires more system memory", whose reason is worth keeping. Anything else
+/// is a failure with Ollama's own reason.
 fn interpret(reply: HttpReply) -> Result<ChatReply, LlmError> {
     match reply.status {
         200 => wire::parse_chat_response(&reply.body),
-        404 => Err(LlmError::Unavailable),
+        404 | 502 | 503 => Err(LlmError::Unavailable),
         status => Err(LlmError::Failed(format!(
             "HTTP {status}: {}",
             wire::error_message(&reply.body)

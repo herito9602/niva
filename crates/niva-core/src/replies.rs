@@ -37,8 +37,14 @@ impl Lang {
 
 /// Longest reply the island shows or the voice speaks, in characters (spec
 /// `assistant-core` "Replies are short"; the island reading time relies on
-/// it). Templates and search summaries respect it by construction; free text
-/// from the model goes through [`bound_reply`].
+/// it). Templates are short by construction. Everything else goes through
+/// [`bound_reply`]: free text from the model and search summaries. A summary is
+/// appended after earlier tool lines, so long earlier lines can crowd it out
+/// of the bound.
+///
+/// The prompt (`prompt::system_prompt`) asks the model for at most 300
+/// characters, the wording E1 measured; this 400 is the product cap that
+/// catches a model that ignores that ask. Change one, re-check the other.
 pub const REPLY_MAX_CHARS: usize = 400;
 
 /// A sentence cut shorter than this is not worth keeping: the reply would

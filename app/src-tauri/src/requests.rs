@@ -118,6 +118,9 @@ pub struct AssistantRequests {
 const ABANDONED_KEPT: usize = 64;
 
 #[cfg(any(test, debug_assertions))]
+const _: () = assert!(ABANDONED_KEPT > WORKERS + QUEUE);
+
+#[cfg(any(test, debug_assertions))]
 impl AssistantRequests {
     /// The app's pool: `WORKERS` threads, `QUEUE` waiting jobs.
     pub fn new(assistant: niva_core::assistant::Assistant, sink: EventSink) -> Self {

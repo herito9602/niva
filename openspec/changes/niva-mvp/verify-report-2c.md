@@ -88,4 +88,5 @@ Applied to the same uncommitted tree after this review, each with a RED test fir
 - `search_unavailable` is bounded to 400 characters like every other free-form reply.
 - `check-release-binary.mjs`: needles for the Ollama address, chat endpoint and model tag (absent from the release binary today); the `serde_norway` check fails closed.
 - A queued job whose request the reducer already abandoned is skipped at dequeue.
+- Review round 2: a connection that dies mid-request (reset, aborted, broken pipe, early EOF) and HTTP 502/503 are `LlmError::Unavailable` (a 500 stays `Failed`: Ollama uses it for load errors); comments and constants tidied; five items logged in `docs/BACKLOG.md` under "From PR 2c review". The model call is unchanged.
 - Not changed (owner decision): `design.md:272` and the known risky-call gate FAIL.

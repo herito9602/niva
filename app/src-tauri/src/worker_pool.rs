@@ -8,7 +8,7 @@
 //! dropped by request id in the reducer.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -54,11 +54,8 @@ impl WorkerPool {
         let Some(sender) = &self.sender else {
             return Err(Rejected);
         };
-        sender
-            .try_send(job)
-            .map_err(|full: TrySendError<Job>| match full {
-                TrySendError::Full(_) | TrySendError::Disconnected(_) => Rejected,
-            })
+        // Full and disconnected are both a refusal.
+        sender.try_send(job).map_err(|_| Rejected)
     }
 }
 

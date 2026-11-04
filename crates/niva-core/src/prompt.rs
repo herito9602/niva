@@ -175,6 +175,9 @@ pub fn system_prompt(lang: Lang, now: Option<&LocalDateTime>) -> String {
             )
         })
         .unwrap_or_default();
+    // The "300 characters" below is the wording E1 measured; the product cap
+    // is `replies::REPLY_MAX_CHARS` (400), enforced by `bound_reply`. Changing
+    // the number changes the model call and invalidates E1.
     format!(
         "You are Niva, a voice assistant that controls the user's Windows PC.\n\
          {time}\

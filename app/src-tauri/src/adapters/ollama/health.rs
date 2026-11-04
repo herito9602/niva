@@ -48,6 +48,7 @@ pub fn check(transport: &dyn Transport, model: &str) -> Health {
     match transport.get(Endpoint::Tags, PROBE_TIMEOUT) {
         Err(TransportError::Refused) => Health::NotRunning,
         Err(TransportError::Timeout) => Health::Failed("timed out".into()),
+        Err(TransportError::Dropped) => Health::Failed("connection dropped".into()),
         Err(TransportError::Other(why)) => Health::Failed(why),
         Ok(reply) if reply.status != 200 => Health::Failed(format!(
             "HTTP {}: {}",
@@ -139,6 +140,10 @@ pub struct StartUp {
     pub offload: Option<Offload>,
 }
 
+/// Attempts per wait (Ollama, then the model) the app gives `start_up` in the
+/// background before it stops trying.
+pub const APP_MAX_ATTEMPTS: u32 = 6;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartUpError {
     /// Out of attempts while waiting for Ollama or the model.
@@ -149,7 +154,8 @@ pub enum StartUpError {
 
 /// Waits for Ollama (health probe with backoff), warms the model up (the same
 /// backoff), then reads `/api/ps` for slow mode. `max_attempts` bounds each of
-/// the two waits (`None` = keep trying, as the app does in the background).
+/// the two waits (`None` = keep trying forever). The app passes
+/// [`APP_MAX_ATTEMPTS`] so a missing Ollama does not retry for ever.
 /// `sleep` is injected so tests do not wait.
 pub fn start_up(
     provider: &OllamaProvider,
@@ -163,11 +169,10 @@ pub fn start_up(
     let mut attempt = 0;
     loop {
         let health = provider.health();
+        log(format!("[niva-ollama] {}", health.message(model)));
         if health == Health::Ready {
-            log(format!("[niva-ollama] {}", health.message(model)));
             break;
         }
-        log(format!("[niva-ollama] {}", health.message(model)));
         if out_of_attempts(attempt) {
             return Err(StartUpError::NotReady(health));
         }
