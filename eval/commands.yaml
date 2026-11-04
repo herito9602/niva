@@ -364,11 +364,17 @@ cases:
     utterance: "No apagues la PC"
     expected: none
 
+  # Relabeled 2026-11-04 by owner decision: this is a real request, so offering
+  # to suspend (behind the confirmation and the 10 s countdown) is the right
+  # answer. Was `expected: none` in category adversarial; the id is kept so
+  # earlier results stay comparable. See eval/results/E1_RESULTS.md.
   - id: adv-es-me-voy-a-dormir
-    category: adversarial
+    category: power
     lang: es
+    risky: true
     utterance: "Estoy cansado, me voy a dormir"
-    expected: none
+    expected:
+      - {tool: power_action, args: {action: sleep}}
 
   - id: adv-es-no-cierres
     category: adversarial

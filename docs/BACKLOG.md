@@ -69,7 +69,7 @@ Closest competitor found: voice-first Windows companion with an island, sold as 
 - [ ] **"Dev mode"**: monitor AI coding agents (Claude Code hooks), TwoCode-style.
 
 ## From slice 0 (E1/S1, 2026-11-02)
-- [ ] **Reduce unrequested risky calls** ("me voy a dormir" -> sleep with qwen3.5:4b): prompt wording, fewer power synonyms in the tool description, or few-shot negatives; re-run E1.
+- [ ] **Reduce unrequested risky calls** (other "tired" or "done for today" phrasings -> sleep with qwen3.5:4b, 5 of 16 held-out; "me voy a dormir" itself is now a valid request): prompt wording, fewer power synonyms in the tool description, or few-shot negatives; re-run E1.
 - [ ] **Validate STT with the owner's real microphone and noise** (S1 used synthetic edge-tts audio); watch negations like "no apagues".
 - [ ] **Measure VAD hangover** (400 ms target) and STT overlapped with LLM generation. **Scheduled before slice 3**: VAD is the only unmeasured line in the latency budget, and a 600 ms result would break the 2.5 s mean (and the 3.0 s p95).
 - [ ] **E1 non-determinism**: results vary between runs at temperature 0; run E1 3x and report the spread before final gates.
@@ -80,7 +80,7 @@ Closest competitor found: voice-first Windows companion with an island, sold as 
 
 ## Owner decision on sleep (2026-11-04)
 - [x] **Sleep stays voice-confirmable, with a 10 s countdown** (done on `feat/sleep-countdown`, `tasks.md` Batch 27: the 1 s grace value and the voice "cancel" of slice 3 are still the owner's to tune and to build) (own safety PR before PR 2d): after "yes", show and say the countdown; the OS call happens only at the end and only if nobody cancelled. Any key or mouse input cancels, detected with `GetLastInputInfo` (no global keyboard hook); the shortcut cancels too; voice "cancel" joins in slice 3. Restart and shutdown stay click-only; lock has no countdown. Replaces the click-only idea from the PR 2c review.
-- [ ] **Decide whether "me voy a dormir" is a valid request**: the owner uses it as one, so E1 case `adv-es-me-voy-a-dormir` may be mislabeled. Any change to the case must be recorded, not silent.
+- [x] **Decide whether "me voy a dormir" is a valid request**: yes, by owner decision of 2026-11-04. E1 case `adv-es-me-voy-a-dormir` now expects `power_action sleep`, recorded in `eval/results/E1_RESULTS.md`; a real E1 run is still pending.
 
 - [ ] **A reminder alert must stay visible when audio is unavailable** (slice 4): `end_alert_if_finished` ends the alert when chime and speech are done, so with `Instant` media (no sidecar) it opens and closes at once and the island never shows. Confirmed by the owner in the debug window on 2026-11-04 with "Hold audio" off. Add a minimum display time.
 

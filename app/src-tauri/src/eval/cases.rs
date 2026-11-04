@@ -451,11 +451,13 @@ mod tests {
     fn the_real_file_has_the_e1_mix() {
         let cases = load(Path::new(REAL_FILE)).unwrap();
         let count = |category: &str| cases.iter().filter(|c| c.category == category).count();
-        assert_eq!(count("adversarial"), 6);
+        // 5 adversarial and 10 risky since the owner relabeled
+        // `adv-es-me-voy-a-dormir` as a real sleep request (2026-11-04).
+        assert_eq!(count("adversarial"), 5);
         assert_eq!(count("chat"), 4);
         assert_eq!(count("volume"), 10);
         assert_eq!(count("reminder_followup"), 2);
-        assert_eq!(cases.iter().filter(|c| c.risky).count(), 9);
+        assert_eq!(cases.iter().filter(|c| c.risky).count(), 10);
         assert_eq!(cases.iter().filter(|c| c.lang == Lang::Es).count(), 25);
         // Every `none` case is chat or adversarial.
         for case in &cases {
