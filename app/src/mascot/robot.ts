@@ -77,7 +77,6 @@ const SPRING_BY_KEY: Record<PoseKey, SpringConfig> = {
   accentR: settled(70),
   accentG: settled(70),
   accentB: settled(70),
-  shakeAmp: settled(80),
   wobbleAmp: settled(80),
   handScratch: settled(110),
   handThumbs: settled(110),
@@ -226,14 +225,12 @@ export function currentPose(rig: Rig): PoseParams {
   return pose;
 }
 
-/** Chuckle (success) and dizzy wobble (error) have fixed rates; only their
- *  amplitudes are springs. */
-const CHUCKLE_HZ = 6.5;
+/** The dizzy wobble (error) has a fixed rate; only its amplitude is a spring. */
 const WOBBLE_HZ = 2.4;
 
 /** Applies the time-based layers on top of the spring values. `motion` is 1
  *  normally and 0 under prefers-reduced-motion (no breathing, bouncing, sway,
- *  chuckle, wobble, scratching, typing or spiral rotation; pose transitions,
+ *  wobble, scratching, typing or spiral rotation; pose transitions,
  *  blinks and gaze still play). */
 export function composeFrame(rig: Rig, t: number, blink: number, motion: number): Frame {
   const pose = currentPose(rig);
@@ -251,7 +248,7 @@ export function composeFrame(rig: Rig, t: number, blink: number, motion: number)
       y: Math.min(1, Math.max(-1, rig.gazeY.value + pose.lookY)),
     },
     eyeOpen: pose.eyeOpen * (1 - blink),
-    offsetX: Math.sin(tau * CHUCKLE_HZ * t) * pose.shakeAmp * motion + pose.headShift + vibe.dx * weight + 0, // + 0 turns -0 into 0
+    offsetX: pose.headShift + vibe.dx * weight + 0, // + 0 turns -0 into 0
     offsetY: pose.headLift + hop * motion + 4 * hit,
     tilt: pose.headTilt + Math.sin(tau * WOBBLE_HZ * t) * pose.wobbleAmp * motion + 0.08 * hit * clang.side + 0,
     scale: pose.scale * (1 + breath * motion),

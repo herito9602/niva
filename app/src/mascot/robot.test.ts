@@ -132,7 +132,7 @@ describe("composeFrame", () => {
     expect(a.offsetY).not.toBe(b.offsetY);
   });
 
-  it("drops breathing, bounce, shake and wobble under reduced motion", () => {
+  it("drops breathing, bounce and wobble under reduced motion", () => {
     for (const state of ["success", "error", "thinking", "acting", "listening", "reminder-alert"] as const) {
       const r = createRig(POSES[state]);
       for (const t of [0, 0.1, 0.37, 1.2]) {
@@ -153,10 +153,10 @@ describe("composeFrame", () => {
     }
   });
 
-  it("chuckles on success (small rhythmic horizontal shake)", () => {
-    const xs = [0.01, 0.03, 0.05, 0.07, 0.09, 0.11].map((t) => composeFrame(rig, t, 0, 1).offsetX);
-    expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(0.3);
-    for (const x of xs) expect(Math.abs(x)).toBeLessThan(3);
+  it("never shakes sideways on success (owner request)", () => {
+    const success = createRig(POSES["success"]);
+    const xs = [0.01, 0.03, 0.05, 0.07, 0.09, 0.11, 0.5, 1.2].map((t) => composeFrame(success, t, 0, 1).offsetX);
+    expect(new Set(xs).size).toBe(1);
   });
 
   it("wobbles the head and spins the spiral on error", () => {

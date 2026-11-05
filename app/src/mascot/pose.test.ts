@@ -87,12 +87,8 @@ describe("gesture table (owner feedback 2026-11-03)", () => {
     }
   });
 
-  it("has the chuckle only on success and the dizzy wobble only on error", () => {
-    expect(POSES["success"].shakeAmp).toBeGreaterThan(0);
+  it("has the dizzy wobble only on error", () => {
     expect(POSES["error"].wobbleAmp).toBeGreaterThan(0);
-    for (const s of ALL_STATES.filter((x) => x !== "success")) {
-      expect(POSES[s].shakeAmp).toBe(0);
-    }
     for (const s of ALL_STATES.filter((x) => x !== "error")) {
       expect(POSES[s].wobbleAmp).toBe(0);
     }

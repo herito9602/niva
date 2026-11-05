@@ -38,7 +38,7 @@ The mascot MUST NOT use image assets, nor the Coucou/"Mochi" character, name or 
 ### Requirement: Hands and per-state gestures (owner request, 2026-11-03)
 The mascot MUST have two hands drawn procedurally, each with a rest pose in every state and animated through the same springs as the rest of the look. The look MUST add these gestures, driven only by the assistant state:
 - thinking: one hand scratches the side of the head in a loop while the other rests; the gesture stays during an AskFollowUp question (the state is still `thinking`).
-- success: one hand gives a thumbs-up; the eyes become happy closed arcs ("^ ^") and the head chuckles with a small rhythmic shake.
+- success: one hand gives a thumbs-up; the eyes become happy closed arcs ("^ ^") and the head keeps a gentle up-and-down hop, never a sideways shake (owner, 2026-11-05).
 - error: the eyes become rotating spirals (dizzy) with a slight head wobble.
 - acting: a small laptop is drawn in front of the body and both hands tap its keyboard alternately.
 - confirmation-needed: one hand is held up (optional flourish); idle keeps both hands at rest.
@@ -58,12 +58,12 @@ The mouth MUST be drawn in every state, matching what the robot is doing: idle a
 #### Scenario: Gesture per state
 - GIVEN a debug build with the switcher
 - WHEN a tester selects thinking, success, error and acting
-- THEN they see, respectively, a scratching hand, a thumbs-up with arc eyes and a chuckle, spiral eyes with a wobble, and a laptop with typing hands
+- THEN they see, respectively, a scratching hand, a thumbs-up with arc eyes, spiral eyes with a wobble, and a laptop with typing hands
 
 #### Scenario: Reduced motion
 - GIVEN the OS requests reduced motion
 - WHEN any state is shown
-- THEN looping gestures (scratching, typing, chuckle, wobble, spiral rotation, bounce, breathing) are static; state changes still transition and the character still blinks and follows the cursor
+- THEN looping gestures (scratching, typing, wobble, spiral rotation, bounce, breathing) are static; state changes still transition and the character still blinks and follows the cursor
 
 ## Assumptions to confirm
 - "Original design review" (proposal risk) is a human sign-off, not an automated check.
