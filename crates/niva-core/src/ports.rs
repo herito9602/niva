@@ -61,6 +61,10 @@ pub enum PcError {
     /// `open_app` before the app index is ready.
     NotReady,
     Failed(String),
+    /// `power`: this PC cannot do it yet (sleep without Modern Standby). The
+    /// adapter made no OS call, and the reply says so instead of "that didn't
+    /// work".
+    NotSupported,
 }
 
 /// Real outcome of a close attempt (spec `pc-actions`: truthful results).
@@ -69,6 +73,12 @@ pub enum CloseOutcome {
     Closed,
     /// The app is still running after the wait (e.g. a save dialog).
     StillRunning,
+    /// The windows are gone but the process keeps running (an app that stays in
+    /// the background or in the tray).
+    KeepsRunning,
+    /// The app is running but shows no window that could be asked to close.
+    /// Nothing was posted.
+    NoWindow,
 }
 
 /// State after a volume change, as read back from the system.
@@ -100,8 +110,10 @@ pub trait PcActions: Send + Sync {
     fn launch_app(&self, name: &str) -> Result<String, PcError> {
         self.open_app(name).map(|()| name.to_string())
     }
-    /// Every running process. Resolution and protection happen in the core.
-    fn running_processes(&self) -> Vec<ProcessInfo>;
+    /// Every running process. Resolution and protection happen in the core. A
+    /// snapshot that cannot be read is an error: it must never look like
+    /// "nothing is running".
+    fn running_processes(&self) -> Result<Vec<ProcessInfo>, PcError>;
     /// Risky: closes the approved executable (no force kill).
     fn close_app(&self, approved: Approved<CloseApp>) -> Result<CloseOutcome, PcError>;
     fn set_volume(&self, change: VolumeChange) -> Result<VolumeResult, PcError>;

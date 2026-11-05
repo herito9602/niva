@@ -392,7 +392,7 @@ mod tests {
                 events.recv_timeout(Duration::from_secs(5)).unwrap(),
                 Event::Reply {
                     req: 1,
-                    text: "Putting the PC to sleep.".into()
+                    text: "Suspending the PC.".into()
                 }
             );
             assert_eq!(slept(&lines), 1);

@@ -165,9 +165,8 @@ fn build_requests(app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
 }
 
 /// Release builds: the real Ollama (kept warm by the keeper, never a fallback
-/// model) and the Windows adapter of the SAFE actions. The assistant is built
-/// without risky actions, so `close_app` and power never reach Windows here;
-/// see `release.rs`.
+/// model) and the Windows adapter of every action. A risky plan asks for a
+/// confirmation, answered by the island's buttons; see `release.rs`.
 #[cfg(not(debug_assertions))]
 fn build_requests(_app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
     let log: Arc<dyn Fn(String) + Send + Sync> = Arc::new(|line| eprintln!("{line}"));

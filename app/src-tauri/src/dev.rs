@@ -575,8 +575,8 @@ impl PcActions for DryRunPc {
         Ok(display)
     }
 
-    fn running_processes(&self) -> Vec<ProcessInfo> {
-        lock(&self.state).processes.clone()
+    fn running_processes(&self) -> Result<Vec<ProcessInfo>, PcError> {
+        Ok(lock(&self.state).processes.clone())
     }
 
     fn close_app(&self, approved: Approved<CloseApp>) -> Result<CloseOutcome, PcError> {
@@ -853,7 +853,7 @@ mod tests {
     #[test]
     fn the_fake_process_list_is_realistic_and_explorer_is_protected() {
         let pc = DryRunPc::new(quiet());
-        let list = pc.running_processes();
+        let list = pc.running_processes().unwrap();
         for needed in [
             "notepad.exe",
             "notepad++.exe",
@@ -881,6 +881,7 @@ mod tests {
         );
         assert!(
             pc.running_processes()
+                .unwrap()
                 .iter()
                 .any(|p| p.exe_name == "CalculatorApp.exe")
         );

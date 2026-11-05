@@ -915,6 +915,27 @@ fn a_name_that_is_not_valid_utf16_is_kept_lossily() {
     assert!(info.exe_name.starts_with('a') && info.exe_name.ends_with('b'));
 }
 
+#[test]
+fn an_entry_keeps_the_process_id_and_the_core_never_sees_it() {
+    let entry = process_entry(4242, &wide("Spotify.exe"), Some(1), Some(1));
+    assert_eq!(entry.pid, 4242);
+    assert_eq!(entry.exe_name, "Spotify.exe");
+    assert!(entry.in_user_session);
+    assert_eq!(
+        entry.info(),
+        ProcessInfo {
+            exe_name: "Spotify.exe".into(),
+            in_user_session: true
+        }
+    );
+}
+
+#[test]
+fn an_entry_of_another_or_unknown_session_is_not_the_users() {
+    assert!(!process_entry(1, &wide("a.exe"), Some(0), Some(1)).in_user_session);
+    assert!(!process_entry(1, &wide("a.exe"), None, Some(1)).in_user_session);
+}
+
 // --- the real Windows adapter ----------------------------------------------------
 
 #[cfg(windows)]
@@ -926,7 +947,7 @@ mod windows_live {
     #[test]
     fn the_snapshot_lists_this_test_process_in_the_users_session() {
         let apps = WinApps::without_index();
-        let processes = apps.running_processes();
+        let processes = apps.running_processes().expect("the snapshot is readable");
         let me = std::env::current_exe().unwrap();
         let me = me.file_name().unwrap().to_string_lossy().to_lowercase();
         let mine = processes

@@ -523,7 +523,7 @@ fn a_pinned_pick_survives_the_re_resolve_at_execution() {
     let pc = FakePc::with_processes(&["notepad.exe", "notepad++.exe"]);
     let gate = SafetyGate::new();
     let request = gate
-        .validate_pinned("notepad.exe", &pc.running_processes(), 4, 0)
+        .validate_pinned("notepad.exe", &pc.running_processes().unwrap(), 4, 0)
         .expect("pinned");
     let Ok(Approval::Close(approved)) = gate.approve(request, click(4)) else {
         panic!("a click must approve");
@@ -559,10 +559,26 @@ fn a_pinned_pick_whose_app_is_gone_closes_nothing() {
 // Execution
 
 #[test]
+fn an_unreadable_process_list_at_execution_closes_nothing_and_is_not_not_running() {
+    let pc = FakePc::with_processes(&["chrome.exe"]);
+    let gate = SafetyGate::new();
+    let request = risky(&close_call("chrome"), &pc.running_processes().unwrap(), 4);
+    let Ok(Approval::Close(approved)) = gate.approve(request, click(4)) else {
+        panic!("a click must approve");
+    };
+    pc.set_process_error(Some(PcError::Failed("no snapshot".into())));
+    assert_eq!(
+        gate.execute_close(approved, &pc),
+        Err(ExecError::Pc(PcError::Failed("no snapshot".into())))
+    );
+    assert!(pc.calls().is_empty());
+}
+
+#[test]
 fn a_confirmed_close_runs_exactly_once_with_the_confirmed_executable() {
     let pc = FakePc::with_processes(&["chrome.exe", "chrome.exe", "Spotify.exe"]);
     let gate = SafetyGate::new();
-    let request = risky(&close_call("chrome"), &pc.running_processes(), 4);
+    let request = risky(&close_call("chrome"), &pc.running_processes().unwrap(), 4);
     let Ok(Approval::Close(approved)) = gate.approve(request, click(4)) else {
         panic!("a click must approve");
     };
@@ -580,7 +596,7 @@ fn a_close_that_leaves_the_app_running_reports_it() {
     let pc = FakePc::with_processes(&["chrome.exe"]);
     pc.set_close_outcome(CloseOutcome::StillRunning);
     let gate = SafetyGate::new();
-    let request = risky(&close_call("chrome"), &pc.running_processes(), 4);
+    let request = risky(&close_call("chrome"), &pc.running_processes().unwrap(), 4);
     let Ok(Approval::Close(approved)) = gate.approve(request, click(4)) else {
         panic!("a click must approve");
     };
@@ -594,7 +610,7 @@ fn a_close_that_leaves_the_app_running_reports_it() {
 fn the_target_is_re_resolved_and_a_changed_executable_set_aborts() {
     let pc = FakePc::with_processes(&["Notepad.exe"]);
     let gate = SafetyGate::new();
-    let request = risky(&close_call("note"), &pc.running_processes(), 4);
+    let request = risky(&close_call("note"), &pc.running_processes().unwrap(), 4);
     let Ok(Approval::Close(approved)) = gate.approve(request, click(4)) else {
         panic!("a click must approve");
     };
@@ -611,7 +627,7 @@ fn the_target_is_re_resolved_and_a_changed_executable_set_aborts() {
 fn a_different_single_executable_also_aborts() {
     let pc = FakePc::with_processes(&["Notepad.exe"]);
     let gate = SafetyGate::new();
-    let request = risky(&close_call("note"), &pc.running_processes(), 4);
+    let request = risky(&close_call("note"), &pc.running_processes().unwrap(), 4);
     let Ok(Approval::Close(approved)) = gate.approve(request, click(4)) else {
         panic!("a click must approve");
     };
@@ -627,7 +643,7 @@ fn a_different_single_executable_also_aborts() {
 fn new_pids_of_the_same_executable_are_fine() {
     let pc = FakePc::with_processes(&["chrome.exe"]);
     let gate = SafetyGate::new();
-    let request = risky(&close_call("chrome"), &pc.running_processes(), 4);
+    let request = risky(&close_call("chrome"), &pc.running_processes().unwrap(), 4);
     let Ok(Approval::Close(approved)) = gate.approve(request, click(4)) else {
         panic!("a click must approve");
     };
@@ -639,7 +655,7 @@ fn new_pids_of_the_same_executable_are_fine() {
 fn an_app_that_stopped_before_the_click_is_reported_not_running() {
     let pc = FakePc::with_processes(&["chrome.exe"]);
     let gate = SafetyGate::new();
-    let request = risky(&close_call("chrome"), &pc.running_processes(), 4);
+    let request = risky(&close_call("chrome"), &pc.running_processes().unwrap(), 4);
     let Ok(Approval::Close(approved)) = gate.approve(request, click(4)) else {
         panic!("a click must approve");
     };
@@ -656,7 +672,7 @@ fn a_protected_process_that_starts_matching_after_approval_is_still_refused() {
     // Re-resolution applies the protected list too.
     let pc = FakePc::with_processes(&["svchost2.exe"]);
     let gate = SafetyGate::new();
-    let request = risky(&close_call("svc"), &pc.running_processes(), 4);
+    let request = risky(&close_call("svc"), &pc.running_processes().unwrap(), 4);
     let Ok(Approval::Close(approved)) = gate.approve(request, click(4)) else {
         panic!("a click must approve");
     };
@@ -692,11 +708,16 @@ fn a_model_claiming_confirmation_still_only_gets_a_pending_request() {
     let mut forged = close_call("chrome");
     forged.args.insert("confirmed".into(), ArgValue::Bool(true));
     assert_eq!(
-        gate.validate(&forged, &pc.running_processes(), 1, 0),
+        gate.validate(&forged, &pc.running_processes().unwrap(), 1, 0),
         Err(ToolError::UnknownArgument("confirmed".into()))
     );
 
-    let plain = gate.validate(&close_call("chrome"), &pc.running_processes(), 1, 0);
+    let plain = gate.validate(
+        &close_call("chrome"),
+        &pc.running_processes().unwrap(),
+        1,
+        0,
+    );
     assert!(matches!(plain, Ok(Validated::Risky(_))));
     assert!(pc.calls().is_empty(), "validation never executes");
 }
@@ -707,7 +728,7 @@ fn only_a_matching_accepted_answer_ever_reaches_the_risky_port_methods() {
     // module. Here: every refused path leaves the PC untouched.
     let pc = FakePc::with_processes(&["chrome.exe"]);
     let gate = SafetyGate::new();
-    let request = || risky(&close_call("chrome"), &pc.running_processes(), 4);
+    let request = || risky(&close_call("chrome"), &pc.running_processes().unwrap(), 4);
     let denied = ConfirmationAnswer {
         accepted: false,
         ..click(4)
@@ -846,7 +867,7 @@ fn candidates_that_differ_only_by_non_ascii_case_are_one_executable() {
 fn a_non_ascii_case_variant_still_counts_as_the_confirmed_executable() {
     let pc = FakePc::with_processes(&["Ñandú.exe"]);
     let gate = SafetyGate::new();
-    let request = risky(&close_call("ñandú"), &pc.running_processes(), 4);
+    let request = risky(&close_call("ñandú"), &pc.running_processes().unwrap(), 4);
     let Ok(Approval::Close(approved)) = gate.approve(request, click(4)) else {
         panic!("a click must approve");
     };
@@ -991,8 +1012,8 @@ fn a_failing_pc_reports_the_error_of_the_release() {
         fn open_app(&self, _: &str) -> Result<(), PcError> {
             Err(PcError::NotFound)
         }
-        fn running_processes(&self) -> Vec<ProcessInfo> {
-            Vec::new()
+        fn running_processes(&self) -> Result<Vec<ProcessInfo>, PcError> {
+            Ok(Vec::new())
         }
         fn close_app(&self, _: Approved<CloseApp>) -> Result<CloseOutcome, PcError> {
             Err(PcError::NotFound)

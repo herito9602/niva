@@ -26,6 +26,8 @@ fn samples() -> Vec<Msg> {
         Msg::CloseTooShort { min: 3 },
         Msg::CloseTargetChanged,
         Msg::CloseNotRunning,
+        Msg::CloseNoWindow { exe: app() },
+        Msg::ClosedKeepsRunning { exe: app() },
         Msg::AskWhichApp {
             candidates: vec!["notepad.exe".into(), "notepad++.exe".into()],
         },
@@ -57,7 +59,7 @@ fn samples() -> Vec<Msg> {
         Msg::CancelledClose { exe: app() },
         Msg::LlmUnavailable,
         Msg::NotAvailableYet,
-        Msg::RiskyNotAvailableYet,
+        Msg::SleepNotAvailable,
         Msg::Busy,
     ];
     all.extend(PowerKind::ALL.map(|action| Msg::CancelledPower { action }));
@@ -79,6 +81,8 @@ fn variant_name(msg: &Msg) -> &'static str {
         Msg::CloseTooShort { .. } => "CloseTooShort",
         Msg::CloseTargetChanged => "CloseTargetChanged",
         Msg::CloseNotRunning => "CloseNotRunning",
+        Msg::CloseNoWindow { .. } => "CloseNoWindow",
+        Msg::ClosedKeepsRunning { .. } => "ClosedKeepsRunning",
         Msg::AskWhichApp { .. } => "AskWhichApp",
         Msg::ConfirmPower { .. } => "ConfirmPower",
         Msg::PowerDone { .. } => "PowerDone",
@@ -103,18 +107,18 @@ fn variant_name(msg: &Msg) -> &'static str {
         Msg::CancelledPower { .. } => "CancelledPower",
         Msg::LlmUnavailable => "LlmUnavailable",
         Msg::NotAvailableYet => "NotAvailableYet",
-        Msg::RiskyNotAvailableYet => "RiskyNotAvailableYet",
+        Msg::SleepNotAvailable => "SleepNotAvailable",
         Msg::Busy => "Busy",
     }
 }
 
 #[test]
 fn every_message_variant_has_a_sample() {
-    // 37 variants; the power messages are sampled once per action.
+    // 39 variants; the power messages are sampled once per action.
     let mut names: Vec<&str> = samples().iter().map(variant_name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 37, "a variant has no sample: {names:?}");
+    assert_eq!(names.len(), 39, "a variant has no sample: {names:?}");
 }
 
 #[test]
@@ -138,6 +142,8 @@ fn values_appear_in_the_text_in_both_languages() {
             (Msg::ConfirmClose { exe: app() }, "Spotify.exe"),
             (Msg::Closed { exe: app() }, "Spotify.exe"),
             (Msg::StillRunning { exe: app() }, "Spotify.exe"),
+            (Msg::CloseNoWindow { exe: app() }, "Spotify.exe"),
+            (Msg::ClosedKeepsRunning { exe: app() }, "Spotify.exe"),
             (Msg::CloseTooShort { min: 3 }, "3"),
             (Msg::TooManyCalls { max: 5 }, "5"),
             (Msg::CancelledClose { exe: app() }, "Spotify.exe"),
