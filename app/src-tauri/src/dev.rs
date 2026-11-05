@@ -60,14 +60,20 @@ pub fn assistant(log: LogSink) -> Assistant {
     }))
 }
 
-/// The same assistant over another model (the Ollama provider, PR 2c) and a
-/// clock for the prompt's time line. The PC, search and reminders stay the
-/// dry-run ones: this and [`assistant`] are the only constructors, and the
-/// behavioural tests below hold both to it.
-pub fn assistant_with(log: LogSink, llm: Arc<dyn LlmProvider>, clock: Arc<dyn Clock>) -> Assistant {
+/// The same assistant over another model (the Ollama provider, PR 2c), a
+/// clock for the prompt's time line and a search provider (the real Tavily one
+/// in the app, a dry-run or fake one in tests: search only reads the web). The
+/// PC and the reminders stay the dry-run ones: this and [`assistant`] are the
+/// only constructors, and the behavioural tests below hold both to it.
+pub fn assistant_with(
+    log: LogSink,
+    llm: Arc<dyn LlmProvider>,
+    clock: Arc<dyn Clock>,
+    search: Arc<dyn SearchProvider>,
+) -> Assistant {
     Assistant::new(llm, Arc::new(DryRunPc::new(log.clone())))
         .with_clock(clock)
-        .with_search(Arc::new(DryRunSearch { log: log.clone() }))
+        .with_search(search)
         .with_reminders(Arc::new(DryRunReminders {
             log,
             items: Mutex::default(),
@@ -84,6 +90,7 @@ pub fn adaptive_assistant(
     log: LogSink,
     ollama: Arc<OllamaProvider>,
     keeper: KeeperHandle,
+    search: Arc<dyn SearchProvider>,
 ) -> Assistant {
     log(format!(
         "[niva] LLM: Ollama ({}) once it is ready, the rule-based dev LLM until then; dry-run PC.",
@@ -96,7 +103,7 @@ pub fn adaptive_assistant(
         real,
         dev: DevLlm { log: log.clone() },
     });
-    assistant_with(log, llm, Arc::new(SystemClock))
+    assistant_with(log, llm, Arc::new(SystemClock), search)
 }
 
 /// Asks the real model while it is ready, the dev LLM otherwise.
@@ -1031,7 +1038,12 @@ mod tests {
         flag.set(ready);
         let keeper = KeeperHandle::new(flag.clone(), wake);
         Adaptive {
-            assistant: adaptive_assistant(log, ollama, keeper),
+            assistant: adaptive_assistant(
+                log.clone(),
+                ollama,
+                keeper,
+                Arc::new(DryRunSearch { log }),
+            ),
             transport,
             ready: flag,
             wakes,
@@ -1189,7 +1201,8 @@ mod tests {
                 call("close_app", vec![arg("name", text("spotify"))]),
             ]),
         };
-        let assistant = assistant_with(sink, Arc::new(llm), Arc::new(FixedClock));
+        let search = Arc::new(DryRunSearch { log: sink.clone() });
+        let assistant = assistant_with(sink, Arc::new(llm), Arc::new(FixedClock), search);
         for req in [1, 2] {
             let input = RequestInput::User {
                 text: "do it".into(),

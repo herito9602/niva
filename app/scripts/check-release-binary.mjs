@@ -25,6 +25,8 @@ const needles = [
   // Other dev-only strings: canned replies and the debug window's log event.
   "dev assistant",
   "Dev summary",
+  // The dry-run search's canned results (the release searches through Tavily).
+  "Canned result",
   "niva://dev-log",
   // The debug window and its Accept path. Accept and Reject may only come from
   // a native click or a spoken answer in a release build; the debug window's

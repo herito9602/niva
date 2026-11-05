@@ -200,6 +200,12 @@ pub enum Msg {
     RemindersUnavailable,
     // search
     SearchNothing,
+    /// The search provider has no API key.
+    SearchNotConfigured,
+    /// The source rejected the API key.
+    SearchKeyRejected,
+    /// The key's quota is used up.
+    SearchQuotaUsed,
     // generic errors
     ToolFailed,
     InvalidRequest,
@@ -381,6 +387,9 @@ fn render_en(msg: &Msg) -> String {
         Msg::NoReminders => "You have no reminders.".into(),
         Msg::RemindersUnavailable => "I can't manage reminders yet.".into(),
         Msg::SearchNothing => "I found nothing for that search.".into(),
+        Msg::SearchNotConfigured => "Web search needs a key. See the setup note.".into(),
+        Msg::SearchKeyRejected => "The search key was rejected. Check it in the setup note.".into(),
+        Msg::SearchQuotaUsed => "The search quota is used up for now.".into(),
         Msg::ToolFailed => "That didn't work.".into(),
         Msg::InvalidRequest => "I didn't understand that request.".into(),
         Msg::MixedSearchRisky => {
@@ -470,6 +479,13 @@ fn render_es(msg: &Msg) -> String {
         Msg::NoReminders => "No tienes recordatorios.".into(),
         Msg::RemindersUnavailable => "Todavía no puedo gestionar recordatorios.".into(),
         Msg::SearchNothing => "No encontré nada para esa búsqueda.".into(),
+        Msg::SearchNotConfigured => {
+            "La búsqueda web necesita una clave. Consulta la nota de configuración.".into()
+        }
+        Msg::SearchKeyRejected => {
+            "La clave de búsqueda fue rechazada. Revísala en la nota de configuración.".into()
+        }
+        Msg::SearchQuotaUsed => "La cuota de búsquedas se agotó por ahora.".into(),
         Msg::ToolFailed => "Eso no funcionó.".into(),
         Msg::InvalidRequest => "No entendí esa petición.".into(),
         Msg::MixedSearchRisky => {

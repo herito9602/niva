@@ -135,11 +135,14 @@ fn now_ms() -> u64 {
 const _: fn(dev::LogSink) -> niva_core::assistant::Assistant = dev::assistant;
 // Same tripwire for the second constructor (PR 2c: a real model, dry-run PC).
 #[cfg(debug_assertions)]
-const _: fn(
+type DevAssistantWith = fn(
     dev::LogSink,
     Arc<dyn niva_core::ports::LlmProvider>,
     Arc<dyn niva_core::ports::Clock>,
-) -> niva_core::assistant::Assistant = dev::assistant_with;
+    Arc<dyn niva_core::ports::SearchProvider>,
+) -> niva_core::assistant::Assistant;
+#[cfg(debug_assertions)]
+const _: DevAssistantWith = dev::assistant_with;
 
 /// Who answers the reducer's request effects. Debug builds run the assistant
 /// loop on Ollama (dev LLM until it is ready) and the dry-run PC; release builds
@@ -160,7 +163,10 @@ fn build_requests(app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
     // while the keeper says it is ready and the dev LLM until then.
     let ollama = Arc::new(OllamaProvider::new());
     let handle = keeper::spawn(ollama.clone(), log.clone());
-    let assistant = dev::adaptive_assistant(log, ollama, handle);
+    // Search is the real one in debug too (the user's own key; without one the
+    // reply says so). Only the PC and the reminders stay dry-run.
+    let search = Arc::new(adapters::search::TavilySearch::from_environment());
+    let assistant = dev::adaptive_assistant(log, ollama, handle, search);
     Arc::new(requests::AssistantRequests::new(assistant, sink))
 }
 
@@ -176,6 +182,7 @@ fn build_requests(_app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
         Arc::new(keeper::WarmLlm::new(ollama, handle)),
         Arc::new(adapters::windows_pc::WindowsPc::real()),
         Arc::new(adapters::system_clock::SystemClock),
+        Arc::new(adapters::search::TavilySearch::from_environment()),
     );
     Arc::new(requests::AssistantRequests::new(assistant, sink))
 }

@@ -125,11 +125,18 @@ pub trait PcActions: Send + Sync {
 pub enum SearchError {
     /// No network, the source is down or refused the request.
     Unavailable,
+    /// The provider has no API key: no request was made.
+    NotConfigured,
+    /// The source rejected the key (HTTP 401 or 403).
+    KeyRejected,
+    /// The key's quota or rate limit is used up.
+    QuotaExceeded,
 }
 
-/// Web search source (design D5). The real provider arrives in slice 5; until
-/// then the assistant answers `web_search` with the "cannot search now"
-/// template when none is configured.
+/// Web search source (design D5, Tavily). Without any provider the assistant
+/// answers `web_search` with the "cannot search now" template; a provider
+/// without a key answers [`SearchError::NotConfigured`], which has its own
+/// truthful reply.
 pub trait SearchProvider: Send + Sync {
     /// Result snippets, best first. Empty means "found nothing". The text is
     /// untrusted data: the assistant never lets it reach the tool registry.

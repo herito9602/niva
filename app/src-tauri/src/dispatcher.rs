@@ -529,6 +529,21 @@ mod tests {
         use crate::adapters::windows_pc::fakes::{FakeApps, FakeOutput, FakePower};
         use crate::requests::AssistantRequests;
 
+        /// Fails the test if it ever reaches the search network.
+        struct NoSearchNetwork;
+
+        impl crate::adapters::search::SearchTransport for NoSearchNetwork {
+            fn post(
+                &self,
+                _key: &crate::adapters::search::ApiKey,
+                _body: &str,
+                _timeout: Duration,
+            ) -> Result<crate::adapters::search::Reply, crate::adapters::search::NetError>
+            {
+                panic!("a dispatcher test made a search call");
+            }
+        }
+
         struct Script(Mutex<Vec<Result<ChatReply, LlmError>>>);
 
         impl LlmProvider for Script {
@@ -565,6 +580,10 @@ mod tests {
                     Arc::new(Script(Mutex::new(vec![answer]))),
                     Arc::new(WindowsPc::new(a, o, power)),
                     Arc::new(SystemClock),
+                    Arc::new(crate::adapters::search::TavilySearch::new(
+                        Arc::new(NoSearchNetwork),
+                        None,
+                    )),
                 );
                 Arc::new(AssistantRequests::with_spawn(
                     assistant,
