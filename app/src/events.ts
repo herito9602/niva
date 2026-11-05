@@ -17,10 +17,22 @@ export const ALL_STATES = [
 
 export type StateName = (typeof ALL_STATES)[number];
 
+/**
+ * The open confirmation. The island shows two buttons with these labels (in the
+ * request's language) and answers with `id`, never with a number of its own.
+ */
+export interface ConfirmView {
+  id: number;
+  prompt: string;
+  confirmLabel: string;
+  cancelLabel: string;
+  expiresAt?: number;
+}
+
 export interface ViewPayload {
   state: StateName;
   caption?: string;
-  confirm?: { id: number; prompt: string; expiresAt?: number };
+  confirm?: ConfirmView;
   reminder?: { id: number; text: string };
   /**
    * A sleep countdown (shown with the `acting` pose). The island counts down

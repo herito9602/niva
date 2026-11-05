@@ -45,7 +45,7 @@ The island MUST grow to fit the message it shows and MUST NOT truncate it. A sho
 - THEN the old text fades out, the pill resizes smoothly in width and height with no jump, and the new text fades in
 
 ### Requirement: Click-through (owner request 2026-11-03)
-The island window MUST NOT block mouse input to the applications under it, including the transparent area around the island. While the island has no clickable control, the window MUST ignore the cursor entirely. When the island gets buttons (PR 2d confirm buttons), only the buttons' rectangles MAY capture the mouse (host-side hit-testing with the cursor poller); the rest MUST stay click-through. This is done in the Rust host; the island webview gets no new permission.
+The island window MUST NOT block mouse input to the applications under it, including the transparent area around the island. The window MUST ignore the cursor everywhere except over the confirmation buttons while they are shown (PR 2d-b): then, and only then, the buttons' rectangles MAY capture the mouse; the rest of the island and the transparent area MUST stay click-through. This is done in the Rust host (hit-testing with the cursor poller, on every sample, in logical pixels, so a scaled display hits the same rectangles); the island webview gets no window permission. Capture MUST start at once, from a single sample, when the cursor is within 6 logical px of a button, and MUST end only when the cursor is farther than 14 logical px from every button. Capture MUST end when the buttons go away, the island hides or the confirmation changes, even if the cursor has not moved.
 
 #### Scenario: Click on an app under the island window
 - GIVEN the island is shown over another app
@@ -156,6 +156,24 @@ The system MUST hide the island when an interaction ends and show it again on th
 - GIVEN a command has completed and Niva has finished replying
 - WHEN the idle period elapses (and the message has had its reading time)
 - THEN the island is hidden and the tray icon remains
+
+### Requirement: Confirmation buttons (PR 2d-b)
+While the view carries a confirmation, the island MUST show a Cancel and a Confirm button under the message, styled like the island (Cancel neutral, Confirm the accent), with their labels and the confirmation id taken from the view (the core), in the language of the request (`Confirm`/`Cancel`, `Confirmar`/`Cancelar`). The island MUST grow to fit them and the message without truncating it. The buttons MUST be dimmed for a little over 500 ms after they appear and Confirm MUST NOT react during that time; Cancel MUST always react. The island MUST report their rectangles once they are mounted: the host starts its own 500 ms guard from that report and stays the authority. The island MUST answer with the confirmation id and the choice only. A confirmation view MUST show at once (it is not held like a result), with reduced motion too. The island MUST tell the host where the buttons are, so only they capture the mouse. The host enforces the guard (see `action-safety`).
+
+#### Scenario: A confirmation with buttons
+- GIVEN the reducer asks "Close Spotify.exe?"
+- WHEN the island shows it
+- THEN it shows Cancel and Confirm under the message, dimmed for the first 500 ms, and only those two rectangles capture the mouse
+
+#### Scenario: The message wraps
+- GIVEN a confirmation whose message takes several lines
+- WHEN the island sizes itself
+- THEN the buttons stay under the last visible line and the captured rectangles are where the buttons are drawn
+
+#### Scenario: The buttons go away under the cursor
+- GIVEN the cursor rests on a button and the user answers by voice
+- WHEN the confirmation ends
+- THEN the window lets the mouse through again without the cursor moving
 
 ### Requirement: Countdown display
 While a sleep countdown runs, the island MUST show the seconds remaining, computed from a deadline in the view (not from one event per second), with the existing acting pose and the existing message-fit layout. It MUST work with reduced motion and MUST stay click-through (no buttons).

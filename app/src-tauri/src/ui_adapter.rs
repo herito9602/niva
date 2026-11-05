@@ -67,6 +67,11 @@ pub struct ConfirmView {
     /// back with their answer, and a click for another id is dropped.
     pub id: u64,
     pub prompt: String,
+    /// Texts of the island's two buttons, in the language of the request.
+    #[serde(rename = "confirmLabel")]
+    pub confirm_label: &'static str,
+    #[serde(rename = "cancelLabel")]
+    pub cancel_label: &'static str,
     /// Epoch milliseconds; absent until the confirmation timer starts
     /// (after `speak_done`).
     #[serde(rename = "expiresAt", skip_serializing_if = "Option::is_none")]
@@ -244,11 +249,16 @@ impl ViewModel {
 
     fn payload(&self, state: &State) -> ViewPayload {
         let confirm = match (state.phase, &self.confirm_prompt) {
-            (Phase::ConfirmationNeeded, Some(prompt)) => Some(ConfirmView {
-                id: state.confirm_id.unwrap_or(0),
-                prompt: prompt.clone(),
-                expires_at: self.expires_at,
-            }),
+            (Phase::ConfirmationNeeded, Some(prompt)) => {
+                let (confirm_label, cancel_label) = replies::confirm_labels(self.lang);
+                Some(ConfirmView {
+                    id: state.confirm_id.unwrap_or(0),
+                    prompt: prompt.clone(),
+                    confirm_label,
+                    cancel_label,
+                    expires_at: self.expires_at,
+                })
+            }
             _ => None,
         };
         // Stub: reminder texts arrive with the reminder service (slice 4).
@@ -590,6 +600,29 @@ mod tests {
     }
 
     #[test]
+    fn the_buttons_are_labelled_in_the_language_of_the_request() {
+        for (lang, confirm, cancel) in [
+            (Lang::En, "Confirm", "Cancel"),
+            (Lang::Es, "Confirmar", "Cancelar"),
+        ] {
+            let mut sim = Sim::ready();
+            sim.view.set_lang(lang);
+            sim.thinking();
+            let req = sim.req();
+            let events = sim.send(Event::ToolCalls {
+                req,
+                verdict: ToolVerdict::Confirm {
+                    prompt: "Close Notepad?".into(),
+                    click_only: false,
+                    cancel_text: None,
+                },
+            });
+            let shown = view_of(&events).confirm.clone().expect("confirm");
+            assert_eq!((shown.confirm_label, shown.cancel_label), (confirm, cancel));
+        }
+    }
+
+    #[test]
     fn the_confirmation_deadline_appears_when_the_confirm_timer_starts() {
         let mut sim = Sim::ready();
         sim.thinking();
@@ -671,7 +704,13 @@ mod tests {
             json!({
                 "state": "confirmation-needed",
                 "caption": "Close Notepad?",
-                "confirm": {"id": confirm_id, "prompt": "Close Notepad?", "expiresAt": 10_500},
+                "confirm": {
+                    "id": confirm_id,
+                    "prompt": "Close Notepad?",
+                    "confirmLabel": "Confirm",
+                    "cancelLabel": "Cancel",
+                    "expiresAt": 10_500,
+                },
             })
         );
         // Optional fields are omitted, not null.
@@ -680,7 +719,12 @@ mod tests {
             json!({
                 "state": "confirmation-needed",
                 "caption": "Close Notepad?",
-                "confirm": {"id": confirm_id, "prompt": "Close Notepad?"},
+                "confirm": {
+                    "id": confirm_id,
+                    "prompt": "Close Notepad?",
+                    "confirmLabel": "Confirm",
+                    "cancelLabel": "Cancel",
+                },
             })
         );
     }

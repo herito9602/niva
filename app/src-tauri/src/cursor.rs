@@ -1,7 +1,8 @@
 //! Cursor poller: the island is `focusable:false`, so the webview never sees
 //! mouse moves outside it. While the island is visible the host polls the
 //! global cursor position (`GetCursorPos`, through Tauri's `cursor_position`)
-//! at ~30 Hz and emits `niva://cursor {x, y}` relative to the window.
+//! at ~30 Hz and emits `niva://cursor {x, y}` relative to the window. Each poll
+//! also decides whether the window captures the mouse (`click_through.rs`).
 
 use std::{
     sync::{
@@ -15,6 +16,7 @@ use std::{
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::click_through::HitTesting;
 use crate::ui_adapter::CURSOR_EVENT;
 
 /// ~30 Hz.
@@ -64,6 +66,9 @@ pub trait CursorSource: Send + 'static {
     /// the cursor position is unavailable.
     fn sample(&mut self) -> Option<CursorPayload>;
     fn emit(&mut self, payload: CursorPayload);
+    /// Called on EVERY poll with the sample (moved or not, missing or not):
+    /// the buttons can appear or vanish under a cursor that does not move.
+    fn hit_test(&mut self, cursor: Option<CursorPayload>);
 }
 
 /// Start/stop bookkeeping. Each `try_start` bumps a generation so a stale
@@ -93,9 +98,12 @@ impl PollControl {
     }
 }
 
-/// One poll: sample, drop repeats, emit changes. Returns whether it emitted.
+/// One poll: sample, hit-test, drop repeats, emit changes. Returns whether it
+/// emitted.
 pub fn poll_once(tracker: &mut CursorTracker, source: &mut impl CursorSource) -> bool {
-    match tracker.next(source.sample()) {
+    let sample = source.sample();
+    source.hit_test(sample);
+    match tracker.next(sample) {
         Some(payload) => {
             source.emit(payload);
             true
@@ -123,6 +131,7 @@ pub fn poll_loop(
 struct WindowSource {
     app: AppHandle,
     label: &'static str,
+    hit: HitTesting,
 }
 
 impl CursorSource for WindowSource {
@@ -145,6 +154,13 @@ impl CursorSource for WindowSource {
     fn emit(&mut self, payload: CursorPayload) {
         let _ = self.app.emit_to(self.label, CURSOR_EVENT, payload);
     }
+
+    fn hit_test(&mut self, cursor: Option<CursorPayload>) {
+        let Some(win) = self.app.get_webview_window(self.label) else {
+            return;
+        };
+        self.hit.tick(&win, cursor);
+    }
 }
 
 /// Starts and stops the polling thread.
@@ -154,7 +170,7 @@ pub struct CursorPoller {
 }
 
 impl CursorPoller {
-    pub fn start(&self, app: &AppHandle, window_label: &'static str) {
+    pub fn start(&self, app: &AppHandle, window_label: &'static str, hit: HitTesting) {
         let Some(generation) = self.control.try_start() else {
             return;
         };
@@ -162,6 +178,7 @@ impl CursorPoller {
         let source = WindowSource {
             app: app.clone(),
             label: window_label,
+            hit,
         };
         thread::spawn(move || poll_loop(&control, generation, source, POLL_INTERVAL));
     }
@@ -247,6 +264,8 @@ mod tests {
     struct FakeSource {
         samples: std::collections::VecDeque<Option<CursorPayload>>,
         emitted: Arc<std::sync::Mutex<Vec<CursorPayload>>>,
+        /// What the hit test was given on each poll.
+        hit_tested: Arc<std::sync::Mutex<Vec<Option<CursorPayload>>>>,
         /// Stops the control once the queue is drained.
         stop_when_empty: Option<PollControl>,
     }
@@ -264,6 +283,38 @@ mod tests {
         fn emit(&mut self, payload: CursorPayload) {
             self.emitted.lock().unwrap().push(payload);
         }
+        fn hit_test(&mut self, cursor: Option<CursorPayload>) {
+            self.hit_tested.lock().unwrap().push(cursor);
+        }
+    }
+
+    #[test]
+    fn the_hit_test_runs_on_every_poll_even_for_a_still_or_missing_cursor() {
+        // The buttons can appear or vanish under a cursor that does not move,
+        // so the window flag is re-evaluated on every poll, not on every move.
+        let mut tracker = CursorTracker::default();
+        let mut src = FakeSource {
+            samples: [
+                Some(p(1.0, 1.0)),
+                Some(p(1.0, 1.0)),
+                None,
+                Some(p(2.0, 1.0)),
+            ]
+            .into(),
+            ..FakeSource::default()
+        };
+        for _ in 0..4 {
+            poll_once(&mut tracker, &mut src);
+        }
+        assert_eq!(
+            *src.hit_tested.lock().unwrap(),
+            vec![
+                Some(p(1.0, 1.0)),
+                Some(p(1.0, 1.0)),
+                None,
+                Some(p(2.0, 1.0))
+            ]
+        );
     }
 
     #[test]
@@ -312,6 +363,7 @@ mod tests {
         let src = FakeSource {
             samples: [Some(p(1.0, 1.0)), Some(p(2.0, 2.0)), Some(p(2.0, 2.0))].into(),
             emitted: emitted.clone(),
+            hit_tested: Default::default(),
             stop_when_empty: Some(control.clone()),
         };
         poll_loop(&control, generation, src, Duration::ZERO);
@@ -321,6 +373,7 @@ mod tests {
         let src = FakeSource {
             samples: [Some(p(9.0, 9.0))].into(),
             emitted: emitted.clone(),
+            hit_tested: Default::default(),
             stop_when_empty: None,
         };
         poll_loop(&control, generation, src, Duration::ZERO);

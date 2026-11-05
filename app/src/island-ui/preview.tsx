@@ -47,7 +47,15 @@ const SEQ = params.get("seq");
 const THEN = params.get("then");
 const SHOW_UI = params.get("ui") !== "0";
 
-const asView = (key: string): ViewPayload => ({ state: "success", caption: SAMPLES[key] });
+// The confirm sample shows the buttons too (they do nothing here: no host).
+const asView = (key: string): ViewPayload =>
+  key === "confirm"
+    ? {
+        state: "confirmation-needed",
+        caption: SAMPLES[key],
+        confirm: { id: 1, prompt: SAMPLES[key], confirmLabel: "Confirm", cancelLabel: "Cancel" },
+      }
+    : { state: "success", caption: SAMPLES[key] };
 
 /**
  * Pauses animations at `ms` (screenshots). With `onlyTransitions`, the keyframe

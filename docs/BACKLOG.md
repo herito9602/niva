@@ -129,3 +129,8 @@ Read through fetched summaries of selected files, not a full audit. Its safety a
 - [ ] **Slice 3 installer: skip the Python App Execution Alias stubs.** On Windows `python`/`python3` under `WindowsApps` can be 0-byte stubs that print "not found"; validate a candidate before trusting it (their fix in PR #1056). Only applies if the sidecar is not packaged with its own runtime.
 - [ ] **Slice 5: a `doctor` screen.** One place reporting Ollama reachable, model pulled, sidecar healthy, microphone present, plus a short privacy report (what can leave the machine: `web_search` queries and the edge-tts text, nothing else, and nothing bound beyond loopback), reporting presence, never secret values.
 - [ ] **Local per-turn trace.** Latency of STT, LLM and TTS plus the validation outcome, in a local file with NO prompt or reply text. Lets us see real-use latency instead of only E1.
+
+## Island confirm buttons (PR 2d-b part 1, 2026-11-05)
+- [ ] **Hand-test the buttons on a real desktop** (capture toggle on an unfocusable window, margins, a first click without focus, 125% and 150% scaling, a second monitor).
+- [ ] **Keyboard access to the confirmation** (the island is unfocusable by design): Enter and Esc would need a global key, which conflicts with the "no key hook" rule. Voice and the buttons are the ways for now.
+- [ ] **Buttons while the island springs.** The reported rectangle is the settled one; during the 900 ms intro the drawn button can be a few pixels off (covered by the 6 px margin and the 500 ms guard). If it ever feels wrong, report per frame or delay the reveal of the buttons.

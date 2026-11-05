@@ -4,8 +4,18 @@ import { displayLabel, islandLabel, type SlidePhase } from "../island";
 import { MascotCanvas } from "../mascot/MascotCanvas";
 import { useNow } from "../state/useNow";
 import { EDGE_IN_MS, EDGE_OUT_MS, SWAP_FADE_MS, planTextChange } from "./choreography";
+import { ConfirmButtons } from "./ConfirmButtons";
+import type { ConfirmActions } from "./confirmCommands";
+import { reportFor } from "./confirmUi";
 import { EDGE_INTRO_SETTLE_MS, EDGE_RESIZE_SETTLE_MS, edgeIntro, edgeOut, edgeResize, edgeSettled } from "./edge";
-import { COMPACT_LAYOUT, LINE_HEIGHT, MASCOT_SIZE, MAX_TEXT_WIDTH, computeLayout, type Layout } from "./layout";
+import {
+  COMPACT_LAYOUT,
+  LINE_HEIGHT,
+  MASCOT_SIZE,
+  MAX_TEXT_WIDTH,
+  computeLayout,
+  type Layout,
+} from "./layout";
 import { pageOffsets, scrollFrame } from "./scroll";
 import { shapePath, type Shape } from "./shape";
 
@@ -14,6 +24,8 @@ interface Props {
   view: ViewPayload | null;
   /** Read each frame by the mascot (cursor events are not React state). */
   getCursor: () => CursorPayload | null;
+  /** The host commands behind the confirmation buttons (absent in the dev preview). */
+  actions?: ConfirmActions;
   /** Overrides prefers-reduced-motion (dev preview only). */
   reducedMotion?: boolean;
   /** Freezes the long-message scroll clock at this time in ms (dev preview only). */
@@ -133,8 +145,10 @@ function useShapeDriver(
   }, [phase, layout, reduced, shapeClockMs, refs.stage, refs.path, refs.box]);
 }
 
-export function Island({ phase, view, getCursor, reducedMotion, scrollClockMs, shapeClockMs }: Props) {
+export function Island({ phase, view, getCursor, actions, reducedMotion, scrollClockMs, shapeClockMs }: Props) {
   const target = islandLabel(view);
+  const confirm = view?.confirm;
+  const wantsButtons = Boolean(confirm);
   // Only ticks while a sleep countdown is on screen; the pill is laid out for
   // `target`, which does not change with the seconds.
   const now = useNow(Boolean(view?.countdown));
@@ -159,6 +173,7 @@ export function Island({ phase, view, getCursor, reducedMotion, scrollClockMs, s
     const layout = computeLayout({
       lineWidth: lineProbe.current?.getBoundingClientRect().width ?? 0,
       blockHeight: blockProbe.current?.getBoundingClientRect().height ?? LINE_HEIGHT,
+      actions: wantsButtons,
     });
     const plan = planTextChange({ shownText: shown.text, target, phase, prevPhase: before });
 
@@ -171,16 +186,45 @@ export function Island({ phase, view, getCursor, reducedMotion, scrollClockMs, s
       return () => window.clearTimeout(id);
     }
     setFading(false);
-    if (plan === "swap-now" || shown.layout.width !== layout.width || shown.layout.height !== layout.height) {
+    if (
+      plan === "swap-now" ||
+      shown.layout.width !== layout.width ||
+      shown.layout.height !== layout.height ||
+      shown.layout.actions !== layout.actions
+    ) {
       setShown({ text: plan === "swap-now" ? target : shown.text, layout });
     }
-  }, [phase, target, shown.text, shown.layout.width, shown.layout.height]);
+  }, [phase, target, wantsButtons, shown.text, shown.layout.width, shown.layout.height, shown.layout.actions]);
 
   const { layout } = shown;
   const refs = { stage: stageRef, path: pathRef, box: boxRef };
   useShapeDriver(phase, layout, reduced, shapeClockMs, refs);
   const scrolls = layout.scrollDistance > 0;
   const scrollerRef = useRef<HTMLDivElement>(null);
+
+  // The buttons show only while the host still says there is a confirmation and
+  // the island has made room for them (it does so with the text they answer).
+  const buttonsOn = Boolean(confirm) && layout.actions && phase === "in";
+  const confirmId = confirm?.id;
+  // The host makes just these rectangles capture the mouse (it hit-tests the
+  // click-through window). They are where the buttons settle: the host takes
+  // them at once, so a fast click never passes through, and the half second in
+  // which Confirm is inactive covers the island's spring. When the buttons go
+  // (or the island leaves) an empty list releases the capture.
+  // A new confirmation, or none, makes the host forget its rectangles: forget
+  // the last report too, so an identical one is sent again. (Declared before the
+  // report effect: effects of one commit run in order.)
+  useEffect(() => {
+    actions?.forget();
+  }, [actions, confirmId]);
+  useEffect(() => {
+    if (!actions) return;
+    const report = reportFor({ confirmId, buttonsOn, layout, stageWidth: stageRef.current?.clientWidth || 0 });
+    if (report) void actions.report(report.id, report.areas);
+  }, [actions, confirmId, buttonsOn, layout]);
+  const onAnswer = (id: number, accept: boolean) => {
+    void actions?.answer(id, accept);
+  };
 
   // Long message: slow scroll with pauses (or paged fades under reduced motion).
   useEffect(() => {
@@ -214,13 +258,16 @@ export function Island({ phase, view, getCursor, reducedMotion, scrollClockMs, s
   const content = (
     <>
       <MascotCanvas view={view} getCursor={getCursor} active={phase === "in"} size={MASCOT_SIZE} reducedMotion={reducedMotion} />
-      <div
-        className={`label${fading ? " fading" : ""}${scrolls ? " scrolls" : ""}`}
-        style={{ width: layout.textWidth, height: layout.textHeight }}
-      >
-        <div ref={scrollerRef} className="txt scroller">
-          {displayLabel(view, shown.text, now)}
+      <div className="column" style={{ width: layout.textWidth }}>
+        <div
+          className={`label${fading ? " fading" : ""}${scrolls ? " scrolls" : ""}`}
+          style={{ width: layout.textWidth, height: layout.textHeight }}
+        >
+          <div ref={scrollerRef} className="txt scroller">
+            {displayLabel(view, shown.text, now)}
+          </div>
         </div>
+        {buttonsOn && confirm && <ConfirmButtons key={confirm.id} confirm={confirm} onAnswer={onAnswer} />}
       </div>
     </>
   );

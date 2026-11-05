@@ -160,7 +160,7 @@ describe("poseForView", () => {
     const view: ViewPayload = {
       state: "confirmation-needed",
       caption: "Close Notepad?",
-      confirm: { id: 3, prompt: "Close Notepad?" },
+      confirm: { id: 3, prompt: "Close Notepad?", confirmLabel: "Confirm", cancelLabel: "Cancel" },
     };
     expect(poseForView(view)).toBe(POSES["confirmation-needed"]);
   });

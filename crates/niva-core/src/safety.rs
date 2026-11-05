@@ -241,14 +241,17 @@ impl HeldPower {
 /// the reducer ignores `TextSubmitted` while a confirmation is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
-    /// A click on the confirmation buttons. **Host requirement:** only the
-    /// native click handler (the `answer_confirmation` path that comes from
-    /// the island) may produce this; no code reachable from the model or typed
-    /// text may construct it, and no release-build webview command may.
-    /// Debug builds are the one exception: the debug window's Confirm button
-    /// also becomes a click, which is safe only because every `PcActions` a
-    /// debug build runs is dry-run (design "Safety Gate"; PR 2d must keep it
-    /// so). Restart and shutdown are confirmable through this channel alone.
+    /// A click on the confirmation buttons. **Host requirement:** in a release
+    /// build only the island's `answer_confirmation` command may produce this,
+    /// and only through the host's `ConfirmGate`, which accepts nothing but the
+    /// id of the confirmation on screen and a choice, one answer per
+    /// confirmation, and no Confirm until the island has reported its buttons
+    /// and half a second has passed. No code reachable from the model or typed
+    /// text may construct it, and no other webview command may.
+    /// Debug builds add one exception: the debug window's Confirm button also
+    /// becomes a click, which is safe only because every `PcActions` a debug
+    /// build runs is dry-run (design "Safety Gate"). Restart and shutdown are
+    /// confirmable through this channel alone.
     Click,
     Voice,
 }

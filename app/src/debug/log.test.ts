@@ -42,12 +42,18 @@ describe("describeView", () => {
     const asked = view({
       state: "confirmation-needed",
       caption: "Close notepad.exe?",
-      confirm: { id: 3, prompt: "Close notepad.exe?" },
+      confirm: { id: 3, prompt: "Close notepad.exe?", confirmLabel: "Confirm", cancelLabel: "Cancel" },
     });
     expect(describeView(null, asked)).toBe("confirm: Close notepad.exe?");
     const withDeadline = view({
       ...asked,
-      confirm: { id: 3, prompt: "Close notepad.exe?", expiresAt: 5000 },
+      confirm: {
+        id: 3,
+        prompt: "Close notepad.exe?",
+        confirmLabel: "Confirm",
+        cancelLabel: "Cancel",
+        expiresAt: 5000,
+      },
     });
     expect(describeView(asked, withDeadline)).toBeNull();
   });
