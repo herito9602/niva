@@ -365,6 +365,12 @@ fn the_island_countdown_text_has_the_seconds_placeholder_in_both_languages() {
     }
 }
 
+#[test]
+fn the_confirmation_buttons_have_labels_in_both_languages() {
+    assert_eq!(confirm_labels(Lang::En), ("Confirm", "Cancel"));
+    assert_eq!(confirm_labels(Lang::Es), ("Confirmar", "Cancelar"));
+}
+
 // --- language detection (D1 text heuristic) -----------------------------
 
 #[test]
