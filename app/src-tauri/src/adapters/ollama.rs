@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use niva_core::ports::{ChatReply, ChatRequest, LlmError, LlmProvider};
 
 pub mod health;
+pub mod keeper;
 pub mod wire;
 
 #[cfg(test)]
