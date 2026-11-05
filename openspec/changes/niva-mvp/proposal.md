@@ -54,7 +54,7 @@ Tauri 2 (Rust) + React + TypeScript + Vite, as proven in the island spike. Hexag
 
 ## Open Decisions (settle in design)
 
-1. **STT** with no paid services: GPU faster-whisper on the RTX 3060, or a free cloud tier. Must keep the action path under 2.5 s.
+1. **STT** with no paid services: GPU faster-whisper on the RTX 3060, or a free cloud tier. Must keep the action path under 2.6 s.
 2. **Rust-only vs Python sidecar.** Affects packaging and antivirus flags.
 3. **Product LLM:** qwen3.5:2b invents risky actions and mixes languages. Compare a bigger local model using an eval set.
 4. **Web search source** (free API vs. scraping vs. opening the browser).
@@ -84,7 +84,7 @@ This is a greenfield product: each slice is an isolated PR. Revert the slice's c
 
 ## Success Criteria
 
-- [ ] End-of-speech to start of reply: < 2.5 s on average (spike: 3.75 s). ~500 ms of latency was traded for TTS voice quality (edge-tts); owner's call, 2026-11-02. End-to-end p95 goal: <= 3.0 s (design, Slice 0).
+- [ ] End-of-speech to start of reply: < 2.6 s on average (raised from 2.5 s on 2026-11-05, see design.md) (spike: 3.75 s). ~500 ms of latency was traded for TTS voice quality (edge-tts); owner's call, 2026-11-02. End-to-end p95 goal: <= 3.0 s (design, Slice 0).
 - [ ] 0 false activations in 10 min idle; at most 1 in 30 min of music, video and talk.
 - [ ] 0 risky actions without confirmation across the eval set.
 - [ ] Reply language matches the request in at least 95% of eval commands.
