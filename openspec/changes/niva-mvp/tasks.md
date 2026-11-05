@@ -74,7 +74,7 @@ Decision required: chain strategy (`stacked-to-main` or `feature-branch-chain`) 
 - [x] 1.22 `mascot/spring.ts` damped spring + vitest (convergence, no overshoot blowup).
 - [x] 1.23 `mascot/pose.ts` pose table for all 8 states + vitest (every state has a pose; thinking pose kept during AskFollowUp). Spec: `mascot`.
 - [x] 1.24 `mascot/robot.ts` + `MascotCanvas.tsx`: procedural head, capsule eyes, antenna, breathing, blinks 2-6 s, cursor-following eyes; no image assets. Done: visual check of 8 states via debug window. (code done; owner visual check pending)
-- [x] 1.25 Look review of mascot against the proposal's "derivative" risk (no Coucou code, shapes, name, media). Done: noted in PR. (code and originality note done; owner look review pending)
+- [~] 1.25 Look review of mascot against the proposal's "derivative" risk (no Coucou code, shapes, name, media). The first review covered the previous robot. Redone on 2026-11-05, from memory of the known characters plus a web search, not a side-by-side image comparison. The white sphere look was closest to Astro (white head, dark visor, blue eyes, side pieces) and EVE (white body, dark face, blue eyes, floating); tinting the shell did not help because the screen hid it, so the owner chose a coral rounded-square head with a smaller screen. No code, shape, name or media of another character is used. Owner approved the coral look live on 2026-11-05. Faces checked at real size (96 px) in colour and grayscale: all eight read as different, mostly through gesture and prop; the red `error` ring has the least contrast against the coral, so its spiral eyes carry that state.
 
 ### Phase 1.E: Slice 1 done check
 

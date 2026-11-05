@@ -68,7 +68,7 @@ Tauri 2 (Rust) + React + TypeScript + Vite, as proven in the island spike. Hexag
 | LLM triggers unrequested actions | Med | Gate in code; eval set |
 | Custom wake word is weak or fires falsely | Med | Test with real noise; keep the shortcut |
 | Friends' PCs lack a GPU | Med | Keep the STT/LLM port swappable |
-| Mascot looks derivative | Low | Original design review |
+| Mascot looks derivative | Low (coral look approved by the owner on 2026-11-05, tasks.md 1.25) | Original design review, repeated on any redraw |
 
 ## Delivery Slicing (ordered)
 
