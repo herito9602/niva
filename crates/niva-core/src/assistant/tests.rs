@@ -2160,13 +2160,18 @@ fn a_cancel_that_lands_while_the_worker_is_about_to_hold_leaves_nothing_to_resum
 }
 
 #[test]
-fn a_request_that_was_not_cancelled_still_holds_when_another_one_was() {
-    let mut r = Rig::new(vec![calls(vec![power("sleep")])], &PROCS);
+fn a_request_that_was_not_cancelled_still_holds_when_an_earlier_one_was() {
+    // The first request ends (the reducer cancels it on the way out); the next
+    // one has a higher id and holds its sleep as usual.
+    let mut r = Rig::new(
+        vec![calls(vec![open("notepad")]), calls(vec![power("sleep")])],
+        &PROCS,
+    );
+    r.type_text("open notepad");
     r.type_text("sleep");
     r.hold_tools = true;
     r.click(true);
     let req = r.held_tools.remove(0);
-    r.assistant.cancel_request(req + 100);
     let events = r.assistant.run_tools(req);
     assert!(
         matches!(
@@ -2179,20 +2184,52 @@ fn a_request_that_was_not_cancelled_still_holds_when_another_one_was() {
         "{events:?}"
     );
     assert!(!r.assistant.finish_countdown(req).is_empty());
-    assert_eq!(r.pc.calls(), vec![PcCall::Power(PowerKind::Sleep)]);
+    assert_eq!(
+        r.pc.calls(),
+        vec![
+            PcCall::OpenApp("notepad".into()),
+            PcCall::Power(PowerKind::Sleep)
+        ]
+    );
 }
 
 #[test]
-fn the_memory_of_cancelled_requests_is_bounded() {
+fn a_cancelled_request_stays_cancelled_however_many_others_are_cancelled_after_it() {
+    // A worker stuck for `req` while 40 other ids are cancelled: with a bounded
+    // list of cancelled ids `req` would be forgotten and could store its
+    // approval. A watermark never forgets it.
+    let mut r = Rig::new(vec![calls(vec![power("sleep")])], &PROCS);
+    r.type_text("sleep");
+    r.hold_tools = true;
+    r.click(true);
+    let req = r.held_tools.remove(0);
+    let (entered, release) = hold_before_hold(&r.assistant, req);
+    let assistant = r.assistant.clone();
+    let late = std::thread::scope(|scope| {
+        let worker = scope.spawn(move || assistant.run_tools(req));
+        entered.recv().expect("the worker is about to hold");
+        r.assistant.cancel_request(req);
+        for other in 1..=40 {
+            r.assistant.cancel_request(req + other);
+        }
+        release.send(()).expect("release the worker");
+        worker.join().expect("worker")
+    });
+    assert_eq!(late, Vec::new(), "a cancelled request reports nothing");
+    assert!(r.assistant.finish_countdown(req).is_empty());
+    assert!(r.pc.calls().is_empty(), "{:?}", r.pc.calls());
+}
+
+#[test]
+fn cancelling_keeps_no_per_request_memory() {
+    // The session remembers one number, however many requests are cancelled.
     let r = Rig::new(vec![], &PROCS);
-    for req in 0..10_000 {
+    for req in 1..=10_000 {
         r.assistant.cancel_request(req);
     }
-    assert!(
-        r.assistant.cancelled_len() <= 32,
-        "{}",
-        r.assistant.cancelled_len()
-    );
+    assert_eq!(r.assistant.cancelled_upto(), 10_000);
+    r.assistant.cancel_request(5);
+    assert_eq!(r.assistant.cancelled_upto(), 10_000, "never goes back");
 }
 
 #[test]
@@ -2366,4 +2403,199 @@ fn nothing_watches_the_input_at_rest() {
     r.type_text("open notepad");
     assert!(!r.watching);
     assert_eq!(r.watches, 1, "no second watch without a second countdown");
+}
+
+// --- PR 2d-a: a build without risky actions (release) ------------------------
+// Close and power are not wired to Windows yet, and without voice or an island
+// click nobody could answer the prompt. Such a build must say so BEFORE any
+// confirmation prompt, and must never reach the PC for a risky plan.
+
+impl Rig {
+    /// The same rig, with an assistant that has no risky actions.
+    fn without_risky(script: Script, processes: &[&str]) -> Rig {
+        let mut rig = Rig::build(script, processes, true);
+        rig.assistant = Arc::new(
+            Assistant::new(rig.llm.clone(), rig.pc.clone())
+                .with_search(rig.search.clone())
+                .with_reminders(rig.reminders.clone())
+                .without_risky_actions(),
+        );
+        rig
+    }
+}
+
+#[test]
+fn a_build_without_risky_actions_refuses_every_risky_plan_before_any_prompt() {
+    for call in [
+        close("spotify"),
+        power("lock"),
+        power("sleep"),
+        power("restart"),
+        power("shutdown"),
+    ] {
+        let mut r = Rig::without_risky(vec![calls(vec![call.clone()])], &PROCS);
+        r.type_text("do it");
+        assert_eq!(r.phase(), Phase::Error, "{call:?}");
+        assert_eq!(r.last(), en(&Msg::RiskyNotAvailableYet), "{call:?}");
+        assert_eq!(r.state.confirm_id, None, "{call:?}: no prompt was shown");
+        assert!(r.pc.calls().is_empty(), "{call:?}: the PC was touched");
+    }
+}
+
+#[test]
+fn a_risky_call_next_to_a_safe_one_runs_nothing_in_such_a_build() {
+    let mut r = Rig::without_risky(vec![calls(vec![open("notepad"), close("spotify")])], &PROCS);
+    r.type_text("open notepad and close spotify");
+    assert_eq!(r.phase(), Phase::Error);
+    assert_eq!(r.last(), en(&Msg::RiskyNotAvailableYet));
+    assert!(r.pc.calls().is_empty(), "the safe call must not run alone");
+}
+
+#[test]
+fn the_refusal_speaks_the_language_of_the_request() {
+    let mut r = Rig::without_risky(vec![calls(vec![close("spotify")])], &PROCS);
+    r.type_text("cierra spotify por favor");
+    assert_eq!(
+        r.last(),
+        replies::render(&Msg::RiskyNotAvailableYet, Lang::Es)
+    );
+}
+
+#[test]
+fn safe_plans_still_run_in_a_build_without_risky_actions() {
+    let mut r = Rig::without_risky(vec![calls(vec![open("notepad"), volume(30)])], &PROCS);
+    r.type_text("open notepad and volume 30");
+    assert_eq!(r.phase(), Phase::Success);
+    assert_eq!(
+        r.pc.calls(),
+        vec![
+            PcCall::OpenApp("notepad".into()),
+            PcCall::SetVolume(VolumeChange::Set(30))
+        ]
+    );
+}
+
+#[test]
+fn a_search_next_to_a_risky_call_keeps_its_own_error_in_such_a_build() {
+    // Either answer is truthful and nothing runs; the refusal comes first.
+    let mut r = Rig::without_risky(vec![calls(vec![search("rust"), power("lock")])], &PROCS);
+    r.type_text("search rust and lock");
+    assert_eq!(r.phase(), Phase::Error);
+    assert!(r.pc.calls().is_empty());
+    assert!(r.search.queries().is_empty());
+}
+
+// --- Batch 28 review: the refusal cannot be bypassed --------------------------
+
+fn bare_assistant_without_risky(processes: &[&str]) -> (Assistant, Arc<FakePc>) {
+    let llm = Arc::new(FakeLlm::new(Vec::new()));
+    let pc = Arc::new(FakePc::with_processes(processes));
+    (Assistant::new(llm, pc.clone()).without_risky_actions(), pc)
+}
+
+fn is_the_refusal(events: &[Event], lang: Lang) -> bool {
+    matches!(
+        events,
+        [Event::FailureText { text, .. }]
+            if *text == replies::render(&Msg::RiskyNotAvailableYet, lang)
+    )
+}
+
+#[test]
+fn a_pinned_close_is_refused_in_a_build_without_risky_actions() {
+    // plan_pinned goes straight to commit_plan, around plan_calls: the answer
+    // to a "which one?" question must not open a prompt that nobody can answer.
+    let (assistant, pc) = bare_assistant_without_risky(&TWO_NOTEPADS);
+    let slot = PendingSlot::Close {
+        candidates: vec!["notepad.exe".into(), "notepad++.exe".into()],
+    };
+    let events = assistant.start_request(
+        1,
+        &RequestInput::User {
+            text: "notepad".into(),
+            slot: Some(slot),
+        },
+    );
+    assert!(is_the_refusal(&events, Lang::En), "{events:?}");
+    assert!(
+        pc.calls().is_empty(),
+        "nothing reached the PC: {:?}",
+        pc.calls()
+    );
+}
+
+#[test]
+fn committing_a_risky_plan_is_refused_by_commit_plan_itself() {
+    // The backstop: whoever builds a plan, commit_plan never stores a risky
+    // call in a build without risky actions.
+    let (assistant, pc) = bare_assistant_without_risky(&PROCS);
+    let validated = SafetyGate::new().validate(&close("spotify"), &pc.running_processes(), 1, 0);
+    let Ok(Validated::Risky(request)) = validated else {
+        panic!("a close of a running app validates as risky: {validated:?}");
+    };
+    let risky = VecDeque::from([PlannedRisky {
+        request,
+        label: RiskyLabel::Close,
+    }]);
+    let events = assistant.commit_plan(1, Lang::En, Vec::new(), risky);
+    assert!(is_the_refusal(&events, Lang::En), "{events:?}");
+    assert!(
+        assistant.take_plan(1).is_none(),
+        "no plan was stored, so nothing can run later"
+    );
+}
+
+#[test]
+fn a_build_with_risky_actions_still_commits_the_same_plan() {
+    let llm = Arc::new(FakeLlm::new(Vec::new()));
+    let pc = Arc::new(FakePc::with_processes(&PROCS));
+    let assistant = Assistant::new(llm, pc.clone());
+    let validated = SafetyGate::new().validate(&close("spotify"), &pc.running_processes(), 1, 0);
+    let Ok(Validated::Risky(request)) = validated else {
+        panic!("{validated:?}");
+    };
+    let risky = VecDeque::from([PlannedRisky {
+        request,
+        label: RiskyLabel::Close,
+    }]);
+    assistant.begin_user(1, "close spotify", None);
+    let events = assistant.commit_plan(1, Lang::En, Vec::new(), risky);
+    assert!(
+        matches!(events.as_slice(), [Event::ToolCalls { .. }]),
+        "{events:?}"
+    );
+}
+
+// --- Batch 28 review: the reply says what was launched -------------------------
+
+#[test]
+fn the_reply_names_the_launched_app_not_the_models_wording() {
+    let mut r = Rig::new(vec![calls(vec![open("notepad")])], &PROCS);
+    r.pc.set_launched_as("Bloc de notas");
+    r.type_text("open notepad");
+    assert_eq!(r.phase(), Phase::Success);
+    assert_eq!(r.last(), "Opened Bloc de notas.");
+}
+
+#[test]
+fn the_launched_name_is_used_in_spanish_too() {
+    let mut r = Rig::new(vec![calls(vec![open("notepad")])], &PROCS);
+    r.pc.set_launched_as("Bloc de notas");
+    r.type_text("abrí el bloc de notas por favor");
+    assert_eq!(r.last(), "Abrí Bloc de notas.");
+}
+
+#[test]
+fn a_failed_launch_still_names_what_the_user_asked_for() {
+    let mut r = Rig::new(vec![calls(vec![open("photoshop")])], &PROCS);
+    r.pc.set_open_result(Err(PcError::NotFound));
+    r.pc.set_launched_as("Something else");
+    r.type_text("open photoshop");
+    assert_eq!(r.phase(), Phase::Error);
+    assert_eq!(
+        r.last(),
+        en(&Msg::AppNotFound {
+            app: "photoshop".into()
+        })
+    );
 }

@@ -91,6 +91,15 @@ pub trait PcActions: Send + Sync {
     /// Safe: may match fuzzily, a wrong guess is harmless. `name` is model
     /// output: pass it as data, never interpolate it into a shell command.
     fn open_app(&self, name: &str) -> Result<(), PcError>;
+    /// `open_app`, reporting what was launched: the display name of the entry
+    /// that started (`Bloc de notas`), which the reply states instead of the
+    /// model's wording. The default launches through `open_app` and reports the
+    /// requested name; every real adapter overrides it. (Kept next to
+    /// `open_app` because the safety module's own test doubles implement that
+    /// method and are out of scope; merge the two when they can change.)
+    fn launch_app(&self, name: &str) -> Result<String, PcError> {
+        self.open_app(name).map(|()| name.to_string())
+    }
     /// Every running process. Resolution and protection happen in the core.
     fn running_processes(&self) -> Vec<ProcessInfo>;
     /// Risky: closes the approved executable (no force kill).

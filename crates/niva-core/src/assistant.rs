@@ -108,6 +108,9 @@ pub struct Assistant {
     search: Option<Arc<dyn SearchProvider>>,
     reminders: Option<Arc<dyn ReminderStore>>,
     clock: Option<Arc<dyn Clock>>,
+    /// `false` in a build whose PC adapter cannot close apps or control power
+    /// yet: every plan with a risky call is refused before any prompt.
+    risky_actions: bool,
     gate: SafetyGate,
     session: Mutex<Session>,
     /// Test-only: called by a worker right after it registered, with its id,
@@ -118,10 +121,6 @@ pub struct Assistant {
     #[cfg(test)]
     before_hold: Mutex<Option<AfterBeginHook>>,
 }
-
-/// How many cancelled request ids the session remembers. A request can only
-/// be late by a worker that is still running, and workers are few.
-const CANCELLED_MEMORY: usize = 32;
 
 #[derive(Default)]
 struct Session {
@@ -141,10 +140,12 @@ struct Session {
     /// `finish_countdown`, dropped by `cancel_request` and by a new request:
     /// dropping it IS the cancel, there is nothing left to resume.
     held: Option<Held>,
-    /// The newest ids `cancel_request` ended, oldest first, at most
-    /// `CANCELLED_MEMORY`. A worker that was already running when its request
-    /// was cancelled must not store an approval afterwards.
-    cancelled: VecDeque<u64>,
+    /// The highest id `cancel_request` ended (0: none). A watermark, not a
+    /// list: the reducer hands out ids in increasing order and only the newest
+    /// request is ever live, so every id at or below it is over. A worker that
+    /// was already running when its request was cancelled must not store an
+    /// approval afterwards, and no number of later cancels can make it forget.
+    cancelled_upto: u64,
 }
 
 /// The approval of an accepted sleep and what the reply says around it.
@@ -269,6 +270,7 @@ impl Assistant {
             search: None,
             reminders: None,
             clock: None,
+            risky_actions: true,
             gate: SafetyGate::new(),
             session: Mutex::default(),
             #[cfg(test)]
@@ -293,6 +295,17 @@ impl Assistant {
     /// zone, the prompt has no time line.
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.clock = Some(clock);
+        self
+    }
+
+    /// A build whose PC cannot close apps or control power yet (release in PR
+    /// 2d-a: no voice and no island click, so a confirmation could not be
+    /// answered anyway). A response with a `close_app` or `power_action` call
+    /// is refused as a whole, with a truthful reply, BEFORE the safety gate or
+    /// any confirmation prompt, and before any safe call runs. The safety code
+    /// is not involved: this only decides not to ask.
+    pub fn without_risky_actions(mut self) -> Self {
+        self.risky_actions = false;
         self
     }
 
@@ -357,8 +370,8 @@ impl Assistant {
     fn paused_before_hold(&self, _req: u64) {}
 
     #[cfg(test)]
-    fn cancelled_len(&self) -> usize {
-        self.session().cancelled.len()
+    fn cancelled_upto(&self) -> u64 {
+        self.session().cancelled_upto
     }
 
     /// Registers a user request as the newest and resets what the previous one
@@ -466,6 +479,9 @@ impl Assistant {
         if searches > 1 {
             return vec![failure(req, &Msg::DuplicateSearch, lang)];
         }
+        if !self.risky_actions && tools.iter().flatten().any(|t| t.risk() == Risk::Risky) {
+            return vec![failure(req, &Msg::RiskyNotAvailableYet, lang)];
+        }
         // Task 2.6: a search summary and a confirmation must never interleave.
         let has_risky = tools.iter().flatten().any(|t| t.risk() == Risk::Risky);
         if searches > 0 && has_risky {
@@ -524,6 +540,12 @@ impl Assistant {
         safe: Vec<SafeAction>,
         risky: VecDeque<PlannedRisky>,
     ) -> Vec<Event> {
+        // The one place every plan passes through (the model's calls and the
+        // pinned "which one?" answer alike): a build without risky actions
+        // never stores a risky call, whoever built the plan.
+        if !self.risky_actions && !risky.is_empty() {
+            return vec![failure(req, &Msg::RiskyNotAvailableYet, lang)];
+        }
         let verdict = match risky.front() {
             Some(first) if safe.is_empty() => ToolVerdict::Confirm {
                 prompt: replies::render(&first.prompt(), lang),
@@ -680,7 +702,7 @@ impl Assistant {
         };
         self.paused_before_hold(req);
         let mut session = self.session();
-        if session.latest_req != req || session.cancelled.contains(&req) {
+        if session.latest_req != req || req <= session.cancelled_upto {
             // Dropped with the approval: nothing is left to run.
             return Vec::new();
         }
@@ -764,8 +786,9 @@ impl Assistant {
         let mut found = None;
         for action in std::mem::take(&mut plan.safe) {
             match action {
-                SafeAction::OpenApp { name } => match self.pc.open_app(&name) {
-                    Ok(()) => plan.say(&Msg::Opened { app: name }),
+                SafeAction::OpenApp { name } => match self.pc.launch_app(&name) {
+                    // The reply names what the adapter really launched.
+                    Ok(launched) => plan.say(&Msg::Opened { app: launched }),
                     Err(PcError::NotFound) => plan.fail(&Msg::AppNotFound { app: name }),
                     Err(PcError::NotReady) => plan.fail(&Msg::AppIndexLoading),
                     Err(PcError::Failed(_)) => plan.fail(&Msg::OpenFailed { app: name }),
@@ -888,12 +911,7 @@ impl Assistant {
     /// answer meant for it.
     pub fn cancel_request(&self, req: u64) {
         let mut session = self.session();
-        if !session.cancelled.contains(&req) {
-            if session.cancelled.len() == CANCELLED_MEMORY {
-                session.cancelled.pop_front();
-            }
-            session.cancelled.push_back(req);
-        }
+        session.cancelled_upto = session.cancelled_upto.max(req);
         if session.plan.as_ref().is_some_and(|plan| plan.req == req) {
             session.plan = None;
             session.answer = None;
