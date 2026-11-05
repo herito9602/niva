@@ -141,7 +141,7 @@ impl PcActions for GatedPc {
         self.inner.open_app(name)
     }
 
-    fn running_processes(&self) -> Vec<ProcessInfo> {
+    fn running_processes(&self) -> Result<Vec<ProcessInfo>, PcError> {
         self.inner.running_processes()
     }
 
@@ -1997,7 +1997,7 @@ fn the_pc_sleeps_once_when_the_deadline_passes_and_not_before() {
     assert!(r.pc.calls().is_empty());
     r.fire(TimerKind::Countdown);
     assert_eq!(r.phase(), Phase::Success);
-    assert_eq!(r.last(), "Putting the PC to sleep.");
+    assert_eq!(r.last(), "Suspending the PC.");
     assert_eq!(r.pc.calls(), vec![PcCall::Power(PowerKind::Sleep)]);
     assert!(!r.watching, "the poller stops when the countdown ends");
 }
@@ -2085,7 +2085,7 @@ fn a_cancel_that_races_the_deadline_gives_exactly_one_result() {
     r.fire(TimerKind::Countdown);
     r.send(Event::CountdownCancel { id });
     assert_eq!(r.pc.calls(), vec![PcCall::Power(PowerKind::Sleep)]);
-    assert_eq!(r.last(), "Putting the PC to sleep.");
+    assert_eq!(r.last(), "Suspending the PC.");
 }
 
 #[test]
@@ -2315,7 +2315,7 @@ fn earlier_results_stay_in_the_reply_when_the_countdown_is_cancelled_or_finished
     r.type_text("volume 30 and sleep");
     r.click(true);
     r.fire(TimerKind::Countdown);
-    assert_eq!(r.last(), "Volume at 30%. Putting the PC to sleep.");
+    assert_eq!(r.last(), "Volume at 30%. Suspending the PC.");
 }
 
 #[test]
@@ -2327,7 +2327,7 @@ fn a_risky_call_after_the_sleep_is_reported_as_not_done() {
     r.fire(TimerKind::Countdown);
     assert_eq!(
         r.last(),
-        "Putting the PC to sleep. Cancelled closing Spotify.exe."
+        "Suspending the PC. Cancelled closing Spotify.exe."
     );
     assert_eq!(r.pc.calls(), vec![PcCall::Power(PowerKind::Sleep)]);
 
@@ -2350,7 +2350,7 @@ fn a_pc_that_fails_to_sleep_says_so() {
         fn open_app(&self, name: &str) -> Result<(), PcError> {
             self.0.open_app(name)
         }
-        fn running_processes(&self) -> Vec<ProcessInfo> {
+        fn running_processes(&self) -> Result<Vec<ProcessInfo>, PcError> {
             self.0.running_processes()
         }
         fn close_app(&self, a: Approved<CloseApp>) -> Result<CloseOutcome, PcError> {
@@ -2405,152 +2405,18 @@ fn nothing_watches_the_input_at_rest() {
     assert_eq!(r.watches, 1, "no second watch without a second countdown");
 }
 
-// --- PR 2d-a: a build without risky actions (release) ------------------------
-// Close and power are not wired to Windows yet, and without voice or an island
-// click nobody could answer the prompt. Such a build must say so BEFORE any
-// confirmation prompt, and must never reach the PC for a risky plan.
-
-impl Rig {
-    /// The same rig, with an assistant that has no risky actions.
-    fn without_risky(script: Script, processes: &[&str]) -> Rig {
-        let mut rig = Rig::build(script, processes, true);
-        rig.assistant = Arc::new(
-            Assistant::new(rig.llm.clone(), rig.pc.clone())
-                .with_search(rig.search.clone())
-                .with_reminders(rig.reminders.clone())
-                .without_risky_actions(),
-        );
-        rig
-    }
-}
+// --- PR 2d-b: the real close and power paths ---------------------------------
+// The release assistant has no opt-out any more: a risky plan asks for a
+// confirmation like in debug. These pin what the assistant says around the real
+// adapters (a failed snapshot, a window-less app, a PC that cannot sleep).
 
 #[test]
-fn a_build_without_risky_actions_refuses_every_risky_plan_before_any_prompt() {
-    for call in [
-        close("spotify"),
-        power("lock"),
-        power("sleep"),
-        power("restart"),
-        power("shutdown"),
-    ] {
-        let mut r = Rig::without_risky(vec![calls(vec![call.clone()])], &PROCS);
-        r.type_text("do it");
-        assert_eq!(r.phase(), Phase::Error, "{call:?}");
-        assert_eq!(r.last(), en(&Msg::RiskyNotAvailableYet), "{call:?}");
-        assert_eq!(r.state.confirm_id, None, "{call:?}: no prompt was shown");
-        assert!(r.pc.calls().is_empty(), "{call:?}: the PC was touched");
-    }
-}
-
-#[test]
-fn a_risky_call_next_to_a_safe_one_runs_nothing_in_such_a_build() {
-    let mut r = Rig::without_risky(vec![calls(vec![open("notepad"), close("spotify")])], &PROCS);
-    r.type_text("open notepad and close spotify");
-    assert_eq!(r.phase(), Phase::Error);
-    assert_eq!(r.last(), en(&Msg::RiskyNotAvailableYet));
-    assert!(r.pc.calls().is_empty(), "the safe call must not run alone");
-}
-
-#[test]
-fn the_refusal_speaks_the_language_of_the_request() {
-    let mut r = Rig::without_risky(vec![calls(vec![close("spotify")])], &PROCS);
-    r.type_text("cierra spotify por favor");
-    assert_eq!(
-        r.last(),
-        replies::render(&Msg::RiskyNotAvailableYet, Lang::Es)
-    );
-}
-
-#[test]
-fn safe_plans_still_run_in_a_build_without_risky_actions() {
-    let mut r = Rig::without_risky(vec![calls(vec![open("notepad"), volume(30)])], &PROCS);
-    r.type_text("open notepad and volume 30");
-    assert_eq!(r.phase(), Phase::Success);
-    assert_eq!(
-        r.pc.calls(),
-        vec![
-            PcCall::OpenApp("notepad".into()),
-            PcCall::SetVolume(VolumeChange::Set(30))
-        ]
-    );
-}
-
-#[test]
-fn a_search_next_to_a_risky_call_keeps_its_own_error_in_such_a_build() {
-    // Either answer is truthful and nothing runs; the refusal comes first.
-    let mut r = Rig::without_risky(vec![calls(vec![search("rust"), power("lock")])], &PROCS);
-    r.type_text("search rust and lock");
-    assert_eq!(r.phase(), Phase::Error);
-    assert!(r.pc.calls().is_empty());
-    assert!(r.search.queries().is_empty());
-}
-
-// --- Batch 28 review: the refusal cannot be bypassed --------------------------
-
-fn bare_assistant_without_risky(processes: &[&str]) -> (Assistant, Arc<FakePc>) {
-    let llm = Arc::new(FakeLlm::new(Vec::new()));
-    let pc = Arc::new(FakePc::with_processes(processes));
-    (Assistant::new(llm, pc.clone()).without_risky_actions(), pc)
-}
-
-fn is_the_refusal(events: &[Event], lang: Lang) -> bool {
-    matches!(
-        events,
-        [Event::FailureText { text, .. }]
-            if *text == replies::render(&Msg::RiskyNotAvailableYet, lang)
-    )
-}
-
-#[test]
-fn a_pinned_close_is_refused_in_a_build_without_risky_actions() {
-    // plan_pinned goes straight to commit_plan, around plan_calls: the answer
-    // to a "which one?" question must not open a prompt that nobody can answer.
-    let (assistant, pc) = bare_assistant_without_risky(&TWO_NOTEPADS);
-    let slot = PendingSlot::Close {
-        candidates: vec!["notepad.exe".into(), "notepad++.exe".into()],
-    };
-    let events = assistant.start_request(
-        1,
-        &RequestInput::User {
-            text: "notepad".into(),
-            slot: Some(slot),
-        },
-    );
-    assert!(is_the_refusal(&events, Lang::En), "{events:?}");
-    assert!(
-        pc.calls().is_empty(),
-        "nothing reached the PC: {:?}",
-        pc.calls()
-    );
-}
-
-#[test]
-fn committing_a_risky_plan_is_refused_by_commit_plan_itself() {
-    // The backstop: whoever builds a plan, commit_plan never stores a risky
-    // call in a build without risky actions.
-    let (assistant, pc) = bare_assistant_without_risky(&PROCS);
-    let validated = SafetyGate::new().validate(&close("spotify"), &pc.running_processes(), 1, 0);
-    let Ok(Validated::Risky(request)) = validated else {
-        panic!("a close of a running app validates as risky: {validated:?}");
-    };
-    let risky = VecDeque::from([PlannedRisky {
-        request,
-        label: RiskyLabel::Close,
-    }]);
-    let events = assistant.commit_plan(1, Lang::En, Vec::new(), risky);
-    assert!(is_the_refusal(&events, Lang::En), "{events:?}");
-    assert!(
-        assistant.take_plan(1).is_none(),
-        "no plan was stored, so nothing can run later"
-    );
-}
-
-#[test]
-fn a_build_with_risky_actions_still_commits_the_same_plan() {
+fn a_committed_risky_plan_is_stored_and_asks_for_a_confirmation() {
     let llm = Arc::new(FakeLlm::new(Vec::new()));
     let pc = Arc::new(FakePc::with_processes(&PROCS));
     let assistant = Assistant::new(llm, pc.clone());
-    let validated = SafetyGate::new().validate(&close("spotify"), &pc.running_processes(), 1, 0);
+    let processes = pc.running_processes().unwrap();
+    let validated = SafetyGate::new().validate(&close("spotify"), &processes, 1, 0);
     let Ok(Validated::Risky(request)) = validated else {
         panic!("{validated:?}");
     };
@@ -2564,6 +2430,216 @@ fn a_build_with_risky_actions_still_commits_the_same_plan() {
         matches!(events.as_slice(), [Event::ToolCalls { .. }]),
         "{events:?}"
     );
+}
+
+#[test]
+fn a_risky_call_next_to_safe_ones_confirms_after_the_safe_ones_run() {
+    let mut r = Rig::new(vec![calls(vec![open("notepad"), close("spotify")])], &PROCS);
+    r.type_text("open notepad and close spotify");
+    assert_eq!(r.phase(), Phase::ConfirmationNeeded);
+    assert_eq!(r.pc.calls(), vec![PcCall::OpenApp("notepad".into())]);
+    r.click(true);
+    assert_eq!(
+        r.pc.calls(),
+        vec![
+            PcCall::OpenApp("notepad".into()),
+            PcCall::CloseApp {
+                exe: "Spotify.exe".into()
+            }
+        ]
+    );
+}
+
+#[test]
+fn a_pinned_answer_to_which_one_asks_for_a_confirmation() {
+    let mut r = Rig::new(vec![calls(vec![close("notepad")])], &TWO_NOTEPADS);
+    r.type_text("close notepad");
+    assert_eq!(r.phase(), Phase::Listening);
+    r.type_text("notepad.exe");
+    assert_eq!(r.phase(), Phase::ConfirmationNeeded);
+    assert!(r.pc.calls().is_empty(), "nothing closed before the click");
+}
+
+// --- PR 2d-b: names of built-in apps reach their process --------------------
+
+const WITH_CALCULATOR: [&str; 4] = [
+    "CalculatorApp.exe",
+    "Spotify.exe",
+    "explorer.exe",
+    "notepad.exe",
+];
+
+#[test]
+fn a_spanish_app_name_reaches_the_process_of_the_built_in_app() {
+    let mut r = Rig::new(vec![calls(vec![close("calculadora")])], &WITH_CALCULATOR);
+    r.type_text("cierra la calculadora");
+    assert_eq!(r.phase(), Phase::ConfirmationNeeded);
+    assert_eq!(
+        r.last(),
+        replies::render(
+            &Msg::ConfirmClose {
+                exe: "CalculatorApp.exe".into()
+            },
+            Lang::Es
+        )
+    );
+    r.click(true);
+    assert_eq!(
+        r.pc.calls(),
+        vec![PcCall::CloseApp {
+            exe: "CalculatorApp.exe".into()
+        }]
+    );
+    assert_eq!(
+        r.last(),
+        replies::render(
+            &Msg::Closed {
+                exe: "CalculatorApp.exe".into()
+            },
+            Lang::Es
+        )
+    );
+}
+
+#[test]
+fn the_mapped_name_is_still_ambiguous_when_it_matches_several_processes() {
+    let mut r = Rig::new(vec![calls(vec![close("bloc de notas")])], &TWO_NOTEPADS);
+    r.type_text("cierra el bloc de notas");
+    assert_eq!(r.phase(), Phase::Listening, "the gate still asks which one");
+    assert!(r.pc.calls().is_empty());
+}
+
+#[test]
+fn a_name_outside_the_table_never_reaches_a_protected_process() {
+    // Only built-in apps are mapped; the shell is not, and the gate keeps its
+    // protected list for whatever a stem would match.
+    let mut r = Rig::new(vec![calls(vec![close("explorador de archivos")])], &PROCS);
+    r.type_text("cierra el explorador de archivos");
+    assert_eq!(r.phase(), Phase::Error);
+    assert_eq!(r.last(), replies::render(&Msg::CloseNoMatch, Lang::Es));
+    assert!(r.pc.calls().is_empty());
+}
+
+#[test]
+fn a_name_that_is_not_built_in_is_matched_as_the_model_wrote_it() {
+    let mut r = Rig::new(vec![calls(vec![close("spotify")])], &WITH_CALCULATOR);
+    r.type_text("close spotify");
+    assert_eq!(r.phase(), Phase::ConfirmationNeeded);
+    r.click(true);
+    assert_eq!(
+        r.pc.calls(),
+        vec![PcCall::CloseApp {
+            exe: "Spotify.exe".into()
+        }]
+    );
+}
+
+// --- PR 2d-b: a failed snapshot is an error, never "not running" -----------
+
+#[test]
+fn an_unreadable_process_list_is_an_error_reply_not_a_not_running_one() {
+    let mut r = Rig::new(vec![calls(vec![close("spotify")])], &PROCS);
+    r.pc.set_process_error(Some(PcError::Failed("no snapshot".into())));
+    r.type_text("close spotify");
+    assert_eq!(r.phase(), Phase::Error);
+    assert_eq!(r.last(), en(&Msg::ToolFailed));
+    assert_ne!(r.last(), en(&Msg::CloseNoMatch));
+    assert_eq!(r.state.confirm_id, None, "no prompt was shown");
+    assert!(r.pc.calls().is_empty());
+}
+
+#[test]
+fn an_unreadable_process_list_at_execution_closes_nothing_and_says_so() {
+    let mut r = Rig::new(vec![calls(vec![close("spotify")])], &PROCS);
+    r.type_text("close spotify");
+    assert_eq!(r.phase(), Phase::ConfirmationNeeded);
+    r.pc.set_process_error(Some(PcError::Failed("no snapshot".into())));
+    r.click(true);
+    assert_eq!(r.phase(), Phase::Error);
+    assert_eq!(r.last(), en(&Msg::ToolFailed));
+    assert!(r.pc.calls().is_empty(), "nothing was closed");
+}
+
+#[test]
+fn an_unreadable_process_list_fails_the_pinned_answer_too() {
+    let mut r = Rig::new(vec![calls(vec![close("notepad")])], &TWO_NOTEPADS);
+    r.type_text("close notepad");
+    assert_eq!(r.phase(), Phase::Listening);
+    r.pc.set_process_error(Some(PcError::Failed("no snapshot".into())));
+    r.type_text("notepad.exe");
+    assert_eq!(r.phase(), Phase::Error);
+    assert_eq!(r.last(), en(&Msg::ToolFailed));
+}
+
+// --- PR 2d-b: truthful outcomes of the real adapters ------------------------
+
+#[test]
+fn an_app_with_no_window_to_close_is_said_truthfully() {
+    let mut r = Rig::new(vec![calls(vec![close("spotify")])], &PROCS);
+    r.pc.set_close_outcome(CloseOutcome::NoWindow);
+    r.type_text("close spotify");
+    r.click(true);
+    assert_eq!(
+        r.last(),
+        en(&Msg::CloseNoWindow {
+            exe: "Spotify.exe".into()
+        })
+    );
+    assert_eq!(r.phase(), Phase::Success, "the app is open: not an error");
+}
+
+#[test]
+fn a_window_closed_but_the_app_still_running_is_not_said_to_be_closed() {
+    let mut r = Rig::new(vec![calls(vec![close("spotify")])], &PROCS);
+    r.pc.set_close_outcome(CloseOutcome::KeepsRunning);
+    r.type_text("close spotify");
+    r.click(true);
+    assert_eq!(
+        r.last(),
+        en(&Msg::ClosedKeepsRunning {
+            exe: "Spotify.exe".into()
+        })
+    );
+    assert_ne!(
+        r.last(),
+        en(&Msg::Closed {
+            exe: "Spotify.exe".into()
+        })
+    );
+}
+
+#[test]
+fn the_sleep_reply_says_suspending_not_slept() {
+    assert_eq!(
+        en(&Msg::PowerDone {
+            action: PowerKind::Sleep
+        }),
+        "Suspending the PC."
+    );
+}
+
+#[test]
+fn a_pc_that_cannot_sleep_says_so_and_is_not_a_generic_failure() {
+    let mut r = Rig::new(vec![calls(vec![power("sleep")])], &PROCS);
+    r.pc.set_power_error(Some(PcError::NotSupported));
+    r.type_text("sleep");
+    r.say("yes");
+    r.fire(TimerKind::Countdown);
+    assert_eq!(r.phase(), Phase::Error);
+    assert_eq!(r.last(), en(&Msg::SleepNotAvailable));
+}
+
+#[test]
+fn a_failed_restart_or_lock_is_a_failure_reply() {
+    for (action, kind) in [("lock", PowerKind::Lock), ("restart", PowerKind::Restart)] {
+        let mut r = Rig::new(vec![calls(vec![power(action)])], &PROCS);
+        r.pc.set_power_error(Some(PcError::Failed("denied".into())));
+        r.type_text(action);
+        r.click(true);
+        assert_eq!(r.phase(), Phase::Error, "{action}");
+        assert_eq!(r.last(), en(&Msg::ToolFailed), "{action}");
+        assert_eq!(r.pc.calls(), vec![PcCall::Power(kind)], "{action}");
+    }
 }
 
 // --- Batch 28 review: the reply says what was launched -------------------------

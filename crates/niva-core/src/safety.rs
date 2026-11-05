@@ -446,7 +446,8 @@ impl SafetyGate {
         // Cannot happen (`validate` never resolves a protected process);
         // asserted so a future bug shows up in tests.
         debug_assert!(!is_protected(&confirmed));
-        let processes = pc.running_processes();
+        // An unreadable snapshot is an error, never "not running".
+        let processes = pc.running_processes().map_err(ExecError::Pc)?;
         let now = if approved.action.pinned {
             resolve_pinned(&approved.action.query, &processes)
         } else {

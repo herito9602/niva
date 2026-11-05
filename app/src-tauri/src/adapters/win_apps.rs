@@ -23,7 +23,7 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use niva_core::ports::{PcError, ProcessInfo};
+use niva_core::ports::{CloseOutcome, PcError, ProcessInfo};
 
 pub mod aliases;
 
@@ -454,15 +454,45 @@ impl Apps {
     }
 }
 
+/// A process as the ToolHelp snapshot reports it, with its id (the window
+/// closer needs it to find the process's windows; the core never sees it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessEntry {
+    pub pid: u32,
+    pub exe_name: String,
+    pub in_user_session: bool,
+}
+
+impl ProcessEntry {
+    /// What the core is given: the name and the session flag, no id.
+    pub fn info(&self) -> ProcessInfo {
+        ProcessInfo {
+            exe_name: self.exe_name.clone(),
+            in_user_session: self.in_user_session,
+        }
+    }
+}
+
 /// A process as the ToolHelp snapshot reports it. `session` / `own` are
 /// Windows session ids; a process counts as the user's only when both are
 /// known and equal (unknown fails closed).
-pub fn process_info(exe: &[u16], session: Option<u32>, own: Option<u32>) -> ProcessInfo {
+pub fn process_entry(
+    pid: u32,
+    exe: &[u16],
+    session: Option<u32>,
+    own: Option<u32>,
+) -> ProcessEntry {
     let end = exe.iter().position(|&c| c == 0).unwrap_or(exe.len());
-    ProcessInfo {
+    ProcessEntry {
+        pid,
         exe_name: String::from_utf16_lossy(&exe[..end]),
         in_user_session: matches!((session, own), (Some(a), Some(b)) if a == b),
     }
+}
+
+/// [`process_entry`] without the id.
+pub fn process_info(exe: &[u16], session: Option<u32>, own: Option<u32>) -> ProcessInfo {
+    process_entry(0, exe, session, own).info()
 }
 
 // ---------------------------------------------------------------------------
@@ -655,11 +685,15 @@ impl WinApps {
     }
 
     /// Every process in the ToolHelp snapshot. An unreadable snapshot is an
-    /// empty list (the port cannot report a failure); the only caller that
-    /// matters is `close_app`'s resolution, which is not reachable in release
-    /// yet.
-    pub fn running_processes(&self) -> Vec<ProcessInfo> {
-        snapshot()
+    /// error, never an empty list: `close_app` must not read "nothing is
+    /// running" from a failure.
+    pub fn running_processes(&self) -> Result<Vec<ProcessInfo>, PcError> {
+        snapshot().map(|all| all.iter().map(ProcessEntry::info).collect())
+    }
+
+    /// Asks the windows of `exe` to close (see `win_close`).
+    pub fn close(&self, exe: &str) -> Result<CloseOutcome, PcError> {
+        super::win_close::close(exe)
     }
 }
 
@@ -680,7 +714,7 @@ fn keep_fresh(index: &AppIndex, source: &dyn AppSource) {
 }
 
 #[cfg(windows)]
-fn snapshot() -> Vec<ProcessInfo> {
+pub(super) fn snapshot() -> Result<Vec<ProcessEntry>, PcError> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
@@ -700,15 +734,26 @@ fn snapshot() -> Vec<ProcessInfo> {
     unsafe {
         let handle = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if handle == INVALID_HANDLE_VALUE {
-            return Vec::new();
+            return Err(PcError::Failed(format!(
+                "could not read the process list (error {})",
+                windows_sys::Win32::Foundation::GetLastError()
+            )));
         }
         let own = session_of(GetCurrentProcessId());
         let mut entry: PROCESSENTRY32W = std::mem::zeroed();
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         let mut processes = Vec::new();
         let mut more = Process32FirstW(handle, &mut entry) != 0;
+        if !more {
+            let error = windows_sys::Win32::Foundation::GetLastError();
+            CloseHandle(handle);
+            return Err(PcError::Failed(format!(
+                "the process list is empty or unreadable (error {error})"
+            )));
+        }
         while more {
-            processes.push(process_info(
+            processes.push(process_entry(
+                entry.th32ProcessID,
                 &entry.szExeFile,
                 session_of(entry.th32ProcessID),
                 own,
@@ -716,6 +761,6 @@ fn snapshot() -> Vec<ProcessInfo> {
             more = Process32NextW(handle, &mut entry) != 0;
         }
         CloseHandle(handle);
-        processes
+        Ok(processes)
     }
 }

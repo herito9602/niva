@@ -157,6 +157,14 @@ pub enum Msg {
     },
     CloseTargetChanged,
     CloseNotRunning,
+    /// The window closed but the app keeps running in the background.
+    ClosedKeepsRunning {
+        exe: String,
+    },
+    /// The app is running but has no window to close (nothing was posted).
+    CloseNoWindow {
+        exe: String,
+    },
     AskWhichApp {
         candidates: Vec<String>,
     },
@@ -213,9 +221,9 @@ pub enum Msg {
     LlmUnavailable,
     /// Release builds before the Ollama and Windows adapters exist.
     NotAvailableYet,
-    /// A build that cannot close apps or control power yet (PR 2d-a): said
-    /// instead of the confirmation prompt, before anything runs.
-    RiskyNotAvailableYet,
+    /// Sleep on a PC where it has not been built for (no Modern Standby): the
+    /// PC was not touched.
+    SleepNotAvailable,
     /// Every worker is busy and the queue is full (a hung provider or tool).
     Busy,
 }
@@ -329,6 +337,12 @@ fn render_en(msg: &Msg) -> String {
             "The app changed after you confirmed, so I didn't close anything.".into()
         }
         Msg::CloseNotRunning => "That app is no longer running.".into(),
+        Msg::ClosedKeepsRunning { exe } => {
+            format!("I closed the window of {exe}, but it keeps running in the background.")
+        }
+        Msg::CloseNoWindow { exe } => {
+            format!("I found no window of {exe} to close. Nothing was done.")
+        }
         Msg::AskWhichApp { candidates } => format!("Which one: {}?", join_or(candidates, "or")),
         Msg::ConfirmPower { action } => match action {
             PowerKind::Lock => "Lock the PC?",
@@ -339,7 +353,7 @@ fn render_en(msg: &Msg) -> String {
         .into(),
         Msg::PowerDone { action } => match action {
             PowerKind::Lock => "Locking the PC.",
-            PowerKind::Sleep => "Putting the PC to sleep.",
+            PowerKind::Sleep => "Suspending the PC.",
             PowerKind::Restart => "Restarting the PC.",
             PowerKind::Shutdown => "Shutting down the PC.",
         }
@@ -386,9 +400,7 @@ fn render_en(msg: &Msg) -> String {
         .into(),
         Msg::LlmUnavailable => "I can't think right now. Is the language model running?".into(),
         Msg::NotAvailableYet => "Assistant commands are not available yet.".into(),
-        Msg::RiskyNotAvailableYet => {
-            "I can't close apps or control the power of the PC yet. Nothing was done.".into()
-        }
+        Msg::SleepNotAvailable => "Sleep isn't available on this PC yet. Nothing was done.".into(),
         Msg::Busy => "I'm still busy with other requests. Try again in a moment.".into(),
     }
 }
@@ -414,6 +426,12 @@ fn render_es(msg: &Msg) -> String {
             "La app cambió después de que confirmaras, así que no cerré nada.".into()
         }
         Msg::CloseNotRunning => "Esa app ya no está abierta.".into(),
+        Msg::ClosedKeepsRunning { exe } => {
+            format!("Cerré la ventana de {exe}, pero sigue ejecutándose en segundo plano.")
+        }
+        Msg::CloseNoWindow { exe } => {
+            format!("No encontré ninguna ventana de {exe} para cerrar. No hice nada.")
+        }
         Msg::AskWhichApp { candidates } => format!("¿Cuál: {}?", join_or(candidates, "o")),
         Msg::ConfirmPower { action } => match action {
             PowerKind::Lock => "¿Bloquear el PC?",
@@ -473,9 +491,8 @@ fn render_es(msg: &Msg) -> String {
             "No puedo pensar ahora mismo. ¿Está activo el modelo de lenguaje?".into()
         }
         Msg::NotAvailableYet => "Los comandos del asistente aún no están disponibles.".into(),
-        Msg::RiskyNotAvailableYet => {
-            "Todavía no puedo cerrar aplicaciones ni controlar la energía del PC. No hice nada."
-                .into()
+        Msg::SleepNotAvailable => {
+            "La suspensión aún no está disponible en este PC. No hice nada.".into()
         }
         Msg::Busy => "Sigo ocupado con otras peticiones. Inténtalo de nuevo en un momento.".into(),
     }

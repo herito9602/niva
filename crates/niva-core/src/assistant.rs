@@ -15,6 +15,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::close_names;
 use crate::ports::{
     ChatRequest, Clock, CloseOutcome, LlmError, LlmProvider, LocalDateTime, PcActions, PcError,
     ReminderError, ReminderStore, SearchProvider,
@@ -108,9 +109,6 @@ pub struct Assistant {
     search: Option<Arc<dyn SearchProvider>>,
     reminders: Option<Arc<dyn ReminderStore>>,
     clock: Option<Arc<dyn Clock>>,
-    /// `false` in a build whose PC adapter cannot close apps or control power
-    /// yet: every plan with a risky call is refused before any prompt.
-    risky_actions: bool,
     gate: SafetyGate,
     session: Mutex<Session>,
     /// Test-only: called by a worker right after it registered, with its id,
@@ -270,7 +268,6 @@ impl Assistant {
             search: None,
             reminders: None,
             clock: None,
-            risky_actions: true,
             gate: SafetyGate::new(),
             session: Mutex::default(),
             #[cfg(test)]
@@ -295,17 +292,6 @@ impl Assistant {
     /// zone, the prompt has no time line.
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.clock = Some(clock);
-        self
-    }
-
-    /// A build whose PC cannot close apps or control power yet (release in PR
-    /// 2d-a: no voice and no island click, so a confirmation could not be
-    /// answered anyway). A response with a `close_app` or `power_action` call
-    /// is refused as a whole, with a truthful reply, BEFORE the safety gate or
-    /// any confirmation prompt, and before any safe call runs. The safety code
-    /// is not involved: this only decides not to ask.
-    pub fn without_risky_actions(mut self) -> Self {
-        self.risky_actions = false;
         self
     }
 
@@ -479,9 +465,6 @@ impl Assistant {
         if searches > 1 {
             return vec![failure(req, &Msg::DuplicateSearch, lang)];
         }
-        if !self.risky_actions && tools.iter().flatten().any(|t| t.risk() == Risk::Risky) {
-            return vec![failure(req, &Msg::RiskyNotAvailableYet, lang)];
-        }
         // Task 2.6: a search summary and a confirmation must never interleave.
         let has_risky = tools.iter().flatten().any(|t| t.risk() == Risk::Risky);
         if searches > 0 && has_risky {
@@ -489,7 +472,11 @@ impl Assistant {
         }
 
         let processes = if tools.contains(&Some(ToolName::CloseApp)) {
-            self.pc.running_processes()
+            // An unreadable snapshot is an error reply, never "not running".
+            match self.pc.running_processes() {
+                Ok(processes) => processes,
+                Err(_) => return vec![failure(req, &Msg::ToolFailed, lang)],
+            }
         } else {
             Vec::new()
         };
@@ -499,6 +486,11 @@ impl Assistant {
         for (index, call) in calls.iter().enumerate() {
             // Each response has its own request id and each call its own
             // index: the gate's confirmation ids never repeat.
+            // A built-in app's Spanish or English name becomes the stem of its
+            // process BEFORE the gate: the gate's matcher and protected list
+            // still decide what that stem may close.
+            let named = with_process_stem(call);
+            let call = named.as_ref().unwrap_or(call);
             match self.gate.validate(call, &processes, req, index as u32) {
                 Ok(Validated::Safe(action)) => safe.push(action),
                 Ok(Validated::Risky(request)) => match risky_label(call, &request) {
@@ -518,7 +510,9 @@ impl Assistant {
     /// through the gate's pinned entry point, never through the model's
     /// `close_app` path (which keeps an exact name ambiguous).
     fn plan_pinned(&self, req: u64, exe: &str, lang: Lang) -> Vec<Event> {
-        let processes = self.pc.running_processes();
+        let Ok(processes) = self.pc.running_processes() else {
+            return vec![failure(req, &Msg::ToolFailed, lang)];
+        };
         match self.gate.validate_pinned(exe, &processes, req, 0) {
             Ok(request) => {
                 let risky = VecDeque::from([PlannedRisky {
@@ -540,12 +534,6 @@ impl Assistant {
         safe: Vec<SafeAction>,
         risky: VecDeque<PlannedRisky>,
     ) -> Vec<Event> {
-        // The one place every plan passes through (the model's calls and the
-        // pinned "which one?" answer alike): a build without risky actions
-        // never stores a risky call, whoever built the plan.
-        if !self.risky_actions && !risky.is_empty() {
-            return vec![failure(req, &Msg::RiskyNotAvailableYet, lang)];
-        }
         let verdict = match risky.front() {
             Some(first) if safe.is_empty() => ToolVerdict::Confirm {
                 prompt: replies::render(&first.prompt(), lang),
@@ -755,6 +743,10 @@ impl Assistant {
                 ));
                 false
             }
+            Err(PcError::NotSupported) => {
+                ran.push(replies::render(&Msg::SleepNotAvailable, lang));
+                true
+            }
             Err(_) => {
                 ran.push(replies::render(&Msg::ToolFailed, lang));
                 true
@@ -791,7 +783,9 @@ impl Assistant {
                     Ok(launched) => plan.say(&Msg::Opened { app: launched }),
                     Err(PcError::NotFound) => plan.fail(&Msg::AppNotFound { app: name }),
                     Err(PcError::NotReady) => plan.fail(&Msg::AppIndexLoading),
-                    Err(PcError::Failed(_)) => plan.fail(&Msg::OpenFailed { app: name }),
+                    Err(PcError::Failed(_) | PcError::NotSupported) => {
+                        plan.fail(&Msg::OpenFailed { app: name })
+                    }
                 },
                 SafeAction::SetVolume { change, clamped } => match self.pc.set_volume(change) {
                     Ok(now) => plan.say(&match change {
@@ -861,6 +855,9 @@ impl Assistant {
                     Ok(CloseOutcome::Closed) => plan.say(&Msg::Closed { exe }),
                     // Not a failure: the app is open, perhaps asking to save.
                     Ok(CloseOutcome::StillRunning) => plan.say(&Msg::StillRunning { exe }),
+                    // Not a failure either: the app is open but showed no window.
+                    Ok(CloseOutcome::KeepsRunning) => plan.say(&Msg::ClosedKeepsRunning { exe }),
+                    Ok(CloseOutcome::NoWindow) => plan.say(&Msg::CloseNoWindow { exe }),
                     Err(ExecError::TargetChanged) => plan.fail(&Msg::CloseTargetChanged),
                     Err(ExecError::NotRunning) => plan.fail(&Msg::CloseNotRunning),
                     Err(ExecError::Pc(_)) => plan.fail(&Msg::ToolFailed),
@@ -967,6 +964,24 @@ impl PlannedRisky {
             RiskyLabel::Power(action) => Msg::ConfirmPower { action },
         }
     }
+}
+
+/// The `close_app` call with the process stem of a built-in app in place of
+/// its Spanish or English name (`close_names`), or `None` when the call is
+/// something else or the name is not a built-in app's.
+fn with_process_stem(call: &ToolCall) -> Option<ToolCall> {
+    if ToolName::from_name(&call.name) != Some(ToolName::CloseApp) {
+        return None;
+    }
+    let Some(ArgValue::Str(name)) = call.args.get("name") else {
+        return None;
+    };
+    let stem = close_names::process_stem_for(name)?;
+    let mut mapped = call.clone();
+    mapped
+        .args
+        .insert("name".to_string(), ArgValue::Str(stem.to_string()));
+    Some(mapped)
 }
 
 fn risky_label(call: &ToolCall, request: &RiskyRequest) -> Option<RiskyLabel> {

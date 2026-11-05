@@ -1,11 +1,12 @@
-//! How a release build assembles its assistant (PR 2d-a).
+//! How a release build assembles its assistant (PR 2d-a, completed in 2d-b).
 //!
-//! The model is the real Ollama (kept warm by the keeper), the PC is the
-//! Windows adapter of the safe actions, and the assistant is built without
-//! risky actions: a plan with a `close_app` or `power_action` call is refused
-//! with a truthful "not available yet" before any confirmation prompt. When
-//! Ollama is down every command gets the "can't think right now" reply; there
-//! is no fallback model. Nothing here knows the dev LLM or the dry-run PC.
+//! The model is the real Ollama (kept warm by the keeper) and the PC is the
+//! Windows adapter of every action. A risky plan (`close_app`, `power_action`)
+//! asks for a confirmation like in debug, and the island's Confirm and Cancel
+//! buttons answer it (`confirm_buttons.rs`); the safety gate (`Approved<T>`)
+//! decides what may run. When Ollama is down every command gets the "can't think
+//! right now" reply; there is no fallback model. Nothing here knows the dev LLM
+//! or the dry-run PC.
 //!
 //! This is a function of its inputs on purpose: the tests below drive it with
 //! fakes, so what a release build does with a risky plan is checked without
@@ -21,24 +22,23 @@ pub fn assistant(
     pc: Arc<dyn PcActions>,
     clock: Arc<dyn Clock>,
 ) -> Assistant {
-    Assistant::new(llm, pc)
-        .with_clock(clock)
-        .without_risky_actions()
+    Assistant::new(llm, pc).with_clock(clock)
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
 
-    use niva_core::ports::{ChatReply, ChatRequest, LlmError, PcError, VolumeResult};
+    use niva_core::assistant::ConfirmInput;
+    use niva_core::ports::{ChatReply, ChatRequest, CloseOutcome, LlmError, PcError};
     use niva_core::replies::{self, Lang, Msg};
     use niva_core::state_machine::{Event, RequestInput, ToolVerdict, ToolsOutcome};
-    use niva_core::tools::{ArgValue, ToolCall, VolumeChange};
+    use niva_core::tools::{ArgValue, PowerKind, ToolCall, VolumeChange};
 
     use super::*;
     use crate::adapters::system_clock::SystemClock;
     use crate::adapters::windows_pc::WindowsPc;
-    use crate::adapters::windows_pc::fakes::{FakeApps, FakeOutput};
+    use crate::adapters::windows_pc::fakes::{FakeApps, FakeOutput, FakePower};
 
     struct ScriptedLlm(Mutex<Vec<Result<ChatReply, LlmError>>>);
 
@@ -62,21 +62,28 @@ mod tests {
         [("name", ArgValue::Str(value.into()))]
     }
 
+    fn power(action: &str) -> ToolCall {
+        call("power_action", &[("action", ArgValue::Str(action.into()))])
+    }
+
     struct Release {
         assistant: Assistant,
         apps: Arc<FakeApps>,
         output: Arc<FakeOutput>,
+        power: Arc<FakePower>,
     }
 
     fn release(answer: Result<ChatReply, LlmError>) -> Release {
         let apps = Arc::new(FakeApps::default());
         let output = Arc::new(FakeOutput::default());
-        let pc = Arc::new(WindowsPc::new(apps.clone(), output.clone()));
+        let power = Arc::new(FakePower::default());
+        let pc = Arc::new(WindowsPc::new(apps.clone(), output.clone(), power.clone()));
         let llm = Arc::new(ScriptedLlm(Mutex::new(vec![answer])));
         Release {
             assistant: assistant(llm, pc, Arc::new(SystemClock)),
             apps,
             output,
+            power,
         }
     }
 
@@ -104,72 +111,225 @@ mod tests {
         }
     }
 
+    fn reply_text(events: &[Event]) -> String {
+        match events {
+            [Event::Reply { text, .. }] => text.clone(),
+            other => panic!("expected one reply, got {other:?}"),
+        }
+    }
+
+    /// No adapter acted: nothing opened, closed, changed or powered. (The
+    /// process list may have been read: that is how a close is resolved.)
     fn untouched(release: &Release) {
         assert!(release.apps.opened.lock().unwrap().is_empty());
-        assert_eq!(
-            *release.apps.listed.lock().unwrap(),
-            0,
-            "no process listing"
-        );
+        assert!(release.apps.closed.lock().unwrap().is_empty());
+        assert!(release.power.runs.lock().unwrap().is_empty());
         assert!(release.output.changes.lock().unwrap().is_empty());
     }
 
+    // --- risky plans: a confirmation, then the real action -------------------------
+
     #[test]
-    fn a_risky_plan_ends_in_a_truthful_not_available_reply_and_never_reaches_windows() {
-        for risky in [
-            call("close_app", &name_arg("spotify")),
-            call("power_action", &[("action", ArgValue::Str("lock".into()))]),
-            call("power_action", &[("action", ArgValue::Str("sleep".into()))]),
-            call(
-                "power_action",
-                &[("action", ArgValue::Str("restart".into()))],
-            ),
-            call(
-                "power_action",
-                &[("action", ArgValue::Str("shutdown".into()))],
-            ),
+    fn a_risky_plan_asks_for_a_confirmation_and_touches_nothing_before_the_click() {
+        for (risky, click_only) in [
+            (call("close_app", &name_arg("spotify")), false),
+            (power("lock"), false),
+            (power("sleep"), false),
+            (power("restart"), true),
+            (power("shutdown"), true),
         ] {
             let release = release(calls(vec![risky.clone()]));
             let events = ask(&release, "do that please");
+            match events.as_slice() {
+                [
+                    Event::ToolCalls {
+                        verdict:
+                            ToolVerdict::Confirm {
+                                click_only: only, ..
+                            },
+                        ..
+                    },
+                ] => assert_eq!(*only, click_only, "{risky:?}"),
+                other => panic!("{risky:?}: expected a confirmation, got {other:?}"),
+            }
+            untouched(&release);
+        }
+    }
+
+    #[test]
+    fn a_confirmed_close_closes_the_confirmed_exe_and_says_so() {
+        let release = release(calls(vec![call("close_app", &name_arg("spotify"))]));
+        ask(&release, "close spotify");
+        release
+            .assistant
+            .record_confirmation(ConfirmInput::Click(true));
+        let done = release.assistant.run_tools(1);
+        assert_eq!(
+            reply_text(&done),
+            replies::render(
+                &Msg::Closed {
+                    exe: "Spotify.exe".into()
+                },
+                Lang::En
+            )
+        );
+        assert_eq!(*release.apps.closed.lock().unwrap(), ["Spotify.exe"]);
+    }
+
+    #[test]
+    fn a_close_that_leaves_the_window_open_says_the_app_did_not_close() {
+        let release = release(calls(vec![call("close_app", &name_arg("spotify"))]));
+        *release.apps.close_result.lock().unwrap() = Some(Ok(CloseOutcome::StillRunning));
+        ask(&release, "close spotify");
+        release
+            .assistant
+            .record_confirmation(ConfirmInput::Click(true));
+        let done = release.assistant.run_tools(1);
+        assert_eq!(
+            reply_text(&done),
+            replies::render(
+                &Msg::StillRunning {
+                    exe: "Spotify.exe".into()
+                },
+                Lang::En
+            )
+        );
+    }
+
+    #[test]
+    fn an_unreadable_process_list_is_an_error_reply_and_nothing_is_asked() {
+        let release = release(calls(vec![call("close_app", &name_arg("spotify"))]));
+        *release.apps.process_error.lock().unwrap() = Some(PcError::Failed("no snapshot".into()));
+        let events = ask(&release, "close spotify");
+        assert_eq!(
+            failure_text(&events),
+            replies::render(&Msg::ToolFailed, Lang::En)
+        );
+        untouched(&release);
+    }
+
+    #[test]
+    fn a_confirmed_lock_runs_through_the_power_control() {
+        let release = release(calls(vec![power("lock")]));
+        ask(&release, "lock the pc");
+        release
+            .assistant
+            .record_confirmation(ConfirmInput::Click(true));
+        let done = release.assistant.run_tools(1);
+        assert_eq!(
+            reply_text(&done),
+            replies::render(
+                &Msg::PowerDone {
+                    action: PowerKind::Lock
+                },
+                Lang::En
+            )
+        );
+        assert_eq!(*release.power.runs.lock().unwrap(), [PowerKind::Lock]);
+    }
+
+    #[test]
+    fn restart_and_shutdown_cannot_be_confirmed_by_voice() {
+        for action in ["restart", "shutdown"] {
+            let release = release(calls(vec![power(action)]));
+            ask(&release, "do it");
+            release
+                .assistant
+                .record_confirmation(ConfirmInput::Voice("yes".into()));
+            let done = release.assistant.run_tools(1);
             assert_eq!(
-                failure_text(&events),
-                replies::render(&Msg::RiskyNotAvailableYet, Lang::En),
-                "{risky:?}"
+                failure_text(&done),
+                replies::render(&Msg::ToolFailed, Lang::En),
+                "{action}"
             );
             untouched(&release);
         }
     }
 
     #[test]
-    fn a_risky_call_hidden_among_safe_ones_runs_nothing_at_all() {
-        let release = release(calls(vec![
-            call("open_app", &name_arg("notepad")),
-            call("set_volume", &[("level", ArgValue::Int(10))]),
-            call("close_app", &name_arg("spotify")),
-        ]));
-        let events = ask(&release, "do three things");
-        assert_eq!(
-            failure_text(&events),
-            replies::render(&Msg::RiskyNotAvailableYet, Lang::En)
-        );
-        untouched(&release);
+    fn a_confirmed_restart_and_shutdown_run_through_the_power_control() {
+        for (action, kind) in [
+            ("restart", PowerKind::Restart),
+            ("shutdown", PowerKind::Shutdown),
+        ] {
+            let release = release(calls(vec![power(action)]));
+            ask(&release, "do it");
+            release
+                .assistant
+                .record_confirmation(ConfirmInput::Click(true));
+            let done = release.assistant.run_tools(1);
+            assert_eq!(
+                reply_text(&done),
+                replies::render(&Msg::PowerDone { action: kind }, Lang::En)
+            );
+            assert_eq!(*release.power.runs.lock().unwrap(), [kind]);
+        }
     }
 
     #[test]
-    fn no_risky_plan_ever_asks_for_a_confirmation() {
-        let release = release(calls(vec![call("close_app", &name_arg("spotify"))]));
-        let events = ask(&release, "close spotify");
-        assert!(
-            !events.iter().any(|e| matches!(
-                e,
-                Event::ToolCalls {
-                    verdict: ToolVerdict::Confirm { .. },
-                    ..
-                }
-            )),
-            "{events:?}"
+    fn a_failed_power_action_is_a_failure_reply() {
+        let release = release(calls(vec![power("restart")]));
+        *release.power.result.lock().unwrap() = Some(Err(PcError::Failed("denied".into())));
+        ask(&release, "restart");
+        release
+            .assistant
+            .record_confirmation(ConfirmInput::Click(true));
+        let done = release.assistant.run_tools(1);
+        assert_eq!(
+            failure_text(&done),
+            replies::render(&Msg::ToolFailed, Lang::En)
         );
     }
+
+    #[test]
+    fn a_confirmed_sleep_waits_for_its_countdown_and_only_then_reaches_the_pc() {
+        let release = release(calls(vec![power("sleep")]));
+        ask(&release, "sleep");
+        release
+            .assistant
+            .record_confirmation(ConfirmInput::Click(true));
+        let done = release.assistant.run_tools(1);
+        assert!(
+            matches!(
+                done.as_slice(),
+                [Event::ToolsDone {
+                    outcome: ToolsOutcome::SleepCountdown { .. },
+                    ..
+                }]
+            ),
+            "{done:?}"
+        );
+        assert!(release.power.runs.lock().unwrap().is_empty());
+        let finished = release.assistant.finish_countdown(1);
+        assert_eq!(
+            reply_text(&finished),
+            replies::render(
+                &Msg::PowerDone {
+                    action: PowerKind::Sleep
+                },
+                Lang::En
+            )
+        );
+        assert_eq!(*release.power.runs.lock().unwrap(), [PowerKind::Sleep]);
+    }
+
+    #[test]
+    fn a_pc_without_modern_standby_says_sleep_is_not_available() {
+        let release = release(calls(vec![power("sleep")]));
+        *release.power.result.lock().unwrap() = Some(Err(PcError::NotSupported));
+        ask(&release, "sleep");
+        release
+            .assistant
+            .record_confirmation(ConfirmInput::Click(true));
+        release.assistant.run_tools(1);
+        let finished = release.assistant.finish_countdown(1);
+        assert_eq!(
+            failure_text(&finished),
+            replies::render(&Msg::SleepNotAvailable, Lang::En)
+        );
+    }
+
+    // --- the safe actions and the model ---------------------------------------------
 
     #[test]
     fn safe_actions_run_for_real_through_the_windows_pc() {
@@ -237,11 +397,6 @@ mod tests {
             failure_text(&done),
             replies::render(&Msg::ToolFailed, Lang::En)
         );
-        let _ = VolumeResult {
-            level: 0,
-            muted: false,
-            clamped: false,
-        };
     }
 
     #[test]
@@ -288,12 +443,7 @@ mod tests {
             body.contains("release::assistant("),
             "the release build must call release::assistant"
         );
-        for forbidden in [
-            "Assistant::new(",
-            "dev::",
-            "without_risky_actions",
-            "DryRunPc",
-        ] {
+        for forbidden in ["Assistant::new(", "dev::", "DryRunPc"] {
             assert!(
                 !body.contains(forbidden),
                 "the release build must not use {forbidden}"
@@ -312,16 +462,18 @@ mod tests {
     }
 
     #[test]
-    fn the_release_assistant_function_is_built_without_risky_actions() {
-        // The behaviour is tested above with the real function; this pins that
-        // the constructor line itself keeps the opt-out.
+    fn the_core_has_no_opt_out_of_risky_actions_any_more() {
+        // The opt-out of PR 2d-a is gone: a release build asks for confirmations
+        // and the gate decides. Nothing may bring a switch back unnoticed.
         let source = lf(include_str!("release.rs"));
         let constructor = source
             .split("pub fn assistant(")
             .nth(1)
             .and_then(|rest| rest.split("\n}\n").next())
             .expect("assistant() is defined");
-        assert!(constructor.contains(".without_risky_actions()"));
+        let needle = ["without", "_risky", "_actions"].concat();
+        assert!(!constructor.contains(&needle));
+        assert!(!lf(LIB_RS).contains(&needle));
     }
 
     #[test]

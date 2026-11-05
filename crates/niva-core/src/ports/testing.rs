@@ -69,6 +69,10 @@ pub struct FakePc {
     /// What `launch_app` reports as launched; the requested name when unset.
     launched_as: Mutex<Option<String>>,
     close_outcome: Mutex<CloseOutcome>,
+    /// When set, `running_processes` fails with it.
+    process_error: Mutex<Option<PcError>>,
+    /// When set, `power` fails with it (after recording the call).
+    power_error: Mutex<Option<PcError>>,
     volume: Mutex<VolumeResult>,
 }
 
@@ -87,6 +91,8 @@ impl FakePc {
             open_result: Mutex::new(Ok(())),
             launched_as: Mutex::new(None),
             close_outcome: Mutex::new(CloseOutcome::Closed),
+            process_error: Mutex::new(None),
+            power_error: Mutex::new(None),
             volume: Mutex::new(VolumeResult {
                 level: 60,
                 muted: false,
@@ -112,6 +118,16 @@ impl FakePc {
         *lock(&self.close_outcome) = outcome;
     }
 
+    /// Makes the process list fail (an unreadable snapshot), or work again.
+    pub fn set_process_error(&self, error: Option<PcError>) {
+        *lock(&self.process_error) = error;
+    }
+
+    /// Makes `power` fail, or work again.
+    pub fn set_power_error(&self, error: Option<PcError>) {
+        *lock(&self.power_error) = error;
+    }
+
     pub fn calls(&self) -> Vec<PcCall> {
         lock(&self.calls).clone()
     }
@@ -130,8 +146,11 @@ impl PcActions for FakePc {
             .unwrap_or_else(|| name.to_string()))
     }
 
-    fn running_processes(&self) -> Vec<ProcessInfo> {
-        lock(&self.processes).clone()
+    fn running_processes(&self) -> Result<Vec<ProcessInfo>, PcError> {
+        match lock(&self.process_error).clone() {
+            Some(error) => Err(error),
+            None => Ok(lock(&self.processes).clone()),
+        }
     }
 
     fn close_app(&self, approved: Approved<CloseApp>) -> Result<CloseOutcome, PcError> {
@@ -158,7 +177,10 @@ impl PcActions for FakePc {
 
     fn power(&self, approved: Approved<Power>) -> Result<(), PcError> {
         lock(&self.calls).push(PcCall::Power(approved.action().kind()));
-        Ok(())
+        match lock(&self.power_error).clone() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 

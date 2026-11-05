@@ -526,7 +526,7 @@ mod tests {
         use super::*;
         use crate::adapters::system_clock::SystemClock;
         use crate::adapters::windows_pc::WindowsPc;
-        use crate::adapters::windows_pc::fakes::{FakeApps, FakeOutput};
+        use crate::adapters::windows_pc::fakes::{FakeApps, FakeOutput, FakePower};
         use crate::requests::AssistantRequests;
 
         struct Script(Mutex<Vec<Result<ChatReply, LlmError>>>);
@@ -559,10 +559,11 @@ mod tests {
             let apps = Arc::new(FakeApps::default());
             let output = Arc::new(FakeOutput::default());
             let (a, o) = (apps.clone(), output.clone());
+            let power = Arc::new(FakePower::default());
             let rig = rig_with(true, move |sink| {
                 let assistant = crate::release::assistant(
                     Arc::new(Script(Mutex::new(vec![answer]))),
-                    Arc::new(WindowsPc::new(a, o)),
+                    Arc::new(WindowsPc::new(a, o, power)),
                     Arc::new(SystemClock),
                 );
                 Arc::new(AssistantRequests::with_spawn(
@@ -578,23 +579,50 @@ mod tests {
         }
 
         #[tokio::test(start_paused = true)]
-        async fn a_typed_close_command_ends_in_a_truthful_error_with_no_confirmation() {
+        async fn a_typed_close_command_shows_the_island_buttons_and_closes_nothing_before_the_click()
+         {
             let (mut r, apps, output) =
                 release_rig(calls(vec![call("close_app", "name", "spotify")]));
             r.send(Event::TextSubmitted {
                 text: "close spotify".into(),
             });
-            assert_eq!(r.phase(), Phase::Error);
+            assert_eq!(r.phase(), Phase::ConfirmationNeeded);
             let view = r.ui.last_view();
-            assert_eq!(view.state, "error");
-            assert!(view.confirm.is_none(), "no confirmation prompt: {view:?}");
-            assert_eq!(
-                view.caption.as_deref(),
-                Some("I can't close apps or control the power of the PC yet. Nothing was done.")
-            );
+            let confirm = view.confirm.expect("the confirmation with its buttons");
+            assert_eq!(confirm.prompt, "Close Spotify.exe?");
+            assert_eq!(confirm.confirm_label, "Confirm");
+            assert_eq!(confirm.cancel_label, "Cancel");
             assert!(apps.opened.lock().unwrap().is_empty());
-            assert_eq!(*apps.listed.lock().unwrap(), 0);
+            assert!(apps.closed.lock().unwrap().is_empty());
             assert!(output.changes.lock().unwrap().is_empty());
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_click_on_confirm_closes_the_app_and_a_click_on_cancel_does_not() {
+            for accept in [true, false] {
+                let (mut r, apps, _) =
+                    release_rig(calls(vec![call("close_app", "name", "spotify")]));
+                r.send(Event::TextSubmitted {
+                    text: "close spotify".into(),
+                });
+                let id = r.ui.last_view().confirm.expect("a confirmation").id;
+                r.send(if accept {
+                    Event::Accept { id }
+                } else {
+                    Event::Reject { id }
+                });
+                let closed = apps.closed.lock().unwrap().clone();
+                if accept {
+                    assert_eq!(closed, ["Spotify.exe"]);
+                    assert_eq!(r.phase(), Phase::Success);
+                    assert_eq!(
+                        r.ui.last_view().caption.as_deref(),
+                        Some("Closed Spotify.exe.")
+                    );
+                } else {
+                    assert!(closed.is_empty(), "a cancel closes nothing");
+                }
+            }
         }
 
         #[tokio::test(start_paused = true)]
