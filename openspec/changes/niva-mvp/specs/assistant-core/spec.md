@@ -61,6 +61,29 @@ The system MUST warm up the model at startup so the first command is not slower 
 - WHEN the first command is issued
 - THEN its latency meets the speech-io latency requirement
 
+### Requirement: Warm-up keeps up with Ollama (PR 2d-a)
+The host MUST keep trying to reach Ollama for as long as it runs, with the backoff 1, 2, 4 and 8 s and then every 30 s, and MUST warm the model up as soon as Ollama and the model are available. It MUST warm the model up again after a failed request (Ollama unreachable, a timeout, or any failure that took at least 10 s) and after Ollama restarted, without a restart of Niva. While idle the host MUST NOT renew the `keep_alive`: it only probes Ollama (every 10 minutes), so the model leaves the GPU after 30 minutes without requests, and the first request after that is a cold load (about 10 to 13 s on the reference PC, inside the 15 s budget but tight). Real requests renew the `keep_alive` because their body carries it. Readiness means "Ollama answered and the model was warmed up at least once since it last went wrong", not "the model is in VRAM now".
+
+#### Scenario: Niva starts before Ollama (autostart race)
+- GIVEN Ollama is not running when Niva starts
+- WHEN Ollama starts later
+- THEN Niva connects and warms the model up on its own, with no restart and no limit on the attempts
+
+#### Scenario: Model went cold
+- GIVEN a request failed with Ollama unreachable or a timeout, or failed after 10 s or more
+- WHEN the host sees it
+- THEN the model is warmed up again after a short pause; a burst of failures costs one warm-up; a quick failure caused by bad model output, and a slow request that SUCCEEDED (it is the call that loaded the model), do not trigger a warm-up
+
+#### Scenario: Ollama restarted
+- GIVEN Niva and Ollama were running
+- WHEN Ollama is restarted
+- THEN the next periodic probe (every 10 minutes at the latest) or the next failed request makes Niva wait for it and warm the model up again
+
+#### Scenario: Idle model leaves the GPU
+- GIVEN Niva and Ollama are running, the model is warm and no request arrives
+- WHEN the periodic probe finds Ollama healthy
+- THEN Niva makes no chat or warm-up call, so Ollama unloads the model 30 minutes after the last request, and the next request loads it again
+
 ### Requirement: Provider unavailable
 The core MUST signal an error state to the user when the provider is unreachable.
 
@@ -68,6 +91,11 @@ The core MUST signal an error state to the user when the provider is unreachable
 - GIVEN the Ollama service is not running
 - WHEN a request is made
 - THEN no action runs and the mascot shows error/confused
+
+#### Scenario: Release has no fallback model (PR 2d-a)
+- GIVEN a release build and Ollama not reachable
+- WHEN a command is typed
+- THEN Niva says it cannot think right now and asks whether the language model is running; no other model answers (the rule-based dev LLM exists in debug builds only)
 
 ### Requirement: Replies are short (owner decision 2026-11-03)
 Every spoken or shown reply MUST be at most about 400 characters, the same bound as the web-search summary. For LLM free-text replies the core MUST enforce it twice: the system prompt asks for short replies, and a hard cap cuts anything longer before it is spoken or shown: at the last sentence end that keeps a useful part of the text (no ellipsis), otherwise at a whole word with an ellipsis, and never inside a word (only a single token longer than the bound has no place to cut). The cap covers the model's free text, the search summary together with the lines of the other calls, and the template lines of a long reminder list. Templates and search summaries already respect the bound.
