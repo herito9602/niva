@@ -42,16 +42,18 @@ function makeContext(): { ctx: CanvasRenderingContext2D; rec: Recorder } {
     rec.depth -= 1;
     rec.minDepth = Math.min(rec.minDepth, rec.depth);
   };
-  target.createLinearGradient = (...args: unknown[]) => {
-    rec.calls.push("createLinearGradient");
-    checkNumbers("createLinearGradient", args);
-    return {
-      addColorStop: (offset: number, color: string) => {
-        checkNumbers("addColorStop", [offset]);
-        if (typeof color !== "string") rec.badNumbers.push("addColorStop(color)");
-      },
+  for (const name of ["createLinearGradient", "createRadialGradient"]) {
+    target[name] = (...args: unknown[]) => {
+      rec.calls.push(name);
+      checkNumbers(name, args);
+      return {
+        addColorStop: (offset: number, color: string) => {
+          checkNumbers("addColorStop", [offset]);
+          if (typeof color !== "string") rec.badNumbers.push("addColorStop(color)");
+        },
+      };
     };
-  };
+  }
   // Numeric state properties must stay finite too.
   for (const prop of ["lineWidth", "globalAlpha", "shadowBlur", "miterLimit"]) {
     let value = 0;

@@ -15,11 +15,7 @@ export interface PoseParams {
   /** Vertical head offset in drawing units (negative = up). */
   headLift: number;
   scale: number;
-  /** Resting antenna angle in radians (positive = leans right). */
-  antennaLean: number;
-  /** Amplitude in radians of the antenna's sway. */
-  antennaWobble: number;
-  /** Strength of the antenna tip and eye glow. */
+  /** Strength of the eye glow. */
   glow: number;
   /** Idle breathing amplitude (fraction of scale). */
   breath: number;
@@ -50,6 +46,15 @@ export interface PoseParams {
   lookY: number;
   handPans: number;
   propImpact: number;
+  /** Mouth blend weights (0..1), one per `MouthMode`; see `GESTURES`. */
+  mouthSmile: number;
+  mouthOpen: number;
+  mouthTilted: number;
+  mouthFlat: number;
+  mouthWavy: number;
+  mouthHappy: number;
+  mouthFrown: number;
+  mouthShout: number;
 }
 
 export const POSE_KEYS = [
@@ -59,8 +64,6 @@ export const POSE_KEYS = [
   "headTilt",
   "headLift",
   "scale",
-  "antennaLean",
-  "antennaWobble",
   "glow",
   "breath",
   "bounceAmp",
@@ -85,31 +88,49 @@ export const POSE_KEYS = [
   "lookY",
   "handPans",
   "propImpact",
+  "mouthSmile",
+  "mouthOpen",
+  "mouthTilted",
+  "mouthFlat",
+  "mouthWavy",
+  "mouthHappy",
+  "mouthFrown",
+  "mouthShout",
 ] as const satisfies readonly (keyof PoseParams)[];
 
 /** The discrete part of a look (owner feedback 2026-11-03). It is blended as
  *  0/1 weights in the pose so the springs cross-fade between gestures. */
 export type HandsMode = "rest" | "scratch" | "thumbsUp" | "typing" | "raised" | "cupEar" | "pans";
 export type EyesMode = "capsule" | "happyArcs" | "spiral";
+export type MouthMode =
+  | "smile"
+  | "open"
+  | "tilted"
+  | "flat"
+  | "wavy"
+  | "happy"
+  | "frown"
+  | "shout";
 export type PropMode = "none" | "laptop" | "question" | "waves" | "impact";
 
 export interface Gesture {
   hands: HandsMode;
   eyes: EyesMode;
+  mouth: MouthMode;
   prop: PropMode;
 }
 
-const calm: Gesture = { hands: "rest", eyes: "capsule", prop: "none" };
+const calm: Gesture = { hands: "rest", eyes: "capsule", mouth: "smile", prop: "none" };
 
 export const GESTURES: Record<StateName, Gesture> = {
   idle: calm,
-  listening: { hands: "cupEar", eyes: "capsule", prop: "waves" },
-  thinking: { hands: "scratch", eyes: "capsule", prop: "question" },
-  acting: { hands: "typing", eyes: "capsule", prop: "laptop" },
-  "confirmation-needed": { hands: "raised", eyes: "capsule", prop: "none" },
-  success: { hands: "thumbsUp", eyes: "happyArcs", prop: "none" },
-  error: { hands: "rest", eyes: "spiral", prop: "none" },
-  "reminder-alert": { hands: "pans", eyes: "capsule", prop: "impact" },
+  listening: { hands: "cupEar", eyes: "capsule", mouth: "open", prop: "waves" },
+  thinking: { hands: "scratch", eyes: "capsule", mouth: "tilted", prop: "question" },
+  acting: { hands: "typing", eyes: "capsule", mouth: "flat", prop: "laptop" },
+  "confirmation-needed": { hands: "raised", eyes: "capsule", mouth: "wavy", prop: "none" },
+  success: { hands: "thumbsUp", eyes: "happyArcs", mouth: "happy", prop: "none" },
+  error: { hands: "rest", eyes: "spiral", mouth: "frown", prop: "none" },
+  "reminder-alert": { hands: "pans", eyes: "capsule", mouth: "shout", prop: "impact" },
 };
 
 type OptionalKey = "shakeAmp" | "wobbleAmp" | "headShift" | "lookX" | "lookY";
@@ -128,6 +149,14 @@ type NumericPose = Omit<
   | "propWaves"
   | "handPans"
   | "propImpact"
+  | "mouthSmile"
+  | "mouthOpen"
+  | "mouthTilted"
+  | "mouthFlat"
+  | "mouthWavy"
+  | "mouthHappy"
+  | "mouthFrown"
+  | "mouthShout"
   | OptionalKey
 > &
   Partial<Pick<PoseParams, OptionalKey>>;
@@ -152,6 +181,14 @@ function withGesture(base: NumericPose, g: Gesture): PoseParams {
     propWaves: g.prop === "waves" ? 1 : 0,
     handPans: g.hands === "pans" ? 1 : 0,
     propImpact: g.prop === "impact" ? 1 : 0,
+    mouthSmile: g.mouth === "smile" ? 1 : 0,
+    mouthOpen: g.mouth === "open" ? 1 : 0,
+    mouthTilted: g.mouth === "tilted" ? 1 : 0,
+    mouthFlat: g.mouth === "flat" ? 1 : 0,
+    mouthWavy: g.mouth === "wavy" ? 1 : 0,
+    mouthHappy: g.mouth === "happy" ? 1 : 0,
+    mouthFrown: g.mouth === "frown" ? 1 : 0,
+    mouthShout: g.mouth === "shout" ? 1 : 0,
   };
 }
 
@@ -159,53 +196,53 @@ const BASE_POSES: Record<StateName, NumericPose> = {
   // Calm, half-lidded, cool cyan; breathes.
   idle: {
     eyeOpen: 0.85, eyeWidth: 1, eyeSlant: 0, headTilt: 0, headLift: 0, scale: 1,
-    antennaLean: 0, antennaWobble: 0.04, glow: 0.35, breath: 0.025,
+    glow: 0.35, breath: 0.025,
     bounceAmp: 0, bounceHz: 0, accentR: 90, accentG: 205, accentB: 255,
   },
-  // Wide attentive eyes, head leaning in, antenna perked, teal.
+  // Wide attentive eyes, head leaning in, teal.
   listening: {
     eyeOpen: 1, eyeWidth: 1.15, eyeSlant: 0, headTilt: 0.18, headLift: -2, scale: 1.05,
-    antennaLean: 0.2, antennaWobble: 0.06, glow: 0.8, breath: 0.015,
+    glow: 0.8, breath: 0.015,
     bounceAmp: 0, bounceHz: 0, accentR: 70, accentG: 235, accentB: 190,
     headShift: 2, lookX: -0.5, lookY: -0.3,
   },
-  // Narrowed eyes, head cocked, antenna swaying, violet.
+  // Narrowed eyes, head cocked, violet.
   thinking: {
     eyeOpen: 0.5, eyeWidth: 0.95, eyeSlant: 0.2, headTilt: -0.14, headLift: 0, scale: 1,
-    antennaLean: 0.25, antennaWobble: 0.2, glow: 0.6, breath: 0.02,
+    glow: 0.6, breath: 0.02,
     bounceAmp: 0, bounceHz: 0, accentR: 181, accentG: 123, accentB: 255,
     lookX: -0.6, lookY: -0.7,
   },
   // Focused, quick small bounce, blue.
   acting: {
     eyeOpen: 0.75, eyeWidth: 1, eyeSlant: 0.3, headTilt: 0, headLift: 0, scale: 1,
-    antennaLean: 0.05, antennaWobble: 0.1, glow: 0.7, breath: 0.01,
+    glow: 0.7, breath: 0.01,
     bounceAmp: 2, bounceHz: 3.2, accentR: 70, accentG: 140, accentB: 255,
   },
   // Round questioning eyes, head tilted, gold.
   "confirmation-needed": {
     eyeOpen: 1, eyeWidth: 0.9, eyeSlant: -0.3, headTilt: 0.2, headLift: -1, scale: 1.03,
-    antennaLean: 0.35, antennaWobble: 0.08, glow: 0.85, breath: 0.015,
+    glow: 0.85, breath: 0.015,
     bounceAmp: 1, bounceHz: 1.2, accentR: 255, accentG: 205, accentB: 70,
   },
   // Happy squint, big hop, green.
   success: {
     eyeOpen: 0.3, eyeWidth: 1.2, eyeSlant: 0, headTilt: -0.04, headLift: -3, scale: 1.07,
-    antennaLean: -0.15, antennaWobble: 0.15, glow: 1, breath: 0.01,
+    glow: 1, breath: 0.01,
     bounceAmp: 4, bounceHz: 2.4, accentR: 110, accentG: 230, accentB: 100, shakeAmp: 1,
   },
-  // Droopy: eyes sad-slanted, head sunk, antenna flopped, red.
+  // Droopy: eyes sad-slanted, head sunk, red.
   error: {
     eyeOpen: 0.7, eyeWidth: 0.85, eyeSlant: -0.45, headTilt: -0.22, headLift: 3, scale: 0.95,
-    antennaLean: -0.6, antennaWobble: 0.02, glow: 0.5, breath: 0.01,
+    glow: 0.5, breath: 0.01,
     bounceAmp: 0, bounceHz: 0, accentR: 255, accentG: 85, accentB: 85, wobbleAmp: 0.07,
   },
   // Alarm: wide startled eyes, magenta. The head sits low so both pans fit
-  // above it; the antenna is laid over to the side, out of their way. The hit
+  // above it. The hit
   // itself kicks the head, so no constant bounce.
   "reminder-alert": {
     eyeOpen: 1, eyeWidth: 1.3, eyeSlant: -0.1, headTilt: 0, headLift: 14, scale: 1,
-    antennaLean: 1.25, antennaWobble: 0.12, glow: 1, breath: 0,
+    glow: 1, breath: 0,
     bounceAmp: 0, bounceHz: 0, accentR: 255, accentG: 80, accentB: 200,
   },
 };

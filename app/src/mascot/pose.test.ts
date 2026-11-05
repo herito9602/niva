@@ -10,17 +10,40 @@ import {
 
 describe("gesture table (owner feedback 2026-11-03)", () => {
   it("maps every state to the requested hands, eyes and prop", () => {
-    expect(GESTURES.thinking).toEqual({ hands: "scratch", eyes: "capsule", prop: "question" });
-    expect(GESTURES.listening).toEqual({ hands: "cupEar", eyes: "capsule", prop: "waves" });
-    expect(GESTURES.success).toEqual({ hands: "thumbsUp", eyes: "happyArcs", prop: "none" });
-    expect(GESTURES.error).toEqual({ hands: "rest", eyes: "spiral", prop: "none" });
-    expect(GESTURES.acting).toEqual({ hands: "typing", eyes: "capsule", prop: "laptop" });
+    expect(GESTURES.thinking).toEqual({ hands: "scratch", eyes: "capsule", mouth: "tilted", prop: "question" });
+    expect(GESTURES.listening).toEqual({ hands: "cupEar", eyes: "capsule", mouth: "open", prop: "waves" });
+    expect(GESTURES.success).toEqual({ hands: "thumbsUp", eyes: "happyArcs", mouth: "happy", prop: "none" });
+    expect(GESTURES.error).toEqual({ hands: "rest", eyes: "spiral", mouth: "frown", prop: "none" });
+    expect(GESTURES.acting).toEqual({ hands: "typing", eyes: "capsule", mouth: "flat", prop: "laptop" });
     expect(GESTURES["confirmation-needed"].hands).toBe("raised");
-    expect(GESTURES["reminder-alert"]).toEqual({ hands: "pans", eyes: "capsule", prop: "impact" });
+    expect(GESTURES["reminder-alert"]).toEqual({ hands: "pans", eyes: "capsule", mouth: "shout", prop: "impact" });
     for (const s of ["idle"] as const) {
-      expect(GESTURES[s]).toEqual({ hands: "rest", eyes: "capsule", prop: "none" });
+      expect(GESTURES[s]).toEqual({ hands: "rest", eyes: "capsule", mouth: "smile", prop: "none" });
     }
     expect(Object.keys(GESTURES).sort()).toEqual([...ALL_STATES].sort());
+  });
+
+  it("gives every state its expected mouth, as exactly one 0/1 weight", () => {
+    const expected = {
+      idle: "smile",
+      listening: "open",
+      thinking: "tilted",
+      acting: "flat",
+      "confirmation-needed": "wavy",
+      success: "happy",
+      error: "frown",
+      "reminder-alert": "shout",
+    } as const;
+    const keys = {
+      smile: "mouthSmile", open: "mouthOpen", tilted: "mouthTilted", flat: "mouthFlat",
+      wavy: "mouthWavy", happy: "mouthHappy", frown: "mouthFrown", shout: "mouthShout",
+    } as const;
+    for (const state of ALL_STATES) {
+      expect(GESTURES[state].mouth).toBe(expected[state]);
+      const weights = Object.values(keys).map((k) => POSES[state][k]);
+      expect(weights.reduce((a, b) => a + b, 0)).toBe(1);
+      expect(POSES[state][keys[expected[state]]]).toBe(1);
+    }
   });
 
   it("encodes the gesture as 0/1 weights in the numeric pose", () => {
@@ -142,11 +165,10 @@ describe("poseForView", () => {
     expect(poseForView(view)).toBe(POSES["confirmation-needed"]);
   });
 
-  it("makes room above the head for the raised pans and dodges them with the antenna", () => {
+  it("makes room above the head for the raised pans", () => {
     const alert = POSES["reminder-alert"];
     expect(alert.headLift).toBeGreaterThanOrEqual(10); // head sits low in the canvas
     expect(alert.scale).toBeLessThanOrEqual(1.02);
-    expect(alert.antennaLean).toBeGreaterThanOrEqual(1); // laid over to the side, away from the hit
     expect(alert.eyeOpen).toBe(1);
     expect(alert.eyeWidth).toBeGreaterThanOrEqual(1.25); // wide alarmed eyes
   });

@@ -1,4 +1,4 @@
-// Pure geometry for the robot's arms, hands and laptop, in the drawing space
+// Pure geometry for the robot's hands and laptop, in the drawing space
 // of `drawRobot` (units, origin at the head centre, y down). The drawing code
 // only strokes and fills what these functions return.
 
@@ -6,36 +6,6 @@ import { PAN_R, type HandWeights, type Vec } from "./gesture";
 
 /** Hands are drawn this much larger than their local geometry. */
 export const HAND_SCALE = 1.1;
-
-// --- Arms -----------------------------------------------------------------
-
-export interface QuadCurve {
-  from: Vec;
-  ctrl: Vec;
-  to: Vec;
-}
-
-/** Shoulder anchors, on the sides of the head. */
-export const SHOULDERS = { left: { x: -32, y: 14 }, right: { x: 32, y: 14 } } as const;
-
-/** Arm as a quadratic with a soft elbow: the control point is pushed away from
- *  the body centre (`side` -1 = left arm, 1 = right arm) by a share of the
- *  arm's length. A zero-length arm is a point. */
-export function armCurve(from: Vec, to: Vec, side: -1 | 1): QuadCurve {
-  const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const len = Math.hypot(dx, dy);
-  if (len < 1e-9) return { from, ctrl: mid, to };
-  let px = -dy / len;
-  let py = dx / len;
-  if (px * side < 0) {
-    px = -px;
-    py = -py;
-  }
-  const bend = 0.18 * len;
-  return { from, ctrl: { x: mid.x + px * bend, y: mid.y + py * bend }, to };
-}
 
 // --- Hands ----------------------------------------------------------------
 
@@ -134,51 +104,49 @@ export function handShape(w: HandWeights, side: -1 | 1): HandShape {
   return shape;
 }
 
-/** A rounded rectangle centred on (cx, cy), rotated by `angle`. */
-export interface Part {
-  cx: number;
-  cy: number;
+/** Tilt of the scratching paddle about its tip, in radians (at full pointing). */
+export const SCRATCH_TILT = 0.9;
+
+export interface HandLayout {
+  /** Egg size and its centre along the local y axis. */
   w: number;
   h: number;
-  r: number;
-  angle: number;
+  cy: number;
+  /** 0..1: how far the hand is in the pointing (scratch) pose. */
+  point: number;
+  /** Pivot of the scratch tilt, local y. */
+  pivotY: number;
 }
 
-const FINGER_W = 4.6;
-/** The index finger is drawn only once it is at least this long. */
-const MIN_POINT = 0.5;
+/** The mitten's local layout. While pointing it shrinks a little, shifts toward
+ *  the crown so its far end reaches it, and tilts about `pivotY`. */
+export function handLayout(shape: HandShape): HandLayout {
+  const point = Math.min(1, shape.pointLen / 8);
+  const w = shape.bodyW * (1.12 - 0.12 * point);
+  const h = shape.bodyH * (1 - 0.12 * point);
+  const tipY = -shape.bodyH / 2 - shape.pointLen * 1.05;
+  return { w, h, cy: point * (tipY + h / 2), point, pivotY: tipY * point };
+}
 
-/** Body, thumb and (when pointing) the index finger, in local coordinates. */
-export function handParts(shape: HandShape): Part[] {
-  const body: Part = {
-    cx: 0,
-    cy: 0,
-    w: shape.bodyW,
-    h: shape.bodyH,
-    r: Math.min(shape.bodyW, shape.bodyH) * 0.46,
-    angle: 0,
-  };
-  const base = { x: -shape.bodyW / 2 + 1.2, y: shape.thumbBase * shape.bodyH };
-  const thumb: Part = {
-    cx: base.x + (Math.cos(shape.thumbAngle) * shape.thumbLen) / 2,
-    cy: base.y + (Math.sin(shape.thumbAngle) * shape.thumbLen) / 2,
-    w: shape.thumbWidth,
-    h: shape.thumbLen,
-    r: shape.thumbWidth / 2,
-    angle: shape.thumbAngle - Math.PI / 2,
-  };
-  const parts = [body, thumb];
-  if (shape.pointLen >= MIN_POINT) {
-    parts.push({
-      cx: -2.5,
-      cy: -shape.bodyH / 2 + 1.5 - shape.pointLen / 2,
-      w: FINGER_W,
-      h: shape.pointLen,
-      r: FINGER_W / 2,
-      angle: 0,
-    });
+/** Where the far end of the drawn mitten is in drawing space, through the same
+ *  transform `drawHand` applies: translate, scale(side * k, k), rotate(-lean),
+ *  then the scratch tilt about the pivot. While scratching it rests on the crown. */
+export function handTip(pos: Vec, shape: HandShape): Vec {
+  const l = handLayout(shape);
+  const k = HAND_SCALE * shape.size;
+  let x = 0;
+  let y = l.cy - l.h / 2;
+  if (l.point > 0) {
+    const t = SCRATCH_TILT * l.point;
+    const dy = y - l.pivotY;
+    x = -dy * Math.sin(t);
+    y = l.pivotY + dy * Math.cos(t);
   }
-  return parts;
+  const phi = -shape.lean;
+  return {
+    x: pos.x + (x * Math.cos(phi) - y * Math.sin(phi)) * k * shape.side,
+    y: pos.y + (x * Math.sin(phi) + y * Math.cos(phi)) * k,
+  };
 }
 
 // --- Impact effects ---------------------------------------------------------
