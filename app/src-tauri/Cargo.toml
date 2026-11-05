@@ -27,9 +27,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 niva-core = { path = "../../crates/niva-core" }
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
-# Plain-HTTP client for the local Ollama adapter (blocking, no async stack, no
-# TLS: the only peer is 127.0.0.1).
-ureq = { version = "3", default-features = false }
+# Blocking HTTP client (no async stack). The local Ollama adapter speaks plain
+# HTTP to 127.0.0.1; the Tavily search adapter needs HTTPS, through the
+# operating system's TLS (Schannel) and trust store (`native-tls-no-default`:
+# no bundled root list, no rustls/ring C build).
+ureq = { version = "3", default-features = false, features = ["native-tls-no-default"] }
 # `niva-eval` only (feature `eval`): reads eval/commands.yaml.
 serde_norway = { version = "0.9", optional = true }
 

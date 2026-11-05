@@ -10,6 +10,7 @@
 #[cfg(windows)]
 pub mod com;
 pub mod ollama;
+pub mod search;
 pub mod system_clock;
 #[cfg(windows)]
 pub mod win_apps;

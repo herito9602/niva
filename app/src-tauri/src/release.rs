@@ -15,14 +15,19 @@
 use std::sync::Arc;
 
 use niva_core::assistant::Assistant;
-use niva_core::ports::{Clock, LlmProvider, PcActions};
+use niva_core::ports::{Clock, LlmProvider, PcActions, SearchProvider};
 
+/// `search` is the real Tavily provider in a shipped build; without a key it
+/// answers "not configured" and the reply says so.
 pub fn assistant(
     llm: Arc<dyn LlmProvider>,
     pc: Arc<dyn PcActions>,
     clock: Arc<dyn Clock>,
+    search: Arc<dyn SearchProvider>,
 ) -> Assistant {
-    Assistant::new(llm, pc).with_clock(clock)
+    Assistant::new(llm, pc)
+        .with_clock(clock)
+        .with_search(search)
 }
 
 #[cfg(test)]
@@ -36,9 +41,24 @@ mod tests {
     use niva_core::tools::{ArgValue, PowerKind, ToolCall, VolumeChange};
 
     use super::*;
+    use crate::adapters::search::{ApiKey, NetError, Reply, SearchTransport, TavilySearch};
     use crate::adapters::system_clock::SystemClock;
     use crate::adapters::windows_pc::WindowsPc;
     use crate::adapters::windows_pc::fakes::{FakeApps, FakeOutput, FakePower};
+
+    /// A transport that fails the test if a release test ever reaches the network.
+    struct NoNetwork;
+
+    impl SearchTransport for NoNetwork {
+        fn post(
+            &self,
+            _key: &ApiKey,
+            _body: &str,
+            _timeout: std::time::Duration,
+        ) -> Result<Reply, NetError> {
+            panic!("a release test made a search call");
+        }
+    }
 
     struct ScriptedLlm(Mutex<Vec<Result<ChatReply, LlmError>>>);
 
@@ -80,7 +100,12 @@ mod tests {
         let pc = Arc::new(WindowsPc::new(apps.clone(), output.clone(), power.clone()));
         let llm = Arc::new(ScriptedLlm(Mutex::new(vec![answer])));
         Release {
-            assistant: assistant(llm, pc, Arc::new(SystemClock)),
+            assistant: assistant(
+                llm,
+                pc,
+                Arc::new(SystemClock),
+                Arc::new(TavilySearch::new(Arc::new(NoNetwork), None)),
+            ),
             apps,
             output,
             power,
@@ -497,13 +522,44 @@ mod tests {
     }
 
     #[test]
-    fn reminders_and_search_are_not_available_yet_and_say_so() {
+    fn reminders_are_not_available_yet_and_say_so() {
         let release = release(calls(vec![call("list_reminders", &[])]));
         ask(&release, "what are my reminders");
         let done = release.assistant.run_tools(1);
         assert_eq!(
             failure_text(&done),
             replies::render(&Msg::RemindersUnavailable, Lang::En)
+        );
+    }
+
+    #[test]
+    fn a_search_without_a_key_says_it_needs_one_and_makes_no_call() {
+        // `NoNetwork` panics if the provider tried to send anything.
+        for (utterance, lang) in [
+            ("search rust", Lang::En),
+            ("busca rust por favor", Lang::Es),
+        ] {
+            let release = release(calls(vec![call(
+                "web_search",
+                &[("query", ArgValue::Str("rust".into()))],
+            )]));
+            ask(&release, utterance);
+            let done = release.assistant.run_tools(1);
+            assert_eq!(
+                failure_text(&done),
+                replies::render(&Msg::SearchNotConfigured, lang),
+                "{utterance}"
+            );
+            untouched(&release);
+        }
+    }
+
+    #[test]
+    fn the_release_build_uses_the_real_search_provider() {
+        let body = release_build_requests();
+        assert!(
+            body.contains("TavilySearch::from_environment()"),
+            "the release build searches through Tavily with the user's key"
         );
     }
 }

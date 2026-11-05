@@ -51,6 +51,9 @@ fn samples() -> Vec<Msg> {
         Msg::NoReminders,
         Msg::RemindersUnavailable,
         Msg::SearchNothing,
+        Msg::SearchNotConfigured,
+        Msg::SearchKeyRejected,
+        Msg::SearchQuotaUsed,
         Msg::ToolFailed,
         Msg::InvalidRequest,
         Msg::MixedSearchRisky,
@@ -98,6 +101,9 @@ fn variant_name(msg: &Msg) -> &'static str {
         Msg::NoReminders => "NoReminders",
         Msg::RemindersUnavailable => "RemindersUnavailable",
         Msg::SearchNothing => "SearchNothing",
+        Msg::SearchNotConfigured => "SearchNotConfigured",
+        Msg::SearchKeyRejected => "SearchKeyRejected",
+        Msg::SearchQuotaUsed => "SearchQuotaUsed",
         Msg::ToolFailed => "ToolFailed",
         Msg::InvalidRequest => "InvalidRequest",
         Msg::MixedSearchRisky => "MixedSearchRisky",
@@ -114,11 +120,39 @@ fn variant_name(msg: &Msg) -> &'static str {
 
 #[test]
 fn every_message_variant_has_a_sample() {
-    // 39 variants; the power messages are sampled once per action.
+    // 42 variants; the power messages are sampled once per action.
     let mut names: Vec<&str> = samples().iter().map(variant_name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 39, "a variant has no sample: {names:?}");
+    assert_eq!(names.len(), 42, "a variant has no sample: {names:?}");
+}
+
+#[test]
+fn the_search_setup_replies_say_the_literal_truth_in_both_languages() {
+    assert_eq!(
+        render(&Msg::SearchNotConfigured, Lang::En),
+        "Web search needs a key. See the setup note."
+    );
+    assert_eq!(
+        render(&Msg::SearchNotConfigured, Lang::Es),
+        "La búsqueda web necesita una clave. Consulta la nota de configuración."
+    );
+    for lang in LANGS {
+        let texts: Vec<String> = [
+            Msg::SearchNotConfigured,
+            Msg::SearchKeyRejected,
+            Msg::SearchQuotaUsed,
+            Msg::SearchNothing,
+        ]
+        .iter()
+        .map(|msg| render(msg, lang))
+        .collect();
+        let mut unique = texts.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), 4, "{lang:?}: each case reads differently");
+        assert!(texts.iter().all(|t| t.chars().count() <= 80), "{texts:?}");
+    }
 }
 
 #[test]
