@@ -33,7 +33,7 @@ Grouped by when they matter. Started 2026-11-01.
   - Superseded for v1 by `design.md` D1 (local GPU Whisper; v1 targets GPU PCs). `spikes/voice/RESULTS.md`'s "STT moves to a cloud streaming API" decision is reversed by D1; cloud STT stays only as the S1 fallback.
 - [ ] **Real VAD for endpointing** (Silero) instead of a volume threshold; it cut commands off mid-phrase.
 - [ ] **Streaming TTS playback** from the first audio chunk.
-- [ ] **Re-measure end-to-end latency** after those changes; target < 2.5 s (raised from 2 s after choosing edge-tts; spike measured 3.75 s avg).
+- [ ] **Re-measure end-to-end latency** after those changes; target < 2.6 s (raised from 2 s after choosing edge-tts and from 2.5 s after the VAD measurement; spike measured 3.75 s avg).
 - [ ] **Repeat the false-activation test with real noise** (music with lyrics, videos, conversation).
 - [ ] **Barge-in by voice** ("Hey Niva" while Niva is speaking). Needs acoustic echo cancellation so Niva does not wake on its own voice; v1 only allows barge-in with the shortcut.
 - [ ] **Voice confirmation for risky actions** (the PC control spike confirms by typing y/n).
@@ -72,7 +72,7 @@ Closest competitor found: voice-first Windows companion with an island, sold as 
 ## From slice 0 (E1/S1, 2026-11-02)
 - [ ] **Reduce unrequested risky calls** (other "tired" or "done for today" phrasings -> sleep with qwen3.5:4b, 5 of 16 held-out; "me voy a dormir" itself is now a valid request): prompt wording, fewer power synonyms in the tool description, or few-shot negatives; re-run E1.
 - [ ] **Validate STT with the owner's real microphone and noise** (S1 used synthetic edge-tts audio); watch negations like "no apagues".
-- [ ] **Measure VAD hangover** (400 ms target) and STT overlapped with LLM generation. **Scheduled before slice 3**: VAD is the only unmeasured line in the latency budget, and a 600 ms result would break the 2.5 s mean (and the 3.0 s p95).
+- [x] **Measure VAD hangover** (done 2026-11-05: 500 ms wait, target raised to 2.6 s, see spikes/vad/RESULTS.md; STT overlapped with LLM generation is still open in slice 3) (400 ms target) and STT overlapped with LLM generation. **Scheduled before slice 3**: VAD is the only unmeasured line in the latency budget, and a 600 ms result would break the 2.5 s mean (and the 3.0 s p95).
 - [ ] **E1 non-determinism**: results vary between runs at temperature 0; run E1 3x and report the spread before final gates.
 
 ## From PR 2a review (2026-11-03)

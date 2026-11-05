@@ -104,7 +104,7 @@ Decision required: chain strategy (`stacked-to-main` or `feature-branch-chain`) 
 - [ ] 3.2 CO3: RED tests then `SidecarError{code}` row: listening -> error with code template; confirmation-needed -> click-only; list which codes set `voice_available=false` (`MIC_MISSING`, `MIC_BUSY`, `CUDA_OOM`, `MODEL_LOAD`, `PROTOCOL`, `INTERNAL`; `TTS_FAILED` stays `TtsFailed`).
 - [ ] 3.3 `voice/` uv project: `protocol.py`, `wake.py`, `vad.py`, `stt.py`, `tts.py`, `main.py`; pytest for protocol and VAD fixtures. Spec: `voice-activation`, `speech-io`.
 - [ ] 3.4 `adapters/voice_sidecar.rs`: JSON lines, restart counter, OOM downgrade, degraded mode, "Restart voice" tray entry; `audio_cue.rs` rodio adapter.
-- [ ] 3.5 Per-stage latency log; manual E2E checklist with real microphone audio for the < 2.5 s action-path mean and the end-to-end p95 <= 3.0 s goal (estimate ~2.71 s at p95: VAD 400 unmeasured + STT 203 + LLM 1110 + tool 100 + TTS 900).
+- [ ] 3.5 Per-stage latency log; manual E2E checklist with real microphone audio for the < 2.6 s action-path mean and the end-to-end p95 <= 3.0 s goal (estimate ~2.85 s at p95: VAD 532 computed, see spikes/vad/RESULTS.md + STT 203 + LLM 1110 + tool 100 + TTS 900).
 
 ## Slice 4: Reminders and fullscreen
 
