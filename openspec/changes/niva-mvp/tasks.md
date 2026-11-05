@@ -129,7 +129,7 @@ Slice 2 (2026-11-03, owner approved after an external review): 4 chained PRs, st
 - PR 2c: `ollama.rs` from 2.4 plus 2.10 (`niva-eval`, E1 run 3 times on the real prompt and schemas, reported per case id so a non-deterministic risky call such as `adv-es-me-voy-a-dormir` is visible).
 - PR 2d: `win_apps.rs` and `win_volume.rs` from 2.4, plus the release "Type a command" window, capability and tray entry from 2.5. **Split on 2026-11-04 (owner), because the real close and power actions with island confirm buttons and hit-testing are the risky part:**
   - **PR 2d-a (Batch 28):** the first real, usable release. Typed commands (tray "Type a command") run the real Ollama and the SAFE actions for real: `win_apps.rs` (`open_app`, `running_processes`), `win_volume.rs`, the release `PcActions` (`windows_pc.rs`), the Ollama keeper (re-warm, no give-up at start-up), release wiring, the text window, `check:release`. `close_app` and `power` do NOT act; a risky plan ends in a truthful "not available yet" before any prompt. Also the cancelled-ids watermark.
-  - **PR 2d-b (not started):** the real `close_app` and `power` adapters, the island's Confirm and Cancel buttons with hit-testing, the `SetSuspendState` blocking decision, and the fate of the debug Accept path. Task 2.4 stays `[~]` until then.
+  - **PR 2d-b (part 1 done in Batch 32; part 2 not started):** the real `close_app` and `power` adapters, the island's Confirm and Cancel buttons with hit-testing, the `SetSuspendState` blocking decision, and the fate of the debug Accept path. Task 2.4 stays `[~]` until then.
 
 ## Apply progress
 
@@ -850,3 +850,11 @@ iva.exe`). No processes left running.
 ### Batch 31 (owner request: new robot look) (2026-11-05)
 
 - Branch `feat/mascot-redesign`. Motion unchanged; new drawing per spec `mascot`, "Character look": white sphere, screen with accent ring, plain ears fixed to the head, floating mittens, no arms or antenna, one mouth per state. Reviewed by the owner live in the debug build; a fresh review removed the dead hand geometry and tied the scratch-tip test to the drawn tip.
+
+### Batch 32 (PR 2d-b part 1: the island's confirm buttons) (2026-11-05)
+
+- Branch `feat/2d-b-island-confirm`, from `main`. Nothing committed. Strict TDD (compile-level RED first for every new item; one logic RED: a wrong expectation of my own trajectory test, fixed in the test). NO real action: debug keeps the dry-run PC, release keeps `without_risky_actions()`, so the buttons never appear in release yet.
+- Done: labels in the view (`replies::confirm_labels`, `ConfirmView`); `ConfirmButtons.tsx`, `computeLayout` with `actions`, `confirmButtonRects`, window 640x232, budget 182; `confirm_buttons.rs` (`ConfirmGate`, `GateUi`, the two commands, 500 ms guard on an injected clock, one answer per id, Cancel always honoured); hit-testing (`click_through.rs`: pure `ignore_cursor_events` with 6/14 px margins, `HitTester`; `cursor.rs` calls it on every poll); capability `island-actions` and `permissions-release/island-actions.toml`; `clickThrough.test.ts` now guards the buttons instead of forbidding handlers; specs `island-shell` and `action-safety`; `check-release-binary` requires the two commands.
+- Open: **2.4c stays open** (the real `close_app` and power adapters, the `SetSuspendState` decision, the debug Accept path, the `Channel::Click` doc comment was reworded after review). Not verified on a real desktop (hand-test list in BACKLOG). `npm run tauri build -- --no-bundle` and `npm run check:release` were not run in this batch (`cargo clippy --release -p niva` was: it validates the release capabilities).
+- Review fixes: the Confirm guard starts at the first non-empty rectangle report (no report, no Confirm); reports are capped at two button-sized rectangles; the poll and the hide share one lock; the page forgets its last report when the confirmation changes; the arming timer, the report and the button size are pure and tested; the `Channel::Click` doc reworded.
+- Owner decision (2026-11-05): task 5.1 (web search, spike S3) moves to right after PR 2d-b, before slice 3.
