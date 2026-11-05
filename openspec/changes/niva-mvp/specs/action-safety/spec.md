@@ -114,13 +114,18 @@ After the user accepts a sleep confirmation (by voice or by click), the system M
 - WHEN a reminder falls due
 - THEN it is queued and shown after the countdown ends, not over it
 
-### Requirement: A build that cannot confirm does not ask (PR 2d-a)
-A build with no way to answer a confirmation MUST refuse a risky request with a truthful "not available yet" reply instead of showing a prompt that nobody can answer. This is decided before the safety gate and does not change it. See `pc-actions` "Risky actions are not available in this release". PR 2d-b adds the click path (the island's buttons, below), but the release still refuses risky requests until its real `close_app` and power adapters ship with the next part of PR 2d-b: the buttons exist in the code and never appear there yet.
+### Requirement: The release asks for confirmations (PR 2d-b; replaces "a build that cannot confirm does not ask" of PR 2d-a)
+Now that the island's buttons answer a confirmation (below) and the real `close_app` and power adapters ship, the release MUST show the confirmation for a risky request like any other build, and MUST act only after a Confirm click that passes the host's guard. There is no build-time switch that refuses risky requests any more; the type-level gate (`Approved<T>`) is unchanged.
 
-#### Scenario: No prompt that cannot be answered
+#### Scenario: The release asks before it acts
 - GIVEN the release build and the request "close Spotify" (or "shut down the PC")
 - WHEN the model proposes the risky call
-- THEN no confirmation state is entered and Niva says the action is not available yet
+- THEN the confirmation state is entered with the Confirm and Cancel buttons, and nothing is closed or powered before a Confirm click
+
+#### Scenario: Restart and shutdown stay click-only
+- GIVEN a restart or shutdown confirmation
+- WHEN the user answers by voice
+- THEN the action does not run
 
 ### Requirement: The island's click answers a confirmation (PR 2d-b)
 A click on the island's Confirm or Cancel MUST reach the core only as `Accept { id }` or `Reject { id }`, through one host command that carries the confirmation id and the choice and nothing else (no text, no action name). The host MUST drop an answer whose id is not the confirmation on screen, a second answer to the same confirmation, and a Confirm that arrives before the island has reported its buttons (the first non-empty report of their rectangles for that confirmation, sent once they are mounted) or less than 500 ms after that report; this MUST be enforced in the host, not only in the page, on an injectable clock, so with no report a Confirm can never pass. The host MUST also reject a rectangle report as a whole if it has more than two rectangles or one bigger than a button. This command is the only way a click reaches the core in a release build, and nothing reachable from the model or typed text may produce one. A Cancel MUST always be honoured. A dropped answer MUST NOT be an error and MUST NOT change anything. The release webview MUST hold this command and the report of the buttons' rectangles in a capability of its own, and no debug-only command.

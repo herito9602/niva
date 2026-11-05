@@ -58,12 +58,75 @@ The system MUST open a built-in Windows app by its Spanish or its English name, 
 - THEN the Logitech entry starts, not Windows Camera
 
 ### Requirement: Close app
-The system MUST close a running app by name, subject to action-safety confirmation.
+The system MUST close a running app by name, subject to action-safety confirmation. It MUST ask the app's windows to close with `WM_CLOSE` (what the close button does), and MUST NOT terminate or force-close the process. It acts only on processes of the user's session whose executable is the one the user confirmed.
 
 #### Scenario: Close not running
 - GIVEN the named app is not running
 - WHEN the user asks to close it
 - THEN Niva says it is not running and asks nothing further
+
+#### Scenario: Close a desktop app (PR 2d-b)
+- GIVEN Spotify is running with a window
+- WHEN the user asks to close it and confirms
+- THEN `WM_CLOSE` is posted to its visible top-level windows, Niva waits up to 3 s for them to go away and then says it closed Spotify
+
+#### Scenario: Close a UWP app (PR 2d-b)
+- GIVEN Calculator (`CalculatorApp.exe`, which owns no top-level window) is running
+- WHEN the user asks to close it and confirms
+- THEN `WM_CLOSE` is posted to the `ApplicationFrameHost` frame whose AppUserModelID (`PKEY_AppUserModel_ID` of the window) is non-empty and equals the AppUserModelID of a `CalculatorApp.exe` process, and to no other window; this holds for a minimized, suspended app too; a frame with no AUMID or another one is never touched, a process with no AUMID has no frame route, and `applicationframehost` is never a match
+
+#### Scenario: The window closes but the app keeps running (PR 2d-b)
+- GIVEN a desktop app whose window closes but whose process stays (it lives in the tray)
+- WHEN the windows are gone and the process is still there after the 3 s budget
+- THEN Niva says it closed the window but the app keeps running in the background; it does not say it closed the app (a UWP app whose frame is gone counts as closed)
+
+#### Scenario: The window changed owner before the post (PR 2d-b)
+- GIVEN a window handle that another process took between the listing and the post
+- WHEN the close is posted
+- THEN the owner is read again first and the window is skipped (a frame's AUMID is re-checked)
+
+#### Scenario: The app asks something (PR 2d-b)
+- GIVEN the app shows an unsaved-changes dialog when asked to close
+- WHEN 3 s pass and a window is still there
+- THEN Niva says the app did not close and may be asking to save; nothing else is done (no force, no second attempt)
+
+#### Scenario: No window (PR 2d-b)
+- GIVEN the app is running but shows no window to close
+- WHEN the user confirms
+- THEN nothing is posted and Niva says it found no window of the app to close
+
+#### Scenario: The process list cannot be read (PR 2d-b)
+- GIVEN the snapshot of running processes fails
+- WHEN the user asks to close an app
+- THEN Niva says it did not work; it never says the app is not running
+
+#### Scenario: Built-in apps by their Spanish or English name (PR 2d-b)
+- GIVEN Calculator is running as `CalculatorApp.exe`
+- WHEN the model names "calculadora" or "la calculadora" (the same for Notepad, Paint, Photos and the other built-in apps whose process name differs)
+- THEN the name is mapped, exactly and before the safety matcher, to the process stem, the confirmation names `CalculatorApp.exe`, and the matcher, the protected list and the session filter still decide; "calculadora cientifica" is not mapped
+
+### Requirement: Power actions (PR 2d-b)
+The system MUST lock the PC, put it to sleep, restart it and shut it down, subject to action-safety confirmation. Restart and shutdown MUST NOT force apps to close. Sleep MUST NOT use a blocking suspend call and MUST NOT be attempted on a PC where it has not been tested.
+
+#### Scenario: Lock
+- GIVEN the user confirmed
+- WHEN the action runs
+- THEN the workstation is locked, or Niva says it did not work
+
+#### Scenario: Sleep on a Modern Standby PC
+- GIVEN the PC reports Modern Standby (`AoAc`) and the sleep countdown ended
+- WHEN the action runs
+- THEN the PC enters Modern Standby through the monitor-power broadcast, which returns at once, and Niva says it is suspending (it cannot verify afterwards that the PC slept)
+
+#### Scenario: Sleep on a PC without Modern Standby
+- GIVEN the PC does not report Modern Standby, or the capability cannot be read
+- WHEN the sleep countdown ends
+- THEN no OS call is made and Niva says sleep is not available on this PC yet
+
+#### Scenario: Restart and shutdown
+- GIVEN the user confirmed by click
+- WHEN the action runs
+- THEN `SeShutdownPrivilege` is enabled and checked, the restart or power-off is requested without a force flag, so apps with unsaved work can object, and the privilege is disabled again afterwards, also when the request failed; any failure is reported, never ignored
 
 ### Requirement: Volume and mute
 The system MUST set volume to a level, raise/lower it, and mute/unmute.
@@ -119,18 +182,18 @@ The system MUST list the running processes with their executable name and whethe
 - WHEN the processes are listed
 - THEN it appears with its executable name and as a process of the user's session
 
-### Requirement: Risky actions are not available in this release (PR 2d-a)
-Until the island can answer a confirmation (PR 2d-b), a release build MUST NOT close apps or control power. A request that includes `close_app` or `power_action` MUST end in a truthful "not available yet" reply, BEFORE any confirmation prompt, and nothing in the same request may run. The Windows adapter's `close_app` and `power` MUST NOT act even if called. Debug builds keep the dry-run PC for these actions.
+### Requirement: Risky actions in the release (PR 2d-b; replaces "not available in this release" of PR 2d-a)
+The release build MUST close apps and control power for real, only behind a confirmation answered on the island's buttons (action-safety). Debug builds keep the dry-run PC for these actions.
 
 #### Scenario: Risky request in the release
 - GIVEN the release build and a model response that closes an app or asks for lock, sleep, restart or shutdown
 - WHEN the response is validated
-- THEN Niva says it cannot close apps or control the power of the PC yet, shows no confirmation, and Windows is not touched
+- THEN a confirmation is shown on the island with its Confirm and Cancel buttons and Windows is not touched until Confirm is clicked; Cancel closes nothing
 
 #### Scenario: Risky call among safe ones
 - GIVEN a response with "open notepad", a volume change and a `close_app` call
 - WHEN it is validated
-- THEN none of the three runs and Niva gives the same reply
+- THEN the safe calls run first and the close is confirmed afterwards
 
 #### Scenario: Safe requests are unaffected
 - GIVEN the release build
