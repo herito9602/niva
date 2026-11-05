@@ -25,8 +25,7 @@ export interface PoseParams {
   accentR: number;
   accentG: number;
   accentB: number;
-  /** Horizontal chuckle amplitude (units) and head wobble amplitude (radians). */
-  shakeAmp: number;
+  /** Head wobble amplitude (radians). */
   wobbleAmp: number;
   /** Gesture, eye-style and prop blend weights (0..1); see `GESTURES`. */
   handScratch: number;
@@ -71,7 +70,6 @@ export const POSE_KEYS = [
   "accentR",
   "accentG",
   "accentB",
-  "shakeAmp",
   "wobbleAmp",
   "handScratch",
   "handThumbs",
@@ -133,7 +131,7 @@ export const GESTURES: Record<StateName, Gesture> = {
   "reminder-alert": { hands: "pans", eyes: "capsule", mouth: "shout", prop: "impact" },
 };
 
-type OptionalKey = "shakeAmp" | "wobbleAmp" | "headShift" | "lookX" | "lookY";
+type OptionalKey = "wobbleAmp" | "headShift" | "lookX" | "lookY";
 
 type NumericPose = Omit<
   PoseParams,
@@ -163,7 +161,6 @@ type NumericPose = Omit<
 
 function withGesture(base: NumericPose, g: Gesture): PoseParams {
   return {
-    shakeAmp: 0,
     wobbleAmp: 0,
     headShift: 0,
     lookX: 0,
@@ -229,7 +226,7 @@ const BASE_POSES: Record<StateName, NumericPose> = {
   success: {
     eyeOpen: 0.3, eyeWidth: 1.2, eyeSlant: 0, headTilt: -0.04, headLift: -3, scale: 1.07,
     glow: 1, breath: 0.01,
-    bounceAmp: 4, bounceHz: 2.4, accentR: 110, accentG: 230, accentB: 100, shakeAmp: 1,
+    bounceAmp: 4, bounceHz: 2.4, accentR: 110, accentG: 230, accentB: 100,
   },
   // Droopy: eyes sad-slanted, head sunk, red.
   error: {
