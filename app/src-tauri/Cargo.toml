@@ -36,8 +36,30 @@ serde_norway = { version = "0.9", optional = true }
 [target.'cfg(windows)'.dependencies]
 # GetLocalTime, for the local time the system prompt states; GetLastInputInfo
 # (feature Win32_UI_Input_KeyboardAndMouse), for the sleep countdown: the time of
-# the last input, never a keyboard hook.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse"] }
+# the last input, never a keyboard hook. PR 2d-a (win_apps): the process list
+# (ToolHelp, ProcessIdToSessionId, GetCurrentProcessId), ShellExecuteExW to start
+# an indexed app (its struct needs Win32_System_Registry), and COM initialisation for the worker threads that call it.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# win_volume: the Core Audio endpoint API is COM, which windows-sys exposes only
+# as raw vtables. The crate is already in the lock for Tauri (same 0.62.2); only
+# the features below are turned on for the audio endpoint volume.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+] }
 
 [features]
 # The E1 eval runner. Off in every app build: it turns on the fakes of
