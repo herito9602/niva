@@ -167,6 +167,22 @@ describe("the minimum time on screen for acting", () => {
     expect(shown(store)).toBe(success);
   });
 
+  it("shows a confirmation at once, with its buttons, even while acting is still held", () => {
+    const store = createViewStore();
+    store.setView(acting);
+    vi.advanceTimersByTime(40);
+    const confirmation: ViewPayload = {
+      state: "confirmation-needed",
+      caption: "Close Spotify.exe?",
+      confirm: { id: 7, prompt: "Close Spotify.exe?", confirmLabel: "Confirm", cancelLabel: "Cancel" },
+    };
+    store.setView(confirmation);
+    expect(shown(store)).toBe(confirmation);
+    // And it stays: the held-result timer of an earlier view must not replace it.
+    vi.advanceTimersByTime(ACTING_MIN_MS * 2);
+    expect(shown(store)).toBe(confirmation);
+  });
+
   it("a result that needs no hold is not delayed by an earlier acting", () => {
     const store = createViewStore();
     store.setView({ state: "idle" });

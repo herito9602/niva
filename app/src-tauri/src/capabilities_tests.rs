@@ -59,28 +59,79 @@ fn the_text_window_capability_can_only_submit_text() {
     );
 }
 
-/// `submit_text` is an app command, so it is gated by an app permission. The
-/// release build defines that permission from a checked-in file (not from
-/// `commands()`, whose generated directory can hold a stale debug permission).
+/// The island may call exactly two commands: the answer to a confirmation
+/// (id and accept or reject, nothing else) and the report of where its buttons
+/// are (numbers only). It gets no window, event-emit or shortcut permission;
+/// the click-through toggle stays in Rust. It is a separate capability from
+/// `default.json` so that file stays "listen only".
 #[test]
-fn the_release_permission_file_defines_only_the_text_command() {
+fn the_island_actions_capability_holds_only_the_two_narrow_commands() {
+    let actions = load(include_str!("../capabilities/island-actions.json"));
+    assert_eq!(actions["windows"], serde_json::json!([ISLAND_LABEL]));
+    assert_eq!(
+        permissions(&actions),
+        vec!["allow-answer-confirmation", "allow-report-confirm-buttons"]
+    );
+    assert!(
+        actions.get("remote").is_none() && actions.get("webviews").is_none(),
+        "local content of the one window only"
+    );
+}
+
+/// Nobody but the island may answer a confirmation: the text window keeps its
+/// one command and the debug window has no island command either.
+#[test]
+fn no_other_window_can_answer_a_confirmation() {
+    let text = load(include_str!("../capabilities/text-window.json"));
+    let debug = load(include_str!("../capabilities-debug/debug.json"));
+    for capability in [text, debug] {
+        assert!(
+            !permissions(&capability)
+                .iter()
+                .any(|p| p.contains("answer-confirmation") || p.contains("confirm-buttons")),
+            "{capability}"
+        );
+    }
+}
+
+/// App commands are gated by app permissions. The release build defines them
+/// from checked-in files (not from `commands()`, whose generated directory can
+/// hold a stale debug permission). One file per window, so each window's
+/// permissions can be read at a glance.
+#[test]
+fn the_release_permission_files_define_only_the_window_commands() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("permissions-release");
-    let mut files = Vec::new();
+    let mut files = std::collections::BTreeMap::new();
     for entry in std::fs::read_dir(dir).expect("permissions-release dir") {
         let path = entry.expect("entry").path();
         if path.extension().is_some_and(|e| e == "toml") {
-            files.push(std::fs::read_to_string(&path).expect("readable"));
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            files.insert(name, std::fs::read_to_string(&path).expect("readable"));
         }
     }
-    assert_eq!(files.len(), 1, "one permission file in the release set");
-    let file = &files[0];
-    assert!(file.contains("identifier = \"allow-submit-text\""));
-    assert!(file.contains("commands.allow = [\"submit_text\"]"));
-    assert_eq!(file.matches("[[permission]]").count(), 1);
-    assert!(
-        !file.contains("debug"),
-        "no debug permission in the release set"
+    assert_eq!(
+        files.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["island-actions.toml", "submit-text.toml"]
     );
+
+    let text = &files["submit-text.toml"];
+    assert!(text.contains("identifier = \"allow-submit-text\""));
+    assert!(text.contains("commands.allow = [\"submit_text\"]"));
+    assert_eq!(text.matches("[[permission]]").count(), 1);
+
+    let island = &files["island-actions.toml"];
+    assert!(island.contains("identifier = \"allow-answer-confirmation\""));
+    assert!(island.contains("commands.allow = [\"answer_confirmation\"]"));
+    assert!(island.contains("identifier = \"allow-report-confirm-buttons\""));
+    assert!(island.contains("commands.allow = [\"report_confirm_buttons\"]"));
+    assert_eq!(island.matches("[[permission]]").count(), 2);
+
+    for (name, file) in &files {
+        assert!(
+            !file.contains("debug"),
+            "{name}: no debug permission in the release set"
+        );
+    }
 }
 
 #[test]
@@ -113,8 +164,8 @@ fn the_release_capability_directory_holds_no_debug_permission() {
         }
     }
     assert_eq!(
-        seen, 2,
-        "the island and the text window capabilities are the release set"
+        seen, 3,
+        "the island, the island actions and the text window capabilities are the release set"
     );
 }
 
@@ -124,6 +175,15 @@ fn the_release_capability_directory_holds_no_debug_permission() {
 fn the_build_script_gates_the_debug_command_and_capabilities_on_debug_assertions() {
     let build = include_str!("../build.rs");
     assert!(build.contains("CARGO_CFG_DEBUG_ASSERTIONS"));
+    // Debug builds list every command so tauri-build generates its permission.
+    for command in [
+        "debug_dispatch",
+        "submit_text",
+        "answer_confirmation",
+        "report_confirm_buttons",
+    ] {
+        assert!(build.contains(command), "{command} missing from build.rs");
+    }
     // Lines of the `else` (release) branch: after `} else {` up to the `    }`.
     let release_branch: Vec<&str> = build
         .lines()

@@ -46,9 +46,10 @@ if (found.length > 0) {
   console.error(`release binary ${exe} contains: ${found.join(", ")}`);
   process.exit(1);
 }
-// The text window's command must be in the release: without it the tray entry
-// would open a window that cannot send anything.
-const required = ["submit_text"];
+// The commands of the release webviews must be in it: without submit_text the
+// tray entry would open a window that cannot send anything; without the island's
+// two the confirmation buttons would be dead (PR 2d-b).
+const required = ["submit_text", "answer_confirmation", "report_confirm_buttons"];
 const missing = required.filter((n) => !text.includes(n));
 if (missing.length > 0) {
   console.error(`release binary ${exe} is missing: ${missing.join(", ")}`);

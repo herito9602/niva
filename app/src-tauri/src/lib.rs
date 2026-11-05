@@ -1,5 +1,6 @@
 pub mod adapters;
 mod click_through;
+mod confirm_buttons;
 mod cursor;
 #[cfg(debug_assertions)]
 mod debug;
@@ -27,7 +28,7 @@ mod test_support;
 use std::{
     sync::Arc,
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use niva_core::state_machine::Event;
@@ -39,7 +40,8 @@ use tauri::{
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
 use crate::adapters::ollama::{OllamaProvider, keeper};
-use crate::click_through::{IslandWindow, prepare_island, show_island_window};
+use crate::click_through::{HitTesting, IslandWindow, prepare_island, show_island_window};
+use crate::confirm_buttons::{ConfirmGate, GateUi};
 use crate::cursor::CursorPoller;
 use crate::dispatcher::{Core, Input, InputTx, startup_events};
 use crate::effect_runner::{EffectRunner, EventSink, Host};
@@ -79,6 +81,10 @@ struct TauriHost {
     cursor: CursorPoller,
     /// A show during the hide delay cancels the pending hide.
     guard: HideGuard,
+    /// The confirmation on screen, if any, and where its buttons are.
+    gate: Arc<ConfirmGate>,
+    /// Decides, on every cursor sample, whether the window captures the mouse.
+    hit: HitTesting,
 }
 
 impl Host for TauriHost {
@@ -87,13 +93,20 @@ impl Host for TauriHost {
         if let Some(win) = self.app.get_webview_window(ISLAND_LABEL) {
             show_island_window(&win);
         }
-        self.cursor.start(&self.app, ISLAND_LABEL);
+        // Showing resets the window to click-through behind the tester's back.
+        self.hit.forget();
+        self.cursor.start(&self.app, ISLAND_LABEL, self.hit.clone());
     }
 
     fn hide_island(&self) {
         let ticket = self.guard.hide();
+        // Nothing may capture the mouse while the island leaves. Closing the
+        // gate and letting the mouse through happen under the hit tester's lock,
+        // the one a poll holds while it reads the buttons and applies its
+        // answer, so a poll cannot capture again after this.
         self.cursor.stop();
         if let Some(win) = self.app.get_webview_window(ISLAND_LABEL) {
+            self.hit.release(&win, || self.gate.clear());
             let guard = self.guard.clone();
             // Let the frontend play the slide-up animation, then hide the window.
             thread::spawn(move || {
@@ -198,15 +211,23 @@ pub fn run() {
             })
             .build(),
     );
-    // The release webview's only command is the text window's `submit_text`
-    // (its capability grants nothing else). The debug window adds its own.
+    // The release webviews' commands: the text window's `submit_text` and the
+    // island's two narrow ones (answer a confirmation, report where its buttons
+    // are). Each window's capability grants its own and nothing else. The debug
+    // window adds `debug_dispatch`.
     #[cfg(debug_assertions)]
     let builder = builder.invoke_handler(tauri::generate_handler![
         debug::debug_dispatch,
-        text_window::submit_text
+        text_window::submit_text,
+        confirm_buttons::answer_confirmation,
+        confirm_buttons::report_confirm_buttons
     ]);
     #[cfg(not(debug_assertions))]
-    let builder = builder.invoke_handler(tauri::generate_handler![text_window::submit_text]);
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        text_window::submit_text,
+        confirm_buttons::answer_confirmation,
+        confirm_buttons::report_confirm_buttons
+    ]);
 
     builder
         .setup(move |app| {
@@ -215,11 +236,24 @@ pub fn run() {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Input>();
             app.manage(tx.clone());
 
+            // The buttons' gate runs on a monotonic clock: a wall-clock step
+            // must not shorten the accidental-click guard.
+            let started = Instant::now();
+            let gate = Arc::new(ConfirmGate::new(Arc::new(move || {
+                started.elapsed().as_millis() as u64
+            })));
+            app.manage(gate.clone());
+
             // Wiring: timers and synthesized replies re-enter through `tx`.
             let host = Arc::new(TauriHost {
                 app: app.handle().clone(),
                 cursor: CursorPoller::default(),
                 guard: HideGuard::default(),
+                gate: gate.clone(),
+                hit: HitTesting::new({
+                    let gate = gate.clone();
+                    Arc::new(move || gate.areas())
+                }),
             });
             let sink: EventSink = {
                 let tx = tx.clone();
@@ -236,9 +270,13 @@ pub fn run() {
                 runner.with_activity(Arc::new(adapters::windows_activity::WindowsActivity));
             let core = Core::new(
                 runner,
-                Arc::new(TauriUiAdapter::new(
-                    Arc::new(app.handle().clone()),
-                    cfg!(debug_assertions),
+                // The gate sees every view before the island does.
+                Arc::new(GateUi::new(
+                    Arc::new(TauriUiAdapter::new(
+                        Arc::new(app.handle().clone()),
+                        cfg!(debug_assertions),
+                    )),
+                    gate.clone(),
                 )),
                 Box::new(now_ms),
             );

@@ -19,8 +19,9 @@ html, body, #root {
 }
 
 /* The window is wider and taller than any island (room for the shadow and the
-   spring overshoot, see island-ui/layout.ts). It ignores the mouse entirely on
-   the host side, so the empty part never blocks the apps underneath. */
+   spring overshoot, see island-ui/layout.ts). It ignores the mouse on the host
+   side everywhere except over the confirmation buttons (click_through.rs), so
+   the empty part never blocks the apps underneath. */
 .stage { position: relative; height: 100%; }
 
 /* The island is an SVG path hanging from the top edge of the window, which is
@@ -47,7 +48,8 @@ html, body, #root {
 .island.in .mascot {
   animation: content-in calc(var(--in-ms) * 0.36) calc(var(--in-ms) * 0.3) cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
-.island.in .label {
+.island.in .label,
+.island.in .actions {
   animation: content-in calc(var(--in-ms) * 0.36) calc(var(--in-ms) * 0.38) cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 @keyframes content-in { from { opacity: 0; transform: translateY(8px); filter: blur(4px); } }
@@ -57,7 +59,7 @@ html, body, #root {
 
 /* Reduced motion: the settled shape, shown and hidden by a fade. */
 .island.rm.in .island-shape, .island.rm.in .island-clip { animation: fade-in 200ms ease-out backwards; }
-.island.rm.in .mascot, .island.rm.in .label { animation: none; }
+.island.rm.in .mascot, .island.rm.in .label, .island.rm.in .actions { animation: none; }
 .island.rm.out .island-shape, .island.rm.out .island-clip { animation: fade-out 200ms ease-in forwards; }
 @keyframes fade-in { from { opacity: 0; } }
 @keyframes fade-out { to { opacity: 0; } }
@@ -65,6 +67,7 @@ html, body, #root {
 /* Mascot and text sit at the left edge of the shape, so while it grows or
    shrinks they travel with it instead of sliding around. */
 .content {
+  position: relative;
   box-sizing: border-box;
   flex: none;
   display: flex;
@@ -81,6 +84,9 @@ html, body, #root {
   letter-spacing: 0.2px;
   overflow-wrap: anywhere;
 }
+/* The text column: the message, and under it the confirmation buttons when
+   there is a question to answer (sizes come from island-ui/layout.ts). */
+.column { flex: none; display: flex; flex-direction: column; }
 .label {
   flex: none;
   overflow: hidden;
@@ -94,6 +100,27 @@ html, body, #root {
 }
 .scroller { will-change: transform, opacity; }
 .scrolls .scroller { padding-bottom: 5px; }
+
+/* Confirmation buttons. Sizes are set inline from layout.ts (the host is told
+   the same rectangles). Dimmed while they cannot be used yet. */
+.actions { flex: none; display: flex; justify-content: flex-end; align-items: center; transition: opacity 120ms ease; }
+.actions.arming { opacity: 0.45; }
+.btn {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font: 600 13px/1 "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 0.2px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.btn:disabled { cursor: default; }
+.btn:not(:disabled):active { transform: translateY(1px); }
+.btn.cancel { color: #d4d6e2; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.18); }
+.btn.cancel:hover { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.3); }
+.btn.accept { color: #1a0a06; background: #ff7a5c; border: 1px solid #ff9a82; }
+.btn.accept:not(:disabled):hover { background: #ff8f75; }
 
 .probe { position: absolute; top: 0; left: 0; visibility: hidden; pointer-events: none; }
 .probe-line { display: inline-block; white-space: nowrap; }
