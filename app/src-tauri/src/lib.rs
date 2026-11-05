@@ -9,10 +9,12 @@ mod dispatcher;
 mod effect_runner;
 #[cfg(feature = "eval")]
 pub mod eval;
+#[cfg(windows)]
+pub mod release;
 mod requests;
+mod text_window;
 mod ui_adapter;
 mod visibility;
-#[cfg(any(test, debug_assertions))]
 mod worker_pool;
 
 #[cfg(test)]
@@ -36,11 +38,7 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
-#[cfg(debug_assertions)]
-use crate::adapters::ollama::{
-    OllamaProvider,
-    health::{APP_MAX_ATTEMPTS, start_up},
-};
+use crate::adapters::ollama::{OllamaProvider, keeper};
 use crate::click_through::{IslandWindow, prepare_island, show_island_window};
 use crate::cursor::CursorPoller;
 use crate::dispatcher::{Core, Input, InputTx, startup_events};
@@ -131,9 +129,9 @@ const _: fn(
 ) -> niva_core::assistant::Assistant = dev::assistant_with;
 
 /// Who answers the reducer's request effects. Debug builds run the assistant
-/// loop on the dev LLM and the dry-run PC (the LLM adapter landed in PR 2c; only the Windows adapters are left for
-/// PR 2d);
-/// release builds fail every request safely and contain none of that code.
+/// loop on Ollama (dev LLM until it is ready) and the dry-run PC; release builds
+/// run it on Ollama and the real Windows adapter of the safe actions, with no
+/// dev code in them.
 #[cfg(debug_assertions)]
 fn build_requests(app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
     use tauri::Emitter;
@@ -144,25 +142,41 @@ fn build_requests(app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
         let payload = serde_json::json!({ "line": line });
         let _ = app.emit_to(debug::DEBUG_WINDOW_LABEL, debug::DEV_LOG_EVENT, payload);
     });
-    let (assistant, warm) = dev::pick_assistant(log.clone(), OllamaProvider::new());
-    if let Some(ollama) = warm {
-        // Warm the model up in the background (retrying with the app's backoff)
-        // so the first command is not slower than the rest.
-        thread::spawn(move || {
-            let outcome = start_up(&ollama, Some(APP_MAX_ATTEMPTS), &thread::sleep, &|line| {
-                log(line)
-            });
-            if let Err(error) = outcome {
-                log(format!("[niva-ollama] warm-up gave up: {error:?}"));
-            }
-        });
-    }
+    // The keeper waits for Ollama with the design's backoff (it never gives up),
+    // warms the model up and keeps it warm; the assistant uses the real model
+    // while the keeper says it is ready and the dev LLM until then.
+    let ollama = Arc::new(OllamaProvider::new());
+    let handle = keeper::spawn(ollama.clone(), log.clone());
+    let assistant = dev::adaptive_assistant(log, ollama, handle);
     Arc::new(requests::AssistantRequests::new(assistant, sink))
 }
 
+/// Release builds: the real Ollama (kept warm by the keeper, never a fallback
+/// model) and the Windows adapter of the SAFE actions. The assistant is built
+/// without risky actions, so `close_app` and power never reach Windows here;
+/// see `release.rs`.
 #[cfg(not(debug_assertions))]
 fn build_requests(_app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
-    Arc::new(requests::Unavailable::new(sink))
+    let log: Arc<dyn Fn(String) + Send + Sync> = Arc::new(|line| eprintln!("{line}"));
+    let ollama = Arc::new(OllamaProvider::new());
+    let handle = keeper::spawn(ollama.clone(), log);
+    let assistant = release::assistant(
+        Arc::new(keeper::WarmLlm::new(ollama, handle)),
+        Arc::new(adapters::windows_pc::WindowsPc::real()),
+        Arc::new(adapters::system_clock::SystemClock),
+    );
+    Arc::new(requests::AssistantRequests::new(assistant, sink))
+}
+
+/// Opens the "Type a command" window. Built off the event loop thread, so a
+/// window creation never waits on the loop that is handling the tray click.
+fn open_text_window(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = text_window::open_window(&app) {
+            eprintln!("[niva] could not open the text window: {err}");
+        }
+    });
 }
 
 fn send_event(app: &AppHandle, event: Event) {
@@ -184,8 +198,15 @@ pub fn run() {
             })
             .build(),
     );
+    // The release webview's only command is the text window's `submit_text`
+    // (its capability grants nothing else). The debug window adds its own.
     #[cfg(debug_assertions)]
-    let builder = builder.invoke_handler(tauri::generate_handler![debug::debug_dispatch]);
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        debug::debug_dispatch,
+        text_window::submit_text
+    ]);
+    #[cfg(not(debug_assertions))]
+    let builder = builder.invoke_handler(tauri::generate_handler![text_window::submit_text]);
 
     builder
         .setup(move |app| {
@@ -243,8 +264,10 @@ pub fn run() {
             // The tray toggles exactly like the shortcut: through the reducer.
             let toggle =
                 MenuItem::with_id(app, "toggle", "Show / hide island", true, None::<&str>)?;
+            let type_command =
+                MenuItem::with_id(app, "type", "Type a command", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&toggle, &quit])?;
+            let menu = Menu::with_items(app, &[&toggle, &type_command, &quit])?;
 
             let mut tray = TrayIconBuilder::new()
                 .tooltip("Niva")
@@ -252,6 +275,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "toggle" => send_event(app, Event::Shortcut),
+                    "type" => open_text_window(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })

@@ -5,25 +5,21 @@
 //! every event before the reducer does (to record confirmation answers) and
 //! knows the language replies are shown in.
 //!
-//! - [`Unavailable`] is what release builds use until the real Ollama and
-//!   Windows adapters exist (PRs 2c and 2d): every request ends in a "not
-//!   available yet" error and nothing runs. It contains no LLM, no PC code.
-//! - [`AssistantRequests`] (debug builds and tests) runs a core
-//!   [`Assistant`] on a worker thread and feeds its events back.
+//! [`AssistantRequests`] runs a core [`Assistant`] on a bounded worker pool
+//! and feeds its events back. Debug builds give it the dev adapters, release
+//! builds the real Ollama and the Windows adapter of the safe actions
+//! (`release.rs`); there is no "not available" stub any more.
 
-#[cfg(any(test, debug_assertions))]
 use std::collections::VecDeque;
-#[cfg(any(test, debug_assertions))]
 use std::sync::{Arc, Mutex};
 
-#[cfg(any(test, not(debug_assertions)))]
+#[cfg(test)]
 use niva_core::replies::DEFAULT_LANG;
 use niva_core::replies::Lang;
 use niva_core::replies::{self, Msg};
 use niva_core::state_machine::{Event, RequestInput, State};
 
 use crate::effect_runner::EventSink;
-#[cfg(any(test, debug_assertions))]
 use crate::worker_pool::{Job, QUEUE, WORKERS, WorkerPool};
 
 pub trait Requests: Send + Sync {
@@ -44,41 +40,6 @@ pub trait Requests: Send + Sync {
     fn lang(&self) -> Lang;
 }
 
-/// Release builds before slice 2c/2d: every request fails safely.
-#[cfg(any(test, not(debug_assertions)))]
-pub struct Unavailable {
-    sink: EventSink,
-}
-
-#[cfg(any(test, not(debug_assertions)))]
-impl Unavailable {
-    pub fn new(sink: EventSink) -> Self {
-        Unavailable { sink }
-    }
-}
-
-#[cfg(any(test, not(debug_assertions)))]
-impl Requests for Unavailable {
-    fn start(&self, req: u64, _input: RequestInput) {
-        (self.sink)(Event::FailureText {
-            req,
-            text: replies::render(&Msg::NotAvailableYet, DEFAULT_LANG),
-        });
-    }
-
-    fn run_tools(&self, _req: u64) {}
-
-    fn finish_countdown(&self, _req: u64) {}
-
-    fn cancel(&self, _req: u64) {}
-
-    fn observe(&self, _state: &State, _event: &Event) {}
-
-    fn lang(&self) -> Lang {
-        DEFAULT_LANG
-    }
-}
-
 /// Does nothing (tests of the runner and the dispatcher that only look at
 /// the reducer's own behavior).
 #[cfg(test)]
@@ -97,14 +58,12 @@ impl Requests for Ignore {
 }
 
 /// Hands a job to a worker. `false` means it was refused (the job is dropped).
-#[cfg(any(test, debug_assertions))]
 pub type Spawn = Box<dyn Fn(Job) -> bool + Send + Sync>;
 
 /// Drives a core [`Assistant`](niva_core::assistant::Assistant): the LLM call
 /// and the tools block, so each runs on a worker of a bounded pool (a stuck
 /// provider can hold at most the pool's threads; the rest is refused with a
 /// "busy" error at once); the events they produce go back through `sink`.
-#[cfg(any(test, debug_assertions))]
 pub struct AssistantRequests {
     assistant: std::sync::Arc<niva_core::assistant::Assistant>,
     sink: EventSink,
@@ -120,13 +79,10 @@ pub struct AssistantRequests {
 
 /// More than the pool can hold (workers + queue), so the id of a queued job
 /// is never evicted before the job is dequeued.
-#[cfg(any(test, debug_assertions))]
 const ABANDONED_KEPT: usize = 64;
 
-#[cfg(any(test, debug_assertions))]
 const _: () = assert!(ABANDONED_KEPT > WORKERS + QUEUE);
 
-#[cfg(any(test, debug_assertions))]
 impl AssistantRequests {
     /// The app's pool: `WORKERS` threads, `QUEUE` waiting jobs.
     pub fn new(assistant: niva_core::assistant::Assistant, sink: EventSink) -> Self {
@@ -189,7 +145,6 @@ impl AssistantRequests {
     }
 }
 
-#[cfg(any(test, debug_assertions))]
 impl Requests for AssistantRequests {
     fn start(&self, req: u64, input: RequestInput) {
         let assistant = self.assistant.clone();
@@ -247,43 +202,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-
-    fn sink_into(events: &Arc<Mutex<Vec<Event>>>) -> EventSink {
-        let events = events.clone();
-        Arc::new(move |event| events.lock().unwrap().push(event))
-    }
-
-    #[test]
-    fn a_release_request_fails_safely_with_a_not_available_error() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let requests = Unavailable::new(sink_into(&events));
-        requests.start(
-            7,
-            RequestInput::User {
-                text: "close notepad".into(),
-                slot: None,
-            },
-        );
-        requests.run_tools(7);
-        requests.cancel(7);
-        assert_eq!(
-            *events.lock().unwrap(),
-            vec![Event::FailureText {
-                req: 7,
-                text: "Assistant commands are not available yet.".into()
-            }]
-        );
-        assert_eq!(requests.lang(), DEFAULT_LANG);
-    }
-
-    #[test]
-    fn a_release_build_never_finishes_a_countdown() {
-        // No assistant, no held approval, no PC: finishing says and does nothing.
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let requests = Unavailable::new(sink_into(&events));
-        requests.finish_countdown(7);
-        assert!(events.lock().unwrap().is_empty());
-    }
 
     #[cfg(debug_assertions)]
     mod pool {

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "text-window",
+  "description": "Type a command window: may call exactly one command, which can only submit typed text. No events, no window or shortcut control.",
+  "windows": ["text"],
+  "permissions": ["allow-submit-text"]
+}
