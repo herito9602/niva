@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   burstSegments,
   handTip,
+  headOutlineDistance,
   handShape,
   laptopGeometry,
   starPoints,
@@ -11,10 +12,6 @@ import { HAND_REST, handPositions, type HandWeights } from "./gesture";
 
 const NONE: HandWeights = { scratch: 0, thumbs: 0, typing: 0, raise: 0, cup: 0, pans: 0 };
 
-/** Signed distance from a point to the sphere's outline (radius 33.5). */
-function headOutlineDistance(p: { x: number; y: number }): number {
-  return Math.hypot(p.x, p.y) - 33.5;
-}
 const ALL_MODES: HandWeights[] = [
   NONE,
   { ...NONE, cup: 1 },
@@ -176,7 +173,7 @@ describe("drawn hand tip", () => {
     for (const t of [0, 0.03, 0.06, 0.1, 0.15, 0.2, 0.24]) {
       const hand = handPositions(w, t, 1).left;
       const tip = handTip(hand, handShape(w, -1));
-      expect(Math.abs(headOutlineDistance(tip))).toBeLessThanOrEqual(3);
+      expect(Math.abs(headOutlineDistance(tip))).toBeLessThanOrEqual(1);
       expect(tip.y).toBeLessThan(-18); // crown or upper side
       expect(tip.x).toBeLessThan(-8);
       expect(tip.x).toBeGreaterThan(-32);

@@ -2,14 +2,16 @@
 // Canvas 2D drawing. Everything except `drawRobot` is pure and unit tested.
 //
 // Original design, drawn from scratch with primitives only (no image assets):
-// a floating pearl-white sphere with a large dark glossy screen framed by a
-// glowing ring in the state's accent colour, a headphone-like pod on each side,
-// soft cyan capsule eyes and two floating mitten hands (no arms). Gestures
+// a floating coral squircle head (a soft rounded square, wider than tall) with a
+// large dark glossy screen framed by a glowing ring in the state's accent
+// colour, an ear on each side, soft cyan capsule eyes, a mouth that follows the
+// state and two floating white mitten hands (no arms). Gestures
 // (scratching, thumbs-up, typing on a small laptop), happy arc eyes and dizzy
 // spiral eyes are blended by spring weights.
 
 import {
   burstSegments,
+  HEAD,
   HAND_SCALE,
   handLayout,
   handShape,
@@ -307,7 +309,7 @@ export function makeContextGetter(warn: (message: string) => void = console.warn
 
 // --- Drawing --------------------------------------------------------------
 
-/** Design space is DESIGN_SIZE units square with the sphere centred a little
+/** Design space is DESIGN_SIZE units square with the head centred a little
  *  low so the props, hands and laptop fit; `size` is the canvas side in
  *  CSS pixels. */
 export const DESIGN_SIZE = 150;
@@ -332,11 +334,11 @@ const OUTLINE = "#0b0e1c";
 const OUTLINE_W = 2.2;
 const LAPTOP = laptopGeometry();
 
-// --- Sphere, screen and pods -------------------------------------------------
+// --- Head, screen and ears ---------------------------------------------------
 
-/** Radius of the pearl sphere; the screen and pods are sized against it. */
-const SPHERE_R = 33.5;
-const SCREEN = { cx: 0, cy: 0, rx: 29, ry: 24 };
+/** The screen: an oval about 72% of the head width, so the coral shell shows. */
+const SCREEN = { cx: 0, cy: 0, rx: 24.5, ry: 19.5 };
+const SHELL_EDGE = "rgba(120, 36, 22, 0.8)";
 /** Eyes are always this soft cyan-blue; the ring carries the state colour. */
 const EYE_RGB = "125, 220, 255";
 const eyeCss = (alpha: number) => `rgba(${EYE_RGB}, ${alpha})`;
@@ -346,53 +348,47 @@ function screenPath(ctx: CanvasRenderingContext2D, inset = 0): void {
   ctx.ellipse(SCREEN.cx, SCREEN.cy, SCREEN.rx - inset, SCREEN.ry - inset, 0, 0, Math.PI * 2);
 }
 
-/** Pearl shading for a round shape centred on the origin: glossy white lit from
- *  the top left, fading to a cool blue-grey toward the lower edge. */
-function fillPearl(ctx: CanvasRenderingContext2D, r: number): void {
-  const base = ctx.createRadialGradient(-r * 0.32, -r * 0.42, r * 0.08, 0, 0, r * 1.2);
-  base.addColorStop(0, "#ffffff");
-  base.addColorStop(0.55, "#fdfdff");
-  base.addColorStop(0.85, "#f4f6fb");
-  base.addColorStop(1, "#e6ebf5");
+/** Coral shell shading for the shape just traced: lit from the top left, darker
+ *  toward the lower edge; the ears use a slightly darker tone. */
+function fillShell(ctx: CanvasRenderingContext2D, r: number, ear: boolean): void {
+  const base = ctx.createRadialGradient(-r * 0.32, -r * 0.42, r * 0.08, 0, 0, r * 1.25);
+  base.addColorStop(0, ear ? "#ff917a" : "#ffb8a3");
+  base.addColorStop(0.5, ear ? "#e5634a" : "#ff7a5c");
+  base.addColorStop(1, ear ? "#ae3a25" : "#cc452b");
   ctx.fillStyle = base;
-  ctx.fill();
-  const shade = ctx.createRadialGradient(-r * 0.1, -r * 0.2, r * 0.72, 0, 0, r);
-  shade.addColorStop(0, "rgba(140, 165, 215, 0)");
-  shade.addColorStop(1, "rgba(130, 155, 210, 0.3)");
-  ctx.fillStyle = shade;
   ctx.fill();
 }
 
-/** One ear pod: a plain white rounded rectangle, taller than wide, attached to
- *  the side of the sphere (drawn behind the shell, so only its outer part
- *  shows) with the same pearl shading. It never changes colour, and it is part
- *  of the head: it tilts with the face and never moves on its own. */
-function drawPod(ctx: CanvasRenderingContext2D, side: -1 | 1): void {
+/** One ear: a plain rounded rectangle, taller than wide, attached to the side
+ *  of the head (drawn behind the shell, so only its outer part shows) in a
+ *  slightly darker coral. It never changes colour, and it is part of the head:
+ *  it tilts with the face and never moves on its own. */
+function drawEar(ctx: CanvasRenderingContext2D, side: -1 | 1): void {
   const w = 10;
   const h = 19;
   ctx.save();
-  ctx.translate(side * 34, 3);
+  ctx.translate(side * (HEAD.halfW + 0.5), 3);
   ctx.beginPath();
   ctx.roundRect(-w / 2, -h / 2, w, h, 4.2);
-  fillPearl(ctx, h / 2);
-  ctx.strokeStyle = "rgba(150, 168, 205, 0.55)";
+  fillShell(ctx, h / 2, true);
+  ctx.strokeStyle = SHELL_EDGE;
   ctx.lineWidth = 0.9;
   ctx.stroke();
   ctx.restore();
 }
 
-/** The sphere shell with its soft highlight, the screen and the accent ring. */
+/** The head shell with its soft highlight, the screen and the accent ring. */
 function drawBody(ctx: CanvasRenderingContext2D, pose: PoseParams): void {
   ctx.beginPath();
-  ctx.arc(0, 0, SPHERE_R, 0, Math.PI * 2);
-  fillPearl(ctx, SPHERE_R);
-  ctx.strokeStyle = "rgba(150, 168, 205, 0.5)";
+  ctx.roundRect(-HEAD.halfW, -HEAD.halfH, 2 * HEAD.halfW, 2 * HEAD.halfH, HEAD.radius);
+  fillShell(ctx, 36, false);
+  ctx.strokeStyle = SHELL_EDGE;
   ctx.lineWidth = 0.9;
   ctx.stroke();
 
   // Small soft highlight at the top left.
   ctx.save();
-  ctx.translate(-18, -25);
+  ctx.translate(-18, -24);
   ctx.rotate(-0.6);
   ctx.scale(1, 0.42);
   const hl = ctx.createRadialGradient(0, 0, 0, 0, 0, 8.5);
@@ -400,7 +396,7 @@ function drawBody(ctx: CanvasRenderingContext2D, pose: PoseParams): void {
   hl.addColorStop(1, "rgba(255, 255, 255, 0)");
   ctx.fillStyle = hl;
   ctx.beginPath();
-  ctx.arc(0, 0, 8.5, 0, Math.PI * 2);
+  ctx.arc(0, 0, 9.5, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 
@@ -426,15 +422,20 @@ function drawBody(ctx: CanvasRenderingContext2D, pose: PoseParams): void {
   ctx.restore();
 
   // Ring in the state's accent colour: a wide faint halo, then the bright line.
-  screenPath(ctx, 1);
+  // A dark bezel keeps the ring legible on the coloured shell.
+  screenPath(ctx, -1.5);
   ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(6, 9, 18, 0.92)";
+  ctx.lineWidth = 4.5;
+  ctx.stroke();
+  screenPath(ctx, 1);
   ctx.strokeStyle = accentCss(pose, 0.22);
-  ctx.lineWidth = 7;
+  ctx.lineWidth = 4.5;
   ctx.stroke();
   ctx.shadowColor = accentCss(pose, 0.9);
   ctx.shadowBlur = 3 + pose.glow * 3;
   ctx.strokeStyle = accentCss(pose, 0.85 + 0.15 * pose.glow);
-  ctx.lineWidth = 3.2;
+  ctx.lineWidth = 2;
   ctx.stroke();
   ctx.shadowBlur = 0;
 }
@@ -453,7 +454,7 @@ function eggPath(ctx: CanvasRenderingContext2D, w: number, h: number): void {
   ctx.closePath();
 }
 
-/** A floating mitten: a smooth pearl egg with no fingers. The head scratch
+/** A floating mitten: a smooth white egg with no fingers. The head scratch
  *  stretches it into a teardrop whose tip touches the crown, and thumbs-up
  *  grows a short rounded thumb nub on the inner side. */
 function drawHand(
@@ -840,7 +841,8 @@ function drawSpill(ctx: CanvasRenderingContext2D, pose: PoseParams, weight: numb
 function drawMouth(ctx: CanvasRenderingContext2D, frame: Frame): void {
   const { pose } = frame;
   ctx.save();
-  ctx.translate(frame.gaze.x * MAX_EYE_TRAVEL * 0.6, 13 + frame.gaze.y * (MAX_EYE_TRAVEL * 0.3));
+  ctx.translate(frame.gaze.x * MAX_EYE_TRAVEL * 0.6, 11 + frame.gaze.y * (MAX_EYE_TRAVEL * 0.3));
+  ctx.scale(0.8, 0.8);
   ctx.strokeStyle = eyeCss(1);
   ctx.fillStyle = eyeCss(1);
   ctx.lineCap = "round";
@@ -996,8 +998,8 @@ export function drawRobot(ctx: CanvasRenderingContext2D, frame: Frame, size: num
   ctx.scale(frame.scale, frame.scale);
 
   // Ears behind the shell, fixed to the head.
-  drawPod(ctx, -1);
-  drawPod(ctx, 1);
+  drawEar(ctx, -1);
+  drawEar(ctx, 1);
   drawBody(ctx, pose);
 
   if (pose.propLaptop > 0.01) drawSpill(ctx, pose, pose.propLaptop);

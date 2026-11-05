@@ -104,6 +104,22 @@ export function handShape(w: HandWeights, side: -1 | 1): HandShape {
   return shape;
 }
 
+/** Outline of the head: a soft rounded square, wider than tall, centred on the
+ *  origin of the drawing space. `drawRobot` fills this shape and the scratching
+ *  hand's tip is placed on it. */
+export const HEAD = { halfW: 34, halfH: 30, radius: 22 } as const;
+
+/** Signed distance from `p` to the head outline: negative inside, positive outside. */
+export function headOutlineDistance(p: Vec): number {
+  const qx = Math.abs(p.x) - (HEAD.halfW - HEAD.radius);
+  const qy = Math.abs(p.y) - (HEAD.halfH - HEAD.radius);
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - HEAD.radius;
+}
+
+/** How far the scratching paddle reaches past its body, per unit of pointing
+ *  length; chosen so the tip rests on the head outline. */
+const SCRATCH_REACH = 0.84;
+
 /** Tilt of the scratching paddle about its tip, in radians (at full pointing). */
 export const SCRATCH_TILT = 0.9;
 
@@ -124,7 +140,7 @@ export function handLayout(shape: HandShape): HandLayout {
   const point = Math.min(1, shape.pointLen / 8);
   const w = shape.bodyW * (1.12 - 0.12 * point);
   const h = shape.bodyH * (1 - 0.12 * point);
-  const tipY = -shape.bodyH / 2 - shape.pointLen * 1.05;
+  const tipY = -shape.bodyH / 2 - shape.pointLen * SCRATCH_REACH;
   return { w, h, cy: point * (tipY + h / 2), point, pivotY: tipY * point };
 }
 
