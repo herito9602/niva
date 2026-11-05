@@ -9,7 +9,7 @@
 
 export const LINE_HEIGHT = 20;
 export const MAX_LINES = 6;
-export const MASCOT_SIZE = 96;
+export const MASCOT_SIZE = 124;
 export const PAD_X = 24;
 export const PAD_Y = 8;
 export const TEXT_PAD_Y = 10;
@@ -32,7 +32,7 @@ export const SHADOW_ROOM_Y = 28;
 /** Pixels around the text: borders, side padding, mascot and the gap after it. */
 export const CHROME_X = 2 * (PAD_X + BORDER) + MASCOT_SIZE + GAP;
 export const MAX_TEXT_WIDTH = MAX_ISLAND_WIDTH - CHROME_X;
-export const MIN_ISLAND_WIDTH = 180;
+export const MIN_ISLAND_WIDTH = 208;
 export const MIN_ISLAND_HEIGHT = MASCOT_SIZE + 2 * PAD_Y + 2 * BORDER;
 
 /** What the browser reports for a message. */
