@@ -115,7 +115,7 @@ Decision required: chain strategy (`stacked-to-main` or `feature-branch-chain`) 
 
 ## Slice 5: Search, wake word, installer
 
-- [ ] 5.1 Spike S3, then `adapters/search.rs` behind `SearchProvider`; injection-safe summary call (no tools, capped). Spec: `web-search`.
+- [x] 5.1 Spike S3, then `adapters/search.rs` behind `SearchProvider`; injection-safe summary call (no tools, capped). Spec: `web-search`. Done in Batch 34 (Tavily, the user's own key; hand tests pending).
 - [ ] 5.2 Spike S4: train "hey niva", apply threshold procedure, ship only if it passes. Check stock-model license.
 - [ ] 5.3 Installer: decide sidecar packaging, bundle sidecar, `cargo tauri build` smoke test on a clean PC. Spec: `voice-activation`.
 
@@ -874,3 +874,17 @@ iva.exe`). No processes left running.
 - `#[ignore]`d tests: read-only `win_power::real_tests::the_real_pc_reports_whether_it_has_modern_standby`, `win_close::real_tests::the_real_window_list_has_windows_and_the_snapshot_has_this_process` and `the_real_frames_of_application_frame_host_report_their_core_window_owners` (these three WERE run, by exact name: AoAc is true on this PC); with real effects and NEVER run: `really_locks_the_workstation`, `really_enters_modern_standby`, `really_enables_the_shutdown_privilege`, `really_restarts`, `really_shuts_down`.
 - Review fixes (same batch): the UWP frame is matched by AppUserModelID instead of the CoreWindow child (confirmed live on this PC: a minimized, suspended Calculator keeps its frame and loses the child); `KeepsRunning` for a window that closed while a desktop process stays; the shutdown privilege is dropped after `ExitWindowsEx`; the window owner is re-read before each post; the sleep reply says "Suspending". Read-only `#[ignore]` checks that were run: every open `ApplicationFrameWindow` on this PC has an AUMID (Sticky Notes and Settings were open), a plain desktop process has none. Final counts: app 528 passed / 15 ignored, core 495 + 12 doctests.
 - Open: closing a real UWP app was not exercised in a test; hand-test list in BACKLOG. `npm run tauri build -- --no-bundle` and `npm run check:release` were not run (`cargo clippy --release -p niva` was).
+
+### Batch 34 (task 5.1: real web search with Tavily) (2026-11-05)
+
+- Branch `feat/web-search`, from `main`. Nothing committed. Owner decision: Tavily (spike S3, `spikes/search/RESULTS.md`, design D5); the keyless sources failed. Not touched: the prompt, the tool schemas, `eval/commands.yaml`.
+- What changed
+  1. **`adapters/search.rs`**: `TavilySearch` over a `SearchTransport` trait; fixed HTTPS endpoint, no redirects, no proxy, 4 s timeout (inside the 5 s tool timer, pinned by a test), body cap 256 KiB, query cut to 400 characters and only in the JSON body, at most 4 snippets of 500 characters. The key (`NIVA_TAVILY_KEY`, process environment then `HKCU\Environment`) is an `ApiKey` with a redacted `Debug`. No key: no call, `NotConfigured`.
+  2. **Core**: `SearchError` gained `NotConfigured`, `KeyRejected`, `QuotaExceeded`; `Msg::SearchNotConfigured`, `SearchKeyRejected`, `SearchQuotaUsed` in es and en; `fail_search` maps each to its own reply and keeps the lines of the calls that ran.
+  3. **Summary call**: gets today's local date from the clock, the instruction about past dates, the request language and "plain text without markdown". The date line is left out when the clock does not know the time zone.
+  4. **Wiring**: release and debug both build `TavilySearch::from_environment()`; `release::assistant` and `dev::assistant_with` / `adaptive_assistant` take the provider. Debug keeps the dry-run PC and reminders. `check-release-binary.mjs` gained the needle `Canned result`.
+  5. Docs: spec `web-search`, design D5, S3 row and a "Task 5.1" section, `spikes/search/RESULTS.md` ("S3 verdict"), `docs/BACKLOG.md`.
+- New dependency feature: `ureq` with `native-tls-no-default` (it brings the `native-tls`, `schannel` and `der` crates; no rustls, no ring, no bundled roots). Needed because the Ollama build of ureq had no TLS at all.
+- RED seen: core compile errors for the new variants, before any code. The adapter code was written before its tests (the tests were then added and run, one test of mine had a wrong line count).
+- Tests: core 501; app 550 passed, 16 ignored (the new ignored one is `real_tavily_answers_a_plain_question`, NOT run: it needs a real key); vitest 270.
+- Open: hand tests with a real key (BACKLOG); the registry fallback was only exercised with a name nobody sets, never with the real key.

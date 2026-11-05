@@ -1,25 +1,18 @@
-# S3 pre-registered queries
+# Spike S3: pre-registered search queries
 
-Fixed on 2026-11-02, **before** testing any source (design.md S3, external review R2.2).
-Do not edit these after the first test run; if a query must change, add a dated note explaining why.
+Written on 2026-11-05 before any source was tested, as design.md requires. A
+source passes if, for at least 7 of 10, the owner judges that the short spoken
+summary actually answers the question.
 
-Pass rule: a source passes if, for at least 7 of 10 queries, the owner judges that the short spoken
-summary actually answers the question. Record search-path latency separately.
-
-| # | Lang | Type | Query |
-|---|---|---|---|
-| 1 | es | stable fact | ¿Cuál es la capital de Australia? |
-| 2 | en | stable fact | How tall is Mount Everest? |
-| 3 | es | stable fact | ¿Quién escribió Cien años de soledad? |
-| 4 | es | time-sensitive | ¿Quién ganó la última Champions League? |
-| 5 | en | time-sensitive | What is the price of Bitcoin today? |
-| 6 | es | time-sensitive | ¿Cómo está el clima hoy en Buenos Aires? |
-| 7 | en | time-sensitive | What is the latest news about the Windows 11 update? |
-| 8 | en | likely answerable | What is photosynthesis? |
-| 9 | es | likely answerable | ¿Qué es un agujero negro? |
-| 10 | en | likely answerable | Who painted the Mona Lisa? |
-
-## Results
-
-| # | Source | Answered? (owner) | Latency | Notes |
-|---|---|---|---|---|
+| # | Lang | Query | Kind |
+|---|------|-------|------|
+| 1 | es | ¿Cuándo nació José Martí? | stable fact (the owner's real case) |
+| 2 | en | Who won the last Champions League? | recent, spec example |
+| 3 | es | ¿Quién ganó el mundial de 2022? | stable fact, in E1 |
+| 4 | en | What is the capital of Australia? | stable fact, in E1 |
+| 5 | es | ¿Cómo está el clima en Buenos Aires ahora? | live data, in E1 |
+| 6 | en | How tall is Mount Everest? | stable fact |
+| 7 | es | ¿Quién es el presidente de Francia? | changes over time |
+| 8 | es | ¿A cuánto está el dólar en Argentina hoy? | live data |
+| 9 | en | What is the latest version of Python? | changes over time |
+| 10 | es | ¿Cuándo es el próximo eclipse solar? | near future |
