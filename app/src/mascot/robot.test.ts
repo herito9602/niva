@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { POSE_KEYS, POSES } from "./pose";
+import { ALL_STATES } from "../events";
+import { GESTURES, POSE_KEYS, POSES } from "./pose";
 import {
   accentCss,
   backingStoreSize,
@@ -146,7 +147,6 @@ describe("composeFrame", () => {
         expect(f.vibe).toEqual({ alpha: 0, dx: 0 });
         expect(f.waves).toEqual(waveAlphas(0, 0));
         expect(f.scale).toBe(r.pose.scale.value);
-        expect(f.antennaAngle).toBe(r.pose.antennaLean.value);
         expect(f.tilt).toBe(r.pose.headTilt.value);
         expect(f.spiralAngle).toBe(0);
       }
@@ -287,5 +287,23 @@ describe("accentCss", () => {
   it("rounds and clamps channels", () => {
     const pose = { ...POSES["idle"], accentR: 300.4, accentG: -5, accentB: 10.6 };
     expect(accentCss(pose, 0.5)).toBe("rgba(255, 0, 11, 0.5)");
+  });
+});
+
+describe("mouth reaches the frame the drawing reads", () => {
+  const keys = {
+    smile: "mouthSmile", open: "mouthOpen", tilted: "mouthTilted", flat: "mouthFlat",
+    wavy: "mouthWavy", happy: "mouthHappy", frown: "mouthFrown", shout: "mouthShout",
+  } as const;
+
+  it("settles on weight 1 for the state's own mouth and 0 for the rest", () => {
+    for (const state of ALL_STATES) {
+      let rig = createRig(POSES.idle);
+      for (let i = 0; i < 600; i++) rig = stepRig(rig, POSES[state], still, 1 / 60);
+      const { pose } = composeFrame(rig, 0.3, 0, 1); // drawMouth reads frame.pose
+      for (const [mode, key] of Object.entries(keys)) {
+        expect(pose[key], `${state}/${mode}`).toBeCloseTo(GESTURES[state].mouth === mode ? 1 : 0, 3);
+      }
+    }
   });
 });

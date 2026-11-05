@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  armCurve,
   burstSegments,
-  HAND_SCALE,
-  handParts,
+  handTip,
   handShape,
   laptopGeometry,
   starPoints,
@@ -13,14 +11,9 @@ import { HAND_REST, handPositions, type HandWeights } from "./gesture";
 
 const NONE: HandWeights = { scratch: 0, thumbs: 0, typing: 0, raise: 0, cup: 0, pans: 0 };
 
-/** Signed distance from a point to the head's rounded-rectangle outline. */
+/** Signed distance from a point to the sphere's outline (radius 33.5). */
 function headOutlineDistance(p: { x: number; y: number }): number {
-  const c = { x: 0, y: -1.5 };
-  const half = { x: 34, y: 29.5 };
-  const r = 21;
-  const qx = Math.abs(p.x - c.x) - (half.x - r);
-  const qy = Math.abs(p.y - c.y) - (half.y - r);
-  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+  return Math.hypot(p.x, p.y) - 33.5;
 }
 const ALL_MODES: HandWeights[] = [
   NONE,
@@ -31,40 +24,7 @@ const ALL_MODES: HandWeights[] = [
   { ...NONE, typing: 1 },
   { ...NONE, raise: 1 },
 ];
-/** Where the drawn index finger ends: the tip of the finger part that
- *  `handParts` returns, through the same transform `drawHand` applies
- *  (translate, scale(side * k, k), rotate(-lean)). */
-function drawnFingertip(pos: { x: number; y: number }, shape: ReturnType<typeof handShape>) {
-  const finger = handParts(shape)[2];
-  const k = HAND_SCALE * shape.size;
-  const lx = finger.cx;
-  const ly = finger.cy - finger.h / 2;
-  const phi = -shape.lean;
-  const x = lx * Math.cos(phi) - ly * Math.sin(phi);
-  const y = lx * Math.sin(phi) + ly * Math.cos(phi);
-  return { x: pos.x + x * k * shape.side, y: pos.y + y * k };
-}
 const finite = (...n: number[]) => n.every(Number.isFinite);
-
-describe("armCurve", () => {
-  it("bends outward, away from the body centre", () => {
-    const left = armCurve({ x: -30, y: 20 }, { x: -40, y: 36 }, -1);
-    const right = armCurve({ x: 30, y: 20 }, { x: 40, y: 36 }, 1);
-    expect(left.ctrl.x).toBeLessThan((left.from.x + left.to.x) / 2);
-    expect(right.ctrl.x).toBeGreaterThan((right.from.x + right.to.x) / 2);
-  });
-
-  it("bends more for a longer arm and not at all for a zero-length one", () => {
-    const short = armCurve({ x: 30, y: 20 }, { x: 34, y: 26 }, 1);
-    const long = armCurve({ x: 30, y: 20 }, { x: 15, y: 70 }, 1);
-    const off = (c: ReturnType<typeof armCurve>) =>
-      Math.hypot(c.ctrl.x - (c.from.x + c.to.x) / 2, c.ctrl.y - (c.from.y + c.to.y) / 2);
-    expect(off(long)).toBeGreaterThan(off(short));
-    const none = armCurve({ x: 5, y: 5 }, { x: 5, y: 5 }, 1);
-    expect(none.ctrl).toEqual({ x: 5, y: 5 });
-  });
-
-});
 
 describe("handShape (one mitten, no separate fingers)", () => {
   it("rests as a relaxed mitten hanging down with a small thumb nub", () => {
@@ -96,7 +56,7 @@ describe("handShape (one mitten, no separate fingers)", () => {
     expect(s.pointLen).toBeGreaterThanOrEqual(10);
     expect(s.lean).toBeGreaterThan(2.7); // turned about half a turn: finger down
     expect(s.lean).toBeLessThan(3.4);
-    const tip = drawnFingertip({ x: 0, y: 0 }, s);
+    const tip = handTip({ x: 0, y: 0 }, s);
     expect(tip.y).toBeGreaterThan(12); // the finger hangs below the hand
     expect(Math.abs(tip.x)).toBeLessThan(5);
   });
@@ -137,39 +97,6 @@ describe("handShape (one mitten, no separate fingers)", () => {
         }
       }
     }
-  });
-});
-
-describe("handParts", () => {
-  it("is a body and a thumb, plus one finger only when pointing", () => {
-    expect(handParts(handShape(NONE, 1))).toHaveLength(2);
-    expect(handParts(handShape({ ...NONE, thumbs: 1 }, 1))).toHaveLength(2);
-    expect(handParts(handShape({ ...NONE, scratch: 1 }, -1))).toHaveLength(3);
-  });
-
-  it("is finite and compact in every mode", () => {
-    for (const w of ALL_MODES) {
-      for (const p of handParts(handShape(w, 1))) {
-        expect(finite(p.cx, p.cy, p.w, p.h, p.r, p.angle)).toBe(true);
-        expect(p.w).toBeGreaterThan(0);
-        expect(p.h).toBeGreaterThan(0);
-        expect(Math.hypot(p.cx, p.cy)).toBeLessThan(26);
-      }
-    }
-  });
-
-  it("puts a thick thumb clearly above the thumbs-up fist", () => {
-    const [body, thumb] = handParts(handShape({ ...NONE, thumbs: 1 }, 1));
-    expect(thumb.cy).toBeLessThan(body.cy - 8);
-    expect(thumb.w).toBeGreaterThanOrEqual(7);
-    expect(Math.abs(thumb.angle + Math.PI)).toBeLessThan(0.05); // vertical
-  });
-
-  it("draws the pointing finger thin, long and above the closed body", () => {
-    const [body, , finger] = handParts(handShape({ ...NONE, scratch: 1 }, -1));
-    expect(finger.h).toBeGreaterThanOrEqual(10);
-    expect(finger.w).toBeLessThan(6);
-    expect(finger.cy).toBeLessThan(body.cy - 8);
   });
 });
 
@@ -243,12 +170,12 @@ describe("vibeSegments", () => {
   });
 });
 
-describe("drawn fingertip", () => {
+describe("drawn hand tip", () => {
   it("touches the head outline at the upper left while scratching", () => {
     const w: HandWeights = { ...NONE, scratch: 1 };
     for (const t of [0, 0.03, 0.06, 0.1, 0.15, 0.2, 0.24]) {
       const hand = handPositions(w, t, 1).left;
-      const tip = drawnFingertip(hand, handShape(w, -1));
+      const tip = handTip(hand, handShape(w, -1));
       expect(Math.abs(headOutlineDistance(tip))).toBeLessThanOrEqual(3);
       expect(tip.y).toBeLessThan(-18); // crown or upper side
       expect(tip.x).toBeLessThan(-8);
@@ -258,8 +185,8 @@ describe("drawn fingertip", () => {
 
   it("is mirrored for the right hand", () => {
     const shape = { ...handShape({ ...NONE, scratch: 1 }, -1), side: 1 as const };
-    const l = drawnFingertip({ x: 0, y: 0 }, { ...shape, side: -1 });
-    const r = drawnFingertip({ x: 0, y: 0 }, shape);
+    const l = handTip({ x: 0, y: 0 }, { ...shape, side: -1 });
+    const r = handTip({ x: 0, y: 0 }, shape);
     expect(r.x).toBeCloseTo(-l.x, 6);
     expect(r.y).toBeCloseTo(l.y, 6);
   });

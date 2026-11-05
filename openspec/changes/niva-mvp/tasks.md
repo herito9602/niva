@@ -846,3 +846,7 @@ iva.exe`). No processes left running.
 
 - `app/src/state/viewStore.ts`: `ACTING_MIN_MS = 900`, display pacing only. A `success` or `error` waits until plain `acting` was visible that long; any other view shows at once and drops a held result; the sleep countdown is never held. Spec `island-shell`, requirement "Acting stays visible".
 - Tradeoff: the reducer starts the reading time when the result arrives, so a held result is on screen up to 900 ms less than `reading.rs` computes (BACKLOG).
+
+### Batch 31 (owner request: new robot look) (2026-11-05)
+
+- Branch `feat/mascot-redesign`. Motion unchanged; new drawing per spec `mascot`, "Character look": white sphere, screen with accent ring, plain ears fixed to the head, floating mittens, no arms or antenna, one mouth per state. Reviewed by the owner live in the debug build; a fresh review removed the dead hand geometry and tied the scratch-tip test to the drawn tip.
