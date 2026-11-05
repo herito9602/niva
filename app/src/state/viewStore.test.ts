@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CURSOR_EVENT, ISLAND_EVENT, VIEW_EVENT, type ViewPayload } from "../events";
-import { bindHostEvents, createViewStore, type Listen } from "./viewStore";
+import { ACTING_MIN_MS, bindHostEvents, createViewStore, type Listen } from "./viewStore";
 
 type Handler = (event: { payload: unknown }) => void;
 
@@ -66,6 +66,112 @@ describe("createViewStore", () => {
     store.setIsland(true);
     expect(store.getState()).not.toBe(before);
     expect(before.phase).toBe("hidden");
+  });
+});
+
+describe("the minimum time on screen for acting", () => {
+  const acting: ViewPayload = { state: "acting" };
+  const success: ViewPayload = { state: "success", caption: "Opened Notepad." };
+  const shown = (store: ReturnType<typeof createViewStore>) => store.getState().view;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("holds a quick result until acting was visible for the minimum", () => {
+    const store = createViewStore();
+    store.setView(acting);
+    vi.advanceTimersByTime(40);
+    store.setView(success);
+    expect(shown(store)).toBe(acting);
+    vi.advanceTimersByTime(ACTING_MIN_MS - 41);
+    expect(shown(store)).toBe(acting);
+    vi.advanceTimersByTime(1);
+    expect(shown(store)).toBe(success);
+  });
+
+  it("holds an error the same way", () => {
+    const store = createViewStore();
+    const error: ViewPayload = { state: "error", caption: "I could not do that." };
+    store.setView(acting);
+    store.setView(error);
+    expect(shown(store)).toBe(acting);
+    vi.advanceTimersByTime(ACTING_MIN_MS);
+    expect(shown(store)).toBe(error);
+  });
+
+  it("adds nothing when the action already took longer", () => {
+    const store = createViewStore();
+    store.setView(acting);
+    vi.advanceTimersByTime(ACTING_MIN_MS + 1);
+    store.setView(success);
+    expect(shown(store)).toBe(success);
+  });
+
+  it("does not restart the minimum when acting changes its caption", () => {
+    const store = createViewStore();
+    store.setView(acting);
+    vi.advanceTimersByTime(ACTING_MIN_MS - 100);
+    store.setView({ state: "acting", caption: "Second step" });
+    store.setView(success);
+    vi.advanceTimersByTime(100);
+    expect(shown(store)).toBe(success);
+  });
+
+  it.each<ViewPayload>([
+    { state: "reminder-alert", caption: "Pizza" },
+    { state: "confirmation-needed", caption: "Close Spotify?" },
+    { state: "idle" },
+    { state: "listening" },
+  ])("shows $state at once", (view) => {
+    const store = createViewStore();
+    store.setView(acting);
+    store.setView(view);
+    expect(shown(store)).toBe(view);
+  });
+
+  it("a newer view replaces a held result, which never appears", () => {
+    const store = createViewStore();
+    const alert: ViewPayload = { state: "reminder-alert", caption: "Pizza" };
+    store.setView(acting);
+    store.setView(success);
+    store.setView(alert);
+    vi.advanceTimersByTime(ACTING_MIN_MS * 2);
+    expect(shown(store)).toBe(alert);
+  });
+
+  it("never holds the sleep countdown or what follows it", () => {
+    const store = createViewStore();
+    const countdown: ViewPayload = {
+      state: "acting",
+      countdown: { text: "Sleeping in {n}", seconds: 10, endsAt: 0 },
+    };
+    store.setView(countdown);
+    expect(shown(store)).toBe(countdown);
+    store.setView(success);
+    expect(shown(store)).toBe(success);
+  });
+
+  it("a countdown that follows acting cancels the minimum", () => {
+    const store = createViewStore();
+    const countdown: ViewPayload = {
+      state: "acting",
+      countdown: { text: "Sleeping in {n}", seconds: 10, endsAt: 0 },
+    };
+    store.setView(acting);
+    store.setView(countdown);
+    store.setView(success);
+    expect(shown(store)).toBe(success);
+  });
+
+  it("a result that needs no hold is not delayed by an earlier acting", () => {
+    const store = createViewStore();
+    store.setView({ state: "idle" });
+    store.setView(success);
+    expect(shown(store)).toBe(success);
   });
 });
 

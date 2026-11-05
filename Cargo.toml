@@ -8,5 +8,8 @@ members = ["crates/niva-core", "app/src-tauri"]
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+# Unwind, not abort: the worker pool catches a panicking job (catch_unwind), which
+# `panic = "abort"` would turn into a no-op and a panic would kill the whole app.
+# Guarded by a_worker_panic_cannot_kill_the_release_app in release.rs.
+panic = "unwind"
 strip = true

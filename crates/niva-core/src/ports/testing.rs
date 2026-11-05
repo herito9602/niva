@@ -66,6 +66,8 @@ pub struct FakePc {
     processes: Mutex<Vec<ProcessInfo>>,
     calls: Mutex<Vec<PcCall>>,
     open_result: Mutex<Result<(), PcError>>,
+    /// What `launch_app` reports as launched; the requested name when unset.
+    launched_as: Mutex<Option<String>>,
     close_outcome: Mutex<CloseOutcome>,
     volume: Mutex<VolumeResult>,
 }
@@ -83,6 +85,7 @@ impl FakePc {
             processes: Mutex::new(processes),
             calls: Mutex::default(),
             open_result: Mutex::new(Ok(())),
+            launched_as: Mutex::new(None),
             close_outcome: Mutex::new(CloseOutcome::Closed),
             volume: Mutex::new(VolumeResult {
                 level: 60,
@@ -100,6 +103,11 @@ impl FakePc {
         *lock(&self.open_result) = result;
     }
 
+    /// The display name `launch_app` reports, whatever the model asked for.
+    pub fn set_launched_as(&self, name: &str) {
+        *lock(&self.launched_as) = Some(name.to_string());
+    }
+
     pub fn set_close_outcome(&self, outcome: CloseOutcome) {
         *lock(&self.close_outcome) = outcome;
     }
@@ -111,8 +119,15 @@ impl FakePc {
 
 impl PcActions for FakePc {
     fn open_app(&self, name: &str) -> Result<(), PcError> {
+        self.launch_app(name).map(drop)
+    }
+
+    fn launch_app(&self, name: &str) -> Result<String, PcError> {
         lock(&self.calls).push(PcCall::OpenApp(name.into()));
-        lock(&self.open_result).clone()
+        lock(&self.open_result).clone()?;
+        Ok(lock(&self.launched_as)
+            .clone()
+            .unwrap_or_else(|| name.to_string()))
     }
 
     fn running_processes(&self) -> Vec<ProcessInfo> {

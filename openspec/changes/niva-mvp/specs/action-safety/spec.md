@@ -114,6 +114,14 @@ After the user accepts a sleep confirmation (by voice or by click), the system M
 - WHEN a reminder falls due
 - THEN it is queued and shown after the countdown ends, not over it
 
+### Requirement: A build that cannot confirm does not ask (PR 2d-a)
+A build with no way to answer a confirmation (the release before PR 2d-b: no voice, no click path on the island) MUST refuse a risky request with a truthful "not available yet" reply instead of showing a prompt that nobody can answer. This is decided before the safety gate and does not change it. See `pc-actions` "Risky actions are not available in this release".
+
+#### Scenario: No prompt that cannot be answered
+- GIVEN the release build and the request "close Spotify" (or "shut down the PC")
+- WHEN the model proposes the risky call
+- THEN no confirmation state is entered and Niva says the action is not available yet
+
 ## Assumptions to confirm
 - Timeout duration: 10 s (design "Confirmation flow"; user-confirmed).
 - Confirmation by shortcut/click as well as voice is not specified; spec only requires an explicit affirmative.

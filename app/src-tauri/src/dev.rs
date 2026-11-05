@@ -21,15 +21,16 @@
 //! `the_assistant_of_a_debug_build_only_ever_acts_on_the_dry_run_pc` below is
 //! what enforces it by checking that a confirmed shutdown and close only
 //! produce dry-run effects.
-//! PR 2d must keep power actions and `close_app` dry-run in debug builds, or
-//! remove the debug Accept path, before it wires real adapters.
+//! PR 2d keeps power actions and `close_app` dry-run in debug builds: the
+//! release `PcActions` (`adapters/windows_pc.rs`) is never built here, and
+//! `check:release` keeps these strings out of the release exe.
 
 use std::sync::{Arc, Mutex};
 
 use niva_core::assistant::{Assistant, PENDING_REMINDER_ALL_MARKER, PENDING_REMINDER_MARKER};
 
 use crate::adapters::ollama::OllamaProvider;
-use crate::adapters::ollama::health::Health;
+use crate::adapters::ollama::keeper::{KeeperHandle, Readiness, WarmLlm};
 use crate::adapters::system_clock::SystemClock;
 use niva_core::ports::{
     ChatReply, ChatRequest, Clock, CloseOutcome, LlmError, LlmProvider, PcActions, PcError,
@@ -73,33 +74,46 @@ pub fn assistant_with(log: LogSink, llm: Arc<dyn LlmProvider>, clock: Arc<dyn Cl
         }))
 }
 
-/// Debug builds: the real Ollama model when it answers, the rule-based dev LLM
-/// when it does not; either way the PC is the dry-run one (never the real PC),
-/// and the log says which LLM is active. The choice is taken once, at start-up
-/// (restart the app to switch). The second value is the provider to warm up in
-/// the background, `None` when the dev LLM was chosen.
-pub fn pick_assistant(
+/// Debug builds: the real Ollama model once the keeper says it is ready, the
+/// rule-based dev LLM until then (and again whenever a call fails, until the
+/// keeper has warmed the model up once more); either way the PC is the dry-run
+/// one (never the real PC). The choice is made per request, so an Ollama that
+/// starts after the app (the autostart race) takes over without a restart. This
+/// is a debug convenience only: a release build never has a fallback model.
+pub fn adaptive_assistant(
     log: LogSink,
-    ollama: OllamaProvider,
-) -> (Assistant, Option<Arc<OllamaProvider>>) {
-    let health = ollama.health();
-    if health != Health::Ready {
-        log(format!(
-            "[niva] LLM: rule-based dev LLM. {}",
-            health.message(ollama.model())
-        ));
-        return (assistant(log), None);
-    }
+    ollama: Arc<OllamaProvider>,
+    keeper: KeeperHandle,
+) -> Assistant {
     log(format!(
-        "[niva] LLM: Ollama ({}), dry-run PC. Warming up in the background.",
+        "[niva] LLM: Ollama ({}) once it is ready, the rule-based dev LLM until then; dry-run PC.",
         ollama.model()
     ));
-    let ollama = Arc::new(ollama);
-    let llm = Arc::new(LoggedLlm::new(ollama.clone(), log.clone()));
-    (
-        assistant_with(log, llm, Arc::new(SystemClock)),
-        Some(ollama),
-    )
+    let ready = keeper.ready.clone();
+    let real = WarmLlm::new(Arc::new(LoggedLlm::new(ollama, log.clone())), keeper);
+    let llm = Arc::new(SwitchingLlm {
+        ready,
+        real,
+        dev: DevLlm { log: log.clone() },
+    });
+    assistant_with(log, llm, Arc::new(SystemClock))
+}
+
+/// Asks the real model while it is ready, the dev LLM otherwise.
+struct SwitchingLlm {
+    ready: Arc<Readiness>,
+    real: WarmLlm,
+    dev: DevLlm,
+}
+
+impl LlmProvider for SwitchingLlm {
+    fn chat(&self, request: &ChatRequest) -> Result<ChatReply, LlmError> {
+        if self.ready.is_ready() {
+            self.real.chat(request)
+        } else {
+            self.dev.chat(request)
+        }
+    }
 }
 
 /// A real model (Ollama) whose every call is reported to the log, like the
@@ -531,8 +545,14 @@ impl DryRunPc {
 
 impl PcActions for DryRunPc {
     fn open_app(&self, name: &str) -> Result<(), PcError> {
+        self.launch_app(name).map(drop)
+    }
+
+    /// The display name is the known app's search word, capitalised
+    /// ("Calculator"), like the Start menu name the real adapter reports.
+    fn launch_app(&self, name: &str) -> Result<String, PcError> {
         let wanted = name.to_lowercase();
-        let Some((_, exe)) = KNOWN_APPS.iter().find(|(key, _)| wanted.contains(key)) else {
+        let Some((key, exe)) = KNOWN_APPS.iter().find(|(key, _)| wanted.contains(key)) else {
             self.say(format!("open_app {name:?}: no such app (NotFound)"));
             return Err(PcError::NotFound);
         };
@@ -548,7 +568,11 @@ impl PcActions for DryRunPc {
             });
         }
         self.say(format!("would start {exe}"));
-        Ok(())
+        let mut display = key.to_string();
+        if let Some(first) = display.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        Ok(display)
     }
 
     fn running_processes(&self) -> Vec<ProcessInfo> {
@@ -851,6 +875,10 @@ mod tests {
         let pc = DryRunPc::new(quiet());
         assert_eq!(pc.open_app("foobar"), Err(PcError::NotFound));
         assert_eq!(pc.open_app("Calculator"), Ok(()));
+        assert_eq!(
+            pc.launch_app("the calculator"),
+            Ok("Calculator".to_string())
+        );
         assert!(
             pc.running_processes()
                 .iter()
@@ -958,10 +986,13 @@ mod tests {
         }
     }
 
-    // --- the choice between the real model and the dev LLM -----------------
+    // --- the real model once Ollama is ready, the dev LLM until then -------
 
-    use crate::adapters::ollama::fake::{FakeTransport, status, tags};
-    use crate::adapters::ollama::{Endpoint, MODEL, TransportError};
+    use std::sync::mpsc::{Receiver, channel};
+
+    use crate::adapters::ollama::fake::{FakeTransport, ok};
+    use crate::adapters::ollama::keeper::{KeeperHandle, Readiness};
+    use crate::adapters::ollama::{Endpoint, TransportError};
     use niva_core::state_machine::{Event, RequestInput};
 
     fn collected() -> (Arc<Mutex<Vec<String>>>, LogSink) {
@@ -980,46 +1011,57 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_healthy_ollama_is_used_and_the_pc_stays_dry_run() {
+    const CLOSE_SPOTIFY: &str = r#"{"message":{"content":"","tool_calls":[{"function":{"name":"close_app","arguments":{"name":"spotify"}}}]}}"#;
+
+    struct Adaptive {
+        assistant: Assistant,
+        transport: Arc<FakeTransport>,
+        ready: Arc<Readiness>,
+        wakes: Receiver<()>,
+        lines: Arc<Mutex<Vec<String>>>,
+    }
+
+    fn adaptive(ready: bool) -> Adaptive {
         let transport = Arc::new(FakeTransport::default());
-        transport.push(Endpoint::Tags, tags(&[MODEL]));
-        transport.push(
-            Endpoint::Chat,
-            crate::adapters::ollama::fake::ok(
-                r#"{"message":{"content":"","tool_calls":[{"function":{"name":"close_app","arguments":{"name":"spotify"}}}]}}"#,
-            ),
-        );
+        let ollama = Arc::new(OllamaProvider::with_transport(transport.clone()));
         let (lines, log) = collected();
-        let ollama = OllamaProvider::with_transport(transport.clone());
-        let (assistant, warm) = pick_assistant(log, ollama);
-        assert!(
-            warm.is_some(),
-            "the caller warms Ollama up in the background"
-        );
-        let events = assistant.start_request(1, &text_request("close spotify"));
-        match &events[0] {
-            Event::ToolCalls { .. } => {}
-            other => panic!("{other:?}"),
+        let (wake, wakes) = channel();
+        let flag = Arc::new(Readiness::default());
+        flag.set(ready);
+        let keeper = KeeperHandle::new(flag.clone(), wake);
+        Adaptive {
+            assistant: adaptive_assistant(log, ollama, keeper),
+            transport,
+            ready: flag,
+            wakes,
+            lines,
         }
-        let lines = lock(&lines);
+    }
+
+    fn chats(rig: &Adaptive) -> usize {
+        rig.transport
+            .seen()
+            .iter()
+            .filter(|s| s.endpoint == Endpoint::Chat)
+            .count()
+    }
+
+    #[test]
+    fn a_ready_ollama_answers_and_the_pc_stays_dry_run() {
+        let rig = adaptive(true);
+        rig.transport.push(Endpoint::Chat, ok(CLOSE_SPOTIFY));
+        let events = rig
+            .assistant
+            .start_request(1, &text_request("close spotify"));
+        assert!(matches!(events[0], Event::ToolCalls { .. }), "{events:?}");
+        let lines = lock(&rig.lines);
         assert!(
             lines
                 .iter()
-                .any(|l| l.contains("LLM: Ollama (qwen3.5:4b-q4_K_M), dry-run PC")),
+                .any(|l| l.contains("[niva-ollama]") && l.contains("close_app")),
             "{lines:?}"
         );
-        assert!(
-            lines
-                .iter()
-                .any(|l| l.contains("[niva-ollama]") && l.contains("close_app"))
-        );
-        let chats = transport
-            .seen()
-            .into_iter()
-            .filter(|s| s.endpoint == Endpoint::Chat)
-            .count();
-        assert_eq!(chats, 1, "the real provider answered, not the dev LLM");
+        assert_eq!(chats(&rig), 1, "the real provider answered");
         assert!(
             !lines.iter().any(|l| l.contains(DEV_LLM_MARKER)),
             "{lines:?}"
@@ -1027,55 +1069,80 @@ mod tests {
     }
 
     #[test]
-    fn ollama_down_falls_back_to_the_dev_llm_and_says_so() {
-        let transport = Arc::new(FakeTransport::default());
-        transport.push(Endpoint::Tags, Err(TransportError::Refused));
-        let (lines, log) = collected();
-        let (assistant, warm) = pick_assistant(log, OllamaProvider::with_transport(transport));
-        assert!(warm.is_none(), "nothing to warm up");
-        let events = assistant.start_request(1, &text_request("open notepad"));
+    fn until_ollama_is_ready_the_dev_llm_answers_and_the_log_says_so() {
+        let rig = adaptive(false);
+        let events = rig
+            .assistant
+            .start_request(1, &text_request("open notepad"));
         assert!(matches!(events[0], Event::ToolCalls { .. }), "{events:?}");
-        let lines = lock(&lines);
+        assert_eq!(chats(&rig), 0, "Ollama was not asked");
+        let lines = lock(&rig.lines);
         assert!(
             lines
                 .iter()
-                .any(|l| l.contains("rule-based dev LLM")
-                    && l.to_lowercase().contains("not running")),
+                .any(|l| l.contains("Ollama") && l.contains("rule-based dev LLM")),
+            "the start-up line says both: {lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains(DEV_LLM_MARKER)));
+    }
+
+    #[test]
+    fn when_ollama_becomes_ready_later_it_takes_over_without_a_restart() {
+        // The autostart race: the app was up first.
+        let rig = adaptive(false);
+        rig.assistant
+            .start_request(1, &text_request("open notepad"));
+        assert_eq!(chats(&rig), 0);
+        rig.ready.set(true);
+        rig.transport.push(Endpoint::Chat, ok(CLOSE_SPOTIFY));
+        rig.assistant
+            .start_request(2, &text_request("close spotify"));
+        assert_eq!(chats(&rig), 1);
+    }
+
+    #[test]
+    fn a_failing_ollama_asks_to_be_warmed_up_again_and_the_dev_llm_covers_meanwhile() {
+        let rig = adaptive(true);
+        rig.transport
+            .push(Endpoint::Chat, Err(TransportError::Refused));
+        let events = rig
+            .assistant
+            .start_request(1, &text_request("open notepad"));
+        assert!(matches!(events[0], Event::FailureText { .. }), "{events:?}");
+        assert!(rig.wakes.try_recv().is_ok(), "the keeper was told");
+        assert!(!rig.ready.is_ready());
+        let events = rig
+            .assistant
+            .start_request(2, &text_request("open notepad"));
+        assert!(matches!(events[0], Event::ToolCalls { .. }), "{events:?}");
+        assert_eq!(chats(&rig), 1, "the second request did not reach Ollama");
+    }
+
+    #[test]
+    fn the_adaptive_assistant_only_ever_acts_on_the_dry_run_pc() {
+        use niva_core::assistant::ConfirmInput;
+
+        let rig = adaptive(false);
+        for (req, text) in [(1, "shut down the pc"), (2, "close spotify")] {
+            assert!(
+                !rig.assistant
+                    .start_request(req, &text_request(text))
+                    .is_empty()
+            );
+            rig.assistant.record_confirmation(ConfirmInput::Click(true));
+            assert!(!rig.assistant.run_tools(req).is_empty());
+        }
+        let lines = lock(&rig.lines);
+        assert!(
+            lines.iter().filter(|l| l.contains("would")).count() >= 2,
             "{lines:?}"
         );
         assert!(
-            lines.iter().any(|l| l.contains(DEV_LLM_MARKER)),
-            "the dev LLM answered"
-        );
-    }
-
-    #[test]
-    fn a_missing_model_also_falls_back_and_names_the_pull_command() {
-        let transport = Arc::new(FakeTransport::default());
-        transport.push(Endpoint::Tags, tags(&["llama3.2:3b"]));
-        let (lines, log) = collected();
-        let (_, warm) = pick_assistant(log, OllamaProvider::with_transport(transport));
-        assert!(warm.is_none());
-        assert!(
-            lock(&lines)
+            lines
                 .iter()
-                .any(|l| l.contains("rule-based dev LLM") && l.contains("ollama pull")),
-            "{:?}",
-            lock(&lines)
-        );
-    }
-
-    #[test]
-    fn an_ollama_that_answers_oddly_also_falls_back() {
-        let transport = Arc::new(FakeTransport::default());
-        transport.push(Endpoint::Tags, status(500, "boom"));
-        let (lines, log) = collected();
-        let (_, warm) = pick_assistant(log, OllamaProvider::with_transport(transport));
-        assert!(warm.is_none());
-        assert!(
-            lock(&lines)
-                .iter()
-                .any(|l| l.contains("rule-based dev LLM"))
+                .filter(|l| !l.contains(DEV_LLM_MARKER) && !l.starts_with("[niva] LLM"))
+                .all(|l| l.contains(DRY_RUN_MARKER)),
+            "every adapter line is a dry-run line: {lines:?}"
         );
     }
 

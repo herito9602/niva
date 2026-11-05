@@ -148,7 +148,7 @@ mod tests {
 
     use super::*;
     use crate::effect_runner::{EffectRunner, EventSink, Host, MediaMode};
-    use crate::requests::{Ignore, Requests, Unavailable};
+    use crate::requests::{Ignore, Requests};
     use crate::ui_adapter::{UiEvent, UiPort};
 
     #[derive(Default)]
@@ -511,21 +511,121 @@ mod tests {
         assert_eq!(*r.core.state(), before);
     }
 
-    // --- release behavior: requests fail safely ----------------------------
+    // --- release behavior: the release assistant over the real loop --------
 
-    #[tokio::test(start_paused = true)]
-    async fn without_adapters_a_typed_command_ends_in_a_not_available_error() {
-        let mut r = rig_with(true, |sink| Arc::new(Unavailable::new(sink)));
-        r.send(Event::TextSubmitted {
-            text: "close notepad".into(),
-        });
-        assert_eq!(r.phase(), Phase::Error);
-        let view = r.ui.last_view();
-        assert_eq!(view.state, "error");
-        assert_eq!(
-            view.caption.as_deref(),
-            Some("Assistant commands are not available yet.")
-        );
+    /// The release assembly (`release::assistant`) behind the real reducer and
+    /// dispatcher, with a scripted model and fake Windows parts. Jobs run
+    /// inline; their events still go through the queue.
+    #[cfg(windows)]
+    mod release_loop {
+        use std::sync::{Arc, Mutex};
+
+        use niva_core::ports::{ChatReply, ChatRequest, LlmError, LlmProvider};
+        use niva_core::tools::{ArgValue, ToolCall};
+
+        use super::*;
+        use crate::adapters::system_clock::SystemClock;
+        use crate::adapters::windows_pc::WindowsPc;
+        use crate::adapters::windows_pc::fakes::{FakeApps, FakeOutput};
+        use crate::requests::AssistantRequests;
+
+        struct Script(Mutex<Vec<Result<ChatReply, LlmError>>>);
+
+        impl LlmProvider for Script {
+            fn chat(&self, _request: &ChatRequest) -> Result<ChatReply, LlmError> {
+                self.0.lock().unwrap().remove(0)
+            }
+        }
+
+        fn calls(calls: Vec<ToolCall>) -> Result<ChatReply, LlmError> {
+            Ok(ChatReply {
+                text: String::new(),
+                calls,
+            })
+        }
+
+        fn call(name: &str, key: &str, value: &str) -> ToolCall {
+            ToolCall {
+                name: name.into(),
+                args: [(key.to_string(), ArgValue::Str(value.into()))]
+                    .into_iter()
+                    .collect(),
+            }
+        }
+
+        fn release_rig(
+            answer: Result<ChatReply, LlmError>,
+        ) -> (Rig, Arc<FakeApps>, Arc<FakeOutput>) {
+            let apps = Arc::new(FakeApps::default());
+            let output = Arc::new(FakeOutput::default());
+            let (a, o) = (apps.clone(), output.clone());
+            let rig = rig_with(true, move |sink| {
+                let assistant = crate::release::assistant(
+                    Arc::new(Script(Mutex::new(vec![answer]))),
+                    Arc::new(WindowsPc::new(a, o)),
+                    Arc::new(SystemClock),
+                );
+                Arc::new(AssistantRequests::with_spawn(
+                    assistant,
+                    sink,
+                    Box::new(|job| {
+                        job();
+                        true
+                    }),
+                ))
+            });
+            (rig, apps, output)
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_typed_close_command_ends_in_a_truthful_error_with_no_confirmation() {
+            let (mut r, apps, output) =
+                release_rig(calls(vec![call("close_app", "name", "spotify")]));
+            r.send(Event::TextSubmitted {
+                text: "close spotify".into(),
+            });
+            assert_eq!(r.phase(), Phase::Error);
+            let view = r.ui.last_view();
+            assert_eq!(view.state, "error");
+            assert!(view.confirm.is_none(), "no confirmation prompt: {view:?}");
+            assert_eq!(
+                view.caption.as_deref(),
+                Some("I can't close apps or control the power of the PC yet. Nothing was done.")
+            );
+            assert!(apps.opened.lock().unwrap().is_empty());
+            assert_eq!(*apps.listed.lock().unwrap(), 0);
+            assert!(output.changes.lock().unwrap().is_empty());
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_typed_open_command_runs_for_real_and_confirms() {
+            let (mut r, apps, _) = release_rig(calls(vec![call("open_app", "name", "notepad")]));
+            *apps.launched_as.lock().unwrap() = Some("Bloc de notas".into());
+            r.send(Event::TextSubmitted {
+                text: "open notepad".into(),
+            });
+            assert_eq!(r.phase(), Phase::Success);
+            assert_eq!(*apps.opened.lock().unwrap(), ["notepad"]);
+            // The reply names the entry that was launched, not the model's word.
+            assert_eq!(
+                r.ui.last_view().caption.as_deref(),
+                Some("Opened Bloc de notas.")
+            );
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn with_ollama_down_a_typed_command_gets_a_truthful_error() {
+            let (mut r, apps, _) = release_rig(Err(LlmError::Unavailable));
+            r.send(Event::TextSubmitted {
+                text: "open notepad".into(),
+            });
+            assert_eq!(r.phase(), Phase::Error);
+            assert_eq!(
+                r.ui.last_view().caption.as_deref(),
+                Some("I can't think right now. Is the language model running?")
+            );
+            assert!(apps.opened.lock().unwrap().is_empty());
+        }
     }
 
     // --- the whole loop with the dev adapters (debug builds) ---------------
@@ -779,7 +879,8 @@ mod tests {
             let mut r = dev_rig();
             r.type_text("open notepad");
             assert_eq!(r.ui.last_view().state, "success");
-            assert_eq!(r.caption(), "Opened notepad.");
+            // The dry-run adapter reports a display name, like the real one.
+            assert_eq!(r.caption(), "Opened Notepad.");
             r.type_text("abrí Spotify");
             assert_eq!(r.caption(), "Abrí Spotify.");
         }

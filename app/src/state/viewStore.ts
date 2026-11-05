@@ -1,5 +1,6 @@
 // Frontend mirror of what the Rust core publishes. The reducer lives in
-// `niva-core`; this store only keeps the latest payload of each host event.
+// `niva-core`; this store only keeps the latest payload of each host event, and
+// paces one display transition (see `ACTING_MIN_MS`).
 
 import { CURSOR_EVENT, ISLAND_EVENT, VIEW_EVENT } from "../events";
 import type { CursorPayload, IslandPayload, ViewPayload } from "../events";
@@ -19,14 +20,41 @@ export interface ViewStore {
   setCursor(cursor: CursorPayload): void;
 }
 
+/**
+ * Least time "acting" stays on screen. Most actions finish in milliseconds, so
+ * without this the mascot would never be seen working. Display only: the action
+ * has already run, and the reducer's phase is unchanged. A quick result waits
+ * for this; anything else (a reminder, a confirmation, a cancel) shows at once.
+ */
+export const ACTING_MIN_MS = 900;
+
+/** The plain "working" view; the sleep countdown is a live timer, never held. */
+const isPlainActing = (view: ViewPayload | null) => view?.state === "acting" && !view.countdown;
+
+const isResult = (view: ViewPayload) => view.state === "success" || view.state === "error";
+
 export function createViewStore(): ViewStore {
   let state: ViewState = { view: null, phase: "hidden", cursor: null };
   const listeners = new Set<() => void>();
+  let actingEndsAt = 0;
+  let heldResult: ReturnType<typeof setTimeout> | undefined;
 
   // A fresh object per change keeps `getState` usable as a React snapshot.
   const update = (patch: Partial<ViewState>) => {
     state = { ...state, ...patch };
     listeners.forEach((l) => l());
+  };
+
+  const setView = (view: ViewPayload) => {
+    clearTimeout(heldResult);
+    const wait = actingEndsAt - Date.now();
+    if (isResult(view) && wait > 0) {
+      heldResult = setTimeout(() => update({ view }), wait);
+      return;
+    }
+    if (!isPlainActing(view)) actingEndsAt = 0;
+    else if (!isPlainActing(state.view)) actingEndsAt = Date.now() + ACTING_MIN_MS;
+    update({ view });
   };
 
   return {
@@ -37,7 +65,7 @@ export function createViewStore(): ViewStore {
         listeners.delete(listener);
       };
     },
-    setView: (view) => update({ view }),
+    setView,
     setIsland: (visible) => update({ phase: phaseForIsland(visible) }),
     setCursor: (cursor) => update({ cursor }),
   };

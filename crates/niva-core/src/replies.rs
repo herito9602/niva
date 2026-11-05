@@ -213,6 +213,9 @@ pub enum Msg {
     LlmUnavailable,
     /// Release builds before the Ollama and Windows adapters exist.
     NotAvailableYet,
+    /// A build that cannot close apps or control power yet (PR 2d-a): said
+    /// instead of the confirmation prompt, before anything runs.
+    RiskyNotAvailableYet,
     /// Every worker is busy and the queue is full (a hung provider or tool).
     Busy,
 }
@@ -373,6 +376,9 @@ fn render_en(msg: &Msg) -> String {
         .into(),
         Msg::LlmUnavailable => "I can't think right now. Is the language model running?".into(),
         Msg::NotAvailableYet => "Assistant commands are not available yet.".into(),
+        Msg::RiskyNotAvailableYet => {
+            "I can't close apps or control the power of the PC yet. Nothing was done.".into()
+        }
         Msg::Busy => "I'm still busy with other requests. Try again in a moment.".into(),
     }
 }
@@ -457,6 +463,10 @@ fn render_es(msg: &Msg) -> String {
             "No puedo pensar ahora mismo. ¿Está activo el modelo de lenguaje?".into()
         }
         Msg::NotAvailableYet => "Los comandos del asistente aún no están disponibles.".into(),
+        Msg::RiskyNotAvailableYet => {
+            "Todavía no puedo cerrar aplicaciones ni controlar la energía del PC. No hice nada."
+                .into()
+        }
         Msg::Busy => "Sigo ocupado con otras peticiones. Inténtalo de nuevo en un momento.".into(),
     }
 }

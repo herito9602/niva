@@ -57,6 +57,7 @@ fn samples() -> Vec<Msg> {
         Msg::CancelledClose { exe: app() },
         Msg::LlmUnavailable,
         Msg::NotAvailableYet,
+        Msg::RiskyNotAvailableYet,
         Msg::Busy,
     ];
     all.extend(PowerKind::ALL.map(|action| Msg::CancelledPower { action }));
@@ -102,17 +103,18 @@ fn variant_name(msg: &Msg) -> &'static str {
         Msg::CancelledPower { .. } => "CancelledPower",
         Msg::LlmUnavailable => "LlmUnavailable",
         Msg::NotAvailableYet => "NotAvailableYet",
+        Msg::RiskyNotAvailableYet => "RiskyNotAvailableYet",
         Msg::Busy => "Busy",
     }
 }
 
 #[test]
 fn every_message_variant_has_a_sample() {
-    // 36 variants; the power messages are sampled once per action.
+    // 37 variants; the power messages are sampled once per action.
     let mut names: Vec<&str> = samples().iter().map(variant_name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 36, "a variant has no sample: {names:?}");
+    assert_eq!(names.len(), 37, "a variant has no sample: {names:?}");
 }
 
 #[test]

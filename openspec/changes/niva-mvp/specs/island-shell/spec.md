@@ -89,13 +89,57 @@ After a final reply (success, error or cancel), the island MUST stay visible lon
 - WHEN the user presses the shortcut
 - THEN Niva starts listening and the old hide never fires
 
+### Requirement: Acting stays visible (owner request 2026-11-04)
+
+The island MUST keep the plain `acting` state on screen for at least 900 ms before it shows a `success` or `error` result. This is display pacing only: the action MUST NOT wait for it and the reducer's phase MUST NOT change. Any other view (a reminder alert, a confirmation, a cancel) MUST show at once and drop a held result. The sleep countdown is never held.
+
+#### Scenario: A quick action
+
+- GIVEN an action that finishes 40 ms after `acting` appeared
+- WHEN the result arrives
+- THEN the mascot stays in `acting` until 900 ms have passed, and then the result shows
+
+#### Scenario: A reminder during the hold
+
+- GIVEN a result held behind `acting`
+- WHEN a reminder alert fires
+- THEN the alert shows at once and the held result never appears
+
 ### Requirement: Tray icon
-The system MUST provide a tray icon with a show/hide toggle for the island and a "Quit" entry.
+The system MUST provide a tray icon with a show/hide toggle for the island, a "Type a command" entry and a "Quit" entry.
 
 #### Scenario: Quit from tray
 - GIVEN Niva is running
 - WHEN the user chooses "Quit" in the tray menu
 - THEN the island and tray icon disappear and the process exits
+
+### Requirement: Type a command window (task 2.5, PR 2d-a)
+The system MUST provide a small window, opened from the tray entry "Type a command", with a text box. Enter MUST submit the text as a typed command and clear the box; the answer appears on the island as usual. The window MUST be able to do one thing only: submit text. It MUST NOT be able to produce a confirmation answer, a click, a transcript or any other event, to listen to or emit events, or to control windows. Typed text MUST NOT count as a confirmation answer.
+
+#### Scenario: Submit with Enter
+- GIVEN the window is open and the user typed "open notepad"
+- WHEN the user presses Enter
+- THEN the text reaches the assistant as a typed command, the box is empty again and the island shows the reply
+
+#### Scenario: Blank or long text
+- GIVEN the box is empty or only spaces
+- WHEN the user presses Enter
+- THEN nothing is sent; text longer than 500 characters is cut to 500
+
+#### Scenario: Open twice
+- GIVEN the window is already open
+- WHEN the user chooses "Type a command" again
+- THEN the same window is brought to the front
+
+#### Scenario: Least privilege
+- GIVEN the window's capability file
+- WHEN it is checked
+- THEN it grants one permission (the text command) to the window "text" only, the island's capability is unchanged and cannot call that command, and the content security policy stays strict
+
+#### Scenario: Typed text is not a confirmation
+- GIVEN a confirmation is open
+- WHEN the user types "yes" in the window
+- THEN the typed text is ignored: confirmations are answered by a click or a spoken answer only
 
 ### Requirement: Global shortcut
 The system MUST toggle activation on Ctrl+Shift+Space from any application.
