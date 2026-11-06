@@ -1,0 +1,108 @@
+import json
+
+import pytest
+
+import protocol
+from protocol import (
+    CancelListen,
+    ErrorCode,
+    ForceEnd,
+    Listen,
+    ProtocolError,
+    Shutdown,
+    Speak,
+    StopSpeaking,
+    parse_command,
+)
+
+
+def test_parses_every_host_command():
+    assert parse_command('{"type":"listen","id":7,"mode":"command"}') == Listen(7, "command")
+    assert parse_command('{"type":"listen","id":8,"mode":"confirm"}') == Listen(8, "confirm")
+    assert parse_command('{"type":"cancel_listen","id":7}') == CancelListen(7)
+    assert parse_command('{"type":"force_end","id":7}') == ForceEnd(7)
+    assert parse_command('{"type":"speak","id":9,"text":"Hola, ¿qué tal?","lang":"es"}') == Speak(
+        9, "Hola, ¿qué tal?", "es"
+    )
+    assert parse_command('{"type":"stop_speaking"}') == StopSpeaking()
+    assert parse_command('{"type":"shutdown"}') == Shutdown()
+
+
+def test_ids_are_echoed_as_large_unsigned_integers():
+    big = 2**63 + 5
+    assert parse_command(json.dumps({"type": "listen", "id": big, "mode": "command"})).id == big
+    assert protocol.no_speech(big)["id"] == big
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "not json",
+        "[]",
+        '{"id":1}',
+        '{"type":"dance"}',
+        '{"type":"listen","id":-1,"mode":"command"}',
+        '{"type":"listen","id":true,"mode":"command"}',
+        '{"type":"listen","id":"7","mode":"command"}',
+        '{"type":"listen","id":7,"mode":"whisper"}',
+        '{"type":"speak","id":1,"text":3,"lang":"es"}',
+        '{"type":"speak","id":1,"text":"hi","lang":"fr"}',
+        '{"type":"cancel_listen"}',
+    ],
+)
+def test_rejects_unreadable_lines(line):
+    with pytest.raises(ProtocolError):
+        parse_command(line)
+
+
+def test_event_shapes_match_the_design():
+    assert protocol.wake(0.71234) == {"type": "wake", "score": 0.712}
+    assert protocol.speech_start(3) == {"type": "speech_start", "id": 3}
+    assert protocol.transcript(3, "abrí Spotify", "es", 0.98765, 1234) == {
+        "type": "transcript",
+        "id": 3,
+        "text": "abrí Spotify",
+        "lang": "es",
+        "lang_prob": 0.988,
+        "end_ms": 1234,
+    }
+    assert protocol.speak_started(4) == {"type": "speak_started", "id": 4}
+    assert protocol.speak_done(4) == {"type": "speak_done", "id": 4}
+    assert protocol.ready(5) == {"type": "ready", "now_ms": 5}
+
+
+def test_error_carries_an_id_only_when_given():
+    assert "id" not in protocol.error(ErrorCode.MIC_BUSY, "x")
+    assert protocol.error(ErrorCode.TTS_FAILED, "x", 9)["id"] == 9
+
+
+def test_encode_is_one_utf8_line_without_newline():
+    line = protocol.encode(protocol.transcript(1, "ñandú", "es", 1.0, 0))
+    assert "\n" not in line
+    assert "ñandú" in line
+
+
+def test_error_codes_match_the_taxonomy():
+    assert {c.value for c in ErrorCode} == {
+        "MIC_MISSING",
+        "MIC_BUSY",
+        "CUDA_OOM",
+        "MODEL_LOAD",
+        "TTS_FAILED",
+        "PROTOCOL",
+        "INTERNAL",
+    }
+
+
+def test_error_codes_match_the_reducer_wire_names():
+    """The host maps these strings to `SidecarErrorCode`; they must not drift."""
+    import re
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[2] / "crates" / "niva-core" / "src" / "state_machine.rs"
+    if not source.exists():
+        pytest.skip("Rust sources not present")
+    wire = set(re.findall(r'=> "([A-Z_]+)",', source.read_text(encoding="utf-8")))
+    reducer_codes = {"MIC_MISSING", "MIC_BUSY", "CUDA_OOM", "MODEL_LOAD", "PROTOCOL", "INTERNAL"}
+    assert reducer_codes <= wire
+    assert reducer_codes <= {c.value for c in ErrorCode}

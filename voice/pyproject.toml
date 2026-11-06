@@ -1,0 +1,36 @@
+[project]
+name = "niva-voice"
+version = "0.1.0"
+description = "Niva speech sidecar: wake word, VAD, STT and TTS over JSON lines on stdio."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy<2",
+    "onnxruntime",
+    "sounddevice",
+    "openwakeword==0.6.0",
+    "faster-whisper",
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12",
+    "edge-tts",
+    "miniaudio==1.71",
+    "piper-tts",
+]
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
+
+# uv cannot lock offline here (it wants metadata for wheels that were never
+# cached), so the offline recipe in README.md uses `--no-project` instead.
+[tool.uv]
+environments = ["sys_platform == 'win32'"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
