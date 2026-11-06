@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn every_template_has_a_distinct_non_empty_caption() {
-        let all = [
+        let mut all = vec![
             Template::VoiceNotReady,
             Template::Error,
             Template::Cancelled,
@@ -540,12 +540,38 @@ mod tests {
             Template::SleepCancelled,
             Template::SleepNotWatched,
         ];
+        all.extend(niva_core::state_machine::SidecarErrorCode::ALL.map(Template::Sidecar));
         let captions: Vec<&str> = all.iter().map(|&t| template_caption(t)).collect();
         for (i, c) in captions.iter().enumerate() {
             assert!(!c.is_empty());
             assert!(!captions[..i].contains(c), "duplicate caption {c}");
         }
-        assert_eq!(captions.len(), 9);
+        assert_eq!(captions.len(), 15);
+    }
+
+    #[test]
+    fn a_sidecar_error_while_listening_is_shown_in_the_request_language() {
+        for (lang, text) in [
+            (
+                Lang::Es,
+                "Otra app está usando el micrófono. Escribe un comando.",
+            ),
+            (
+                Lang::En,
+                "The microphone is in use by another app. Type a command instead.",
+            ),
+        ] {
+            let mut sim = Sim::ready();
+            sim.view.set_lang(lang);
+            sim.send(Event::Shortcut);
+            let events = sim.send(Event::SidecarError {
+                code: niva_core::state_machine::SidecarErrorCode::MicBusy,
+                id: None,
+            });
+            let view = view_of(&events);
+            assert_eq!(view.state, "error");
+            assert_eq!(view.caption.as_deref(), Some(text));
+        }
     }
 
     #[test]

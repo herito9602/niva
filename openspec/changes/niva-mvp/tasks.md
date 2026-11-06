@@ -101,7 +101,7 @@ Decision required: chain strategy (`stacked-to-main` or `feature-branch-chain`) 
 ## Slice 3: Voice sidecar
 
 - [ ] 3.1 Spike S1 (STT GPU) and S2 (TTS): record results in `spikes/` notes outside existing spike dirs or `docs/`.
-- [ ] 3.2 CO3: RED tests then `SidecarError{code}` row: listening -> error with code template; confirmation-needed -> click-only; list which codes set `voice_available=false` (`MIC_MISSING`, `MIC_BUSY`, `CUDA_OOM`, `MODEL_LOAD`, `PROTOCOL`, `INTERNAL`; `TTS_FAILED` stays `TtsFailed`).
+- [x] 3.2 (done in Batch 35; pure core, no sidecar yet) CO3: RED tests then `SidecarError{code}` row: listening -> error with code template; confirmation-needed -> click-only; list which codes set `voice_available=false` (`MIC_MISSING`, `MIC_BUSY`, `CUDA_OOM`, `MODEL_LOAD`, `PROTOCOL`, `INTERNAL`; `TTS_FAILED` stays `TtsFailed`).
 - [ ] 3.3 `voice/` uv project: `protocol.py`, `wake.py`, `vad.py`, `stt.py`, `tts.py`, `main.py`; pytest for protocol and VAD fixtures. Spec: `voice-activation`, `speech-io`.
 - [ ] 3.4 `adapters/voice_sidecar.rs`: JSON lines, restart counter, OOM downgrade, degraded mode, "Restart voice" tray entry; `audio_cue.rs` rodio adapter.
 - [ ] 3.5 Per-stage latency log; manual E2E checklist with real microphone audio for the < 2.6 s action-path mean and the end-to-end p95 <= 3.0 s goal (estimate ~2.85 s at p95: VAD 532 computed, see spikes/vad/RESULTS.md + STT 203 + LLM 1110 + tool 100 + TTS 900).
@@ -888,3 +888,21 @@ iva.exe`). No processes left running.
 - RED seen: core compile errors for the new variants, before any code. The adapter code was written before its tests (the tests were then added and run, one test of mine had a wrong line count).
 - Tests: core 501; app 550 passed, 16 ignored (the new ignored one is `real_tavily_answers_a_plain_question`, NOT run: it needs a real key); vitest 270.
 - Open: hand tests with a real key (BACKLOG); the registry fallback was only exercised with a name nobody sets, never with the real key.
+
+### Batch 35 (task 3.2: the `SidecarError{code}` row) (2026-11-05)
+
+- Branch `feat/3b-sidecar-errors`, from `main`. Nothing committed. Pure core logic: no Python, no audio, no sidecar, no change to the prompt, the tools or the eval cases.
+- What changed
+  1. **Core**: `SidecarErrorCode` (the six codes, `wire()`, `from_wire()`; `TTS_FAILED` and unknown codes are `None`), `Event::SidecarError{code, id: Option<u64>}`, `Template::Sidecar(code)`. The reducer sets `voice_available=false` for every code, in every phase. Listening -> error with the code's template. Confirmation-needed -> stays pending and goes click-only (`listen_id` cleared, nothing cancelled or answered, the 10 s timer untouched). Idle, thinking, acting, countdown and alert: only the flag changes, no effect. Success and error: only the flag changes (the reply stays on screen).
+  2. **Guards**: `id: Some(n)` is stale unless `n` is the current listen or speak id; `None` (process-level) is never stale. A repeat of the same error changes nothing.
+  3. **`VoiceReadinessChanged{ready:false}` is now a no-op when voice is already down.** The supervisor will follow a sidecar error with "down"; without this the second signal moved error -> idle and hid the message.
+  4. **Replies**: six templates in es and en (what happened, then "Type a command instead"), at most 200 characters (tested).
+  5. **Tests**: new `tests_sidecar.rs` (35), the `SidecarError` row in `coverage.rs` (28 kinds, 252 cells) and `only_voice_up_turns_voice_back_on` (every event in every phase with voice down), template tests in `replies/tests.rs`, and two host tests in `ui_adapter.rs` (captions distinct; the error is shown in the view's language, Spanish and English).
+  6. **Docs**: design (taxonomy, supervisor, new matrix row, event count, judgment-day item 3 resolved), spec `voice-activation` (new requirement "Voice failure never decides for the user"), BACKLOG (items for the sidecar PR).
+- RED seen: 23 tests failed on assertions with the event and the types stubbed in (reducer arm empty, templates empty): the coverage cell test, 19 of the new reducer tests and 3 template tests. Then the reducer and the texts.
+- Decisions and disagreements
+  - **Which codes set `voice_available=false`**: all six, as task 3.2 lists. Design said `MIC_MISSING` and `MIC_BUSY` "do not trigger restarts (retry on next activation)". With the flag false the shortcut never listens, so "retry on next activation" cannot happen unless the supervisor sends `ready:true`. Task 3.2 (owner's list) wins; the supervisor re-probe is in BACKLOG for task 3.4. There is no transient code in the enum: the only transient one, `TTS_FAILED`, stays `TtsFailed` and is tested to leave voice up.
+  - **Success and error with a reply on screen**: `VoiceReadinessChanged{ready:false}` still drops to idle there (unchanged); `SidecarError` does not, because its text is the message.
+  - **Language**: the reducer only emits the template; the host renders it in the language of the current or last request (default English), as for every template. Not changed.
+- Gates (PowerShell): `cargo fmt --all --check` clean, `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test --workspace`: app 556 passed, 16 ignored; core 540 (was 501); doc tests 12.
+- Open: nothing sends the event yet (task 3.4); see BACKLOG "From task 3.2".
