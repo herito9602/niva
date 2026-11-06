@@ -26,6 +26,8 @@ mod tests_races;
 #[cfg(test)]
 mod tests_scenarios;
 #[cfg(test)]
+mod tests_sidecar;
+#[cfg(test)]
 mod tests_speech;
 #[cfg(test)]
 mod tests_tools;
@@ -219,9 +221,63 @@ pub enum ReplyKind {
     Countdown,
 }
 
+/// A sidecar `error{code}` that leaves voice unusable (task 3.2, CO3). Every
+/// code here sets `voice_available = false`; only
+/// `VoiceReadinessChanged{ready:true}` sets it back.
+///
+/// `TTS_FAILED` is not one of them: it is the per-speak `Event::TtsFailed`
+/// (speech counts as done, voice stays available), so [`Self::from_wire`]
+/// does not know it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidecarErrorCode {
+    /// No microphone.
+    MicMissing,
+    /// The microphone is held by another app.
+    MicBusy,
+    /// The GPU ran out of memory.
+    CudaOom,
+    /// The speech models did not load.
+    ModelLoad,
+    /// The sidecar sent something the host cannot read.
+    Protocol,
+    /// Any other sidecar failure.
+    Internal,
+}
+
+impl SidecarErrorCode {
+    pub const ALL: [SidecarErrorCode; 6] = [
+        SidecarErrorCode::MicMissing,
+        SidecarErrorCode::MicBusy,
+        SidecarErrorCode::CudaOom,
+        SidecarErrorCode::ModelLoad,
+        SidecarErrorCode::Protocol,
+        SidecarErrorCode::Internal,
+    ];
+
+    /// The code as the sidecar protocol spells it.
+    pub const fn wire(self) -> &'static str {
+        match self {
+            SidecarErrorCode::MicMissing => "MIC_MISSING",
+            SidecarErrorCode::MicBusy => "MIC_BUSY",
+            SidecarErrorCode::CudaOom => "CUDA_OOM",
+            SidecarErrorCode::ModelLoad => "MODEL_LOAD",
+            SidecarErrorCode::Protocol => "PROTOCOL",
+            SidecarErrorCode::Internal => "INTERNAL",
+        }
+    }
+
+    /// `None` for `TTS_FAILED` (it is `Event::TtsFailed`) and for any code the
+    /// protocol does not define; the adapter decides what an unknown one means.
+    pub fn from_wire(code: &str) -> Option<SidecarErrorCode> {
+        Self::ALL.into_iter().find(|c| c.wire() == code)
+    }
+}
+
 /// Localized template ids; the host renders them in the reply language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Template {
+    /// What went wrong with the voice sidecar, one text per code.
+    Sidecar(SidecarErrorCode),
     VoiceNotReady,
     Error,
     Cancelled,
@@ -441,6 +497,13 @@ pub enum Event {
     /// Voice supervisor: sidecar ready / down.
     VoiceReadinessChanged {
         ready: bool,
+    },
+    /// The sidecar reported `error{code}` and voice is unusable. `id` is the
+    /// listen or speak it belongs to; `None` is a process-level failure. An
+    /// error for a listen or speak that is no longer current is dropped.
+    SidecarError {
+        code: SidecarErrorCode,
+        id: Option<u64>,
     },
     /// Click on the reminder alert.
     Dismiss,
@@ -725,6 +788,7 @@ pub fn reduce(mut state: State, event: Event) -> (State, Vec<Effect>) {
         Event::SpeakDone { .. } | Event::TtsFailed { .. } => state.on_speak_done(&mut fx),
         Event::Watchdog { kind, .. } => state.on_watchdog(kind, &mut fx),
         Event::VoiceReadinessChanged { ready } => state.on_voice_readiness(ready, &mut fx),
+        Event::SidecarError { code, .. } => state.on_sidecar_error(code, &mut fx),
         Event::Accept { .. } => state.on_accept(&mut fx),
         Event::Reject { .. } => state.on_reject(&mut fx),
         Event::ReminderDue { count, silent } => state.on_reminder_due(count, silent, &mut fx),
@@ -777,7 +841,11 @@ impl State {
             | Event::TextSubmitted { .. }
             | Event::ReminderDue { .. }
             | Event::VoiceReadinessChanged { .. }
+            | Event::SidecarError { id: None, .. }
             | Event::Dismiss => false,
+            Event::SidecarError { id: Some(id), .. } => {
+                self.listen_id != Some(*id) && self.speak_id != Some(*id)
+            }
         }
     }
 
@@ -1410,7 +1478,39 @@ impl State {
         }
     }
 
+    /// The sidecar reported an error that leaves voice unusable (task 3.2).
+    /// Voice goes down; only `VoiceReadinessChanged{ready:true}` brings it
+    /// back. Only a turn that is listening ends, with the template of the
+    /// code; a confirmation goes click-only and is neither answered nor
+    /// cancelled; the sleep countdown, a running action, an alert and a reply
+    /// on screen carry on untouched. Unlike `VoiceReadinessChanged{ready:false}`
+    /// it does not hide a reply that is showing: the text says what happened.
+    fn on_sidecar_error(&mut self, code: SidecarErrorCode, fx: &mut Vec<Effect>) {
+        self.voice_available = false;
+        match self.phase {
+            Phase::Listening => self.enter_error(Template::Sidecar(code), fx),
+            Phase::ConfirmationNeeded => {
+                // Nothing to cancel in the dead sidecar; the click path and
+                // the 10 s timer remain. A voice answer is never inferred.
+                self.listen_id = None;
+                self.confirm_click_only = true;
+            }
+            Phase::Idle
+            | Phase::Thinking
+            | Phase::Acting
+            | Phase::Success
+            | Phase::Error
+            | Phase::ReminderAlert
+            | Phase::Countdown => {}
+        }
+    }
+
     fn on_voice_readiness(&mut self, ready: bool, fx: &mut Vec<Effect>) {
+        // The supervisor usually follows a sidecar error with "down": the same
+        // fact twice must not cut the error text short.
+        if !ready && !self.voice_available {
+            return;
+        }
         self.voice_available = ready;
         if ready {
             // Clears degraded. A confirmation already in progress stays

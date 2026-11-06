@@ -49,6 +49,7 @@ kinds!(
     Watchdog,
     VoiceDown,
     VoiceUp,
+    SidecarError,
     Dismiss,
     ChimeDone,
     CountdownReady,
@@ -82,6 +83,7 @@ fn kind_of(event: &Event) -> EventKind {
         Event::Watchdog { .. } => EventKind::Watchdog,
         Event::VoiceReadinessChanged { ready: false } => EventKind::VoiceDown,
         Event::VoiceReadinessChanged { ready: true } => EventKind::VoiceUp,
+        Event::SidecarError { .. } => EventKind::SidecarError,
         Event::Dismiss => EventKind::Dismiss,
         Event::ChimeDone { .. } => EventKind::ChimeDone,
         Event::CountdownReady { .. } => EventKind::CountdownReady,
@@ -379,6 +381,19 @@ fn row(kind: EventKind) -> [Expect; 9] {
             Stays(&[]),
         ],
         EventKind::VoiceUp => [Stays(&[]); 9],
+        // Voice goes down in every cell. Only a listen ends its turn; the
+        // confirmation and the countdown keep running, and the rest is left alone.
+        EventKind::SidecarError => [
+            Stays(&[]),
+            Goes(Error, &[E::CancelTimer, E::CancelListen, E::Speak]),
+            Stays(&[]),
+            Stays(&[]),
+            Stays(&[]),
+            Stays(&[]),
+            Stays(&[]),
+            Stays(&[]),
+            Stays(&[]),
+        ],
         EventKind::ChimeDone => [
             I,
             I,
@@ -554,6 +569,10 @@ fn sample(kind: EventKind, state: &State) -> Event {
         EventKind::Watchdog => fire(state, primary_timer(state.phase)),
         EventKind::VoiceDown => Event::VoiceReadinessChanged { ready: false },
         EventKind::VoiceUp => Event::VoiceReadinessChanged { ready: true },
+        EventKind::SidecarError => Event::SidecarError {
+            code: SidecarErrorCode::CudaOom,
+            id: None,
+        },
         EventKind::Dismiss => Event::Dismiss,
         EventKind::ChimeDone => Event::ChimeDone { id: CHIME_ID },
         EventKind::CountdownReady => Event::CountdownReady {
@@ -603,6 +622,24 @@ fn rows_follow_the_phase_order_and_fixtures_are_consistent() {
     }
 }
 
+/// Task 3.2: voice comes back through `VoiceReadinessChanged{ready:true}` and
+/// nothing else, in any state.
+#[test]
+fn only_voice_up_turns_voice_back_on() {
+    for &kind in EventKind::ALL {
+        for phase in Phase::ALL {
+            let start = no_voice(fixture(kind, phase));
+            let event = sample(kind, &start);
+            let (after, _) = reduce(start, event);
+            assert_eq!(
+                after.voice_available,
+                kind == EventKind::VoiceUp,
+                "{kind:?} in {phase:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn every_event_x_state_cell_is_asserted() {
     let mut checked = 0;
@@ -617,6 +654,9 @@ fn every_event_x_state_cell_is_asserted() {
             let (after, fx) = reduce(start.clone(), event);
             let got: Vec<E> = fx.iter().map(effect_kind).collect();
             assert_invariants(&after, &context);
+            if kind == EventKind::SidecarError {
+                assert!(!after.voice_available, "{context}: voice goes down");
+            }
             // The one effect that can end in the OS call exists in one cell only.
             assert_eq!(
                 got.contains(&E::FinishCountdown),

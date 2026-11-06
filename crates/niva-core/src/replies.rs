@@ -12,7 +12,7 @@
 //!   characters and an es/en word count); it says `None` on a tie so the
 //!   caller applies a fixed default and never the previous request's language.
 
-use crate::state_machine::Template;
+use crate::state_machine::{SidecarErrorCode, Template};
 use crate::tools::{CalendarDate, PowerKind, ReminderTime};
 
 #[cfg(test)]
@@ -238,6 +238,42 @@ pub enum Msg {
 /// are the ones the host showed before this module existed.
 pub fn template(template: Template, lang: Lang) -> &'static str {
     match (template, lang) {
+        (Template::Sidecar(SidecarErrorCode::MicMissing), Lang::En) => {
+            "I can't find a microphone. Type a command instead."
+        }
+        (Template::Sidecar(SidecarErrorCode::MicMissing), Lang::Es) => {
+            "No encuentro un micrófono. Escribe un comando."
+        }
+        (Template::Sidecar(SidecarErrorCode::MicBusy), Lang::En) => {
+            "The microphone is in use by another app. Type a command instead."
+        }
+        (Template::Sidecar(SidecarErrorCode::MicBusy), Lang::Es) => {
+            "Otra app está usando el micrófono. Escribe un comando."
+        }
+        (Template::Sidecar(SidecarErrorCode::CudaOom), Lang::En) => {
+            "The graphics card ran out of memory. Type a command instead."
+        }
+        (Template::Sidecar(SidecarErrorCode::CudaOom), Lang::Es) => {
+            "La tarjeta gráfica se quedó sin memoria. Escribe un comando."
+        }
+        (Template::Sidecar(SidecarErrorCode::ModelLoad), Lang::En) => {
+            "The voice models did not load. Type a command instead."
+        }
+        (Template::Sidecar(SidecarErrorCode::ModelLoad), Lang::Es) => {
+            "Los modelos de voz no se cargaron. Escribe un comando."
+        }
+        (Template::Sidecar(SidecarErrorCode::Protocol), Lang::En) => {
+            "The voice service sent something I can't read. Type a command instead."
+        }
+        (Template::Sidecar(SidecarErrorCode::Protocol), Lang::Es) => {
+            "El servicio de voz envió algo que no puedo leer. Escribe un comando."
+        }
+        (Template::Sidecar(SidecarErrorCode::Internal), Lang::En) => {
+            "The voice service failed. Type a command instead."
+        }
+        (Template::Sidecar(SidecarErrorCode::Internal), Lang::Es) => {
+            "El servicio de voz falló. Escribe un comando."
+        }
         (Template::VoiceNotReady, Lang::En) => "Voice is not ready. Type a command instead.",
         (Template::VoiceNotReady, Lang::Es) => "La voz no está lista. Escribe un comando.",
         (Template::Error, Lang::En) => "Something went wrong.",

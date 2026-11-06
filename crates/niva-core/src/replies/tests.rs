@@ -2,6 +2,7 @@
 //! language heuristic (design D1, spec `language-handling`).
 
 use super::*;
+use crate::state_machine::SidecarErrorCode;
 use crate::tools::{PowerKind, ReminderTime};
 
 const LANGS: [Lang; 2] = [Lang::Es, Lang::En];
@@ -325,9 +326,8 @@ fn the_reminder_list_counts_and_names_the_reminders() {
     }
 }
 
-#[test]
-fn the_nine_reducer_templates_render_in_both_languages() {
-    let all = [
+fn all_templates() -> Vec<Template> {
+    let mut all = vec![
         Template::VoiceNotReady,
         Template::Error,
         Template::Cancelled,
@@ -338,11 +338,64 @@ fn the_nine_reducer_templates_render_in_both_languages() {
         Template::SleepCancelled,
         Template::SleepNotWatched,
     ];
-    for t in all {
+    all.extend(SidecarErrorCode::ALL.map(Template::Sidecar));
+    all
+}
+
+#[test]
+fn every_reducer_template_renders_in_both_languages() {
+    for t in all_templates() {
         let es = template(t, Lang::Es);
         let en = template(t, Lang::En);
         assert!(!es.is_empty() && !en.is_empty(), "{t:?}");
         assert_ne!(es, en, "{t:?} is not translated");
+    }
+}
+
+#[test]
+fn templates_are_short_enough_to_show_and_speak() {
+    for t in all_templates() {
+        for lang in [Lang::Es, Lang::En] {
+            let text = template(t, lang);
+            assert!(
+                text.chars().count() <= REPLY_MAX_CHARS / 2,
+                "{t:?} {lang:?}: {text}"
+            );
+            assert_eq!(text, text.trim(), "{t:?} {lang:?}");
+            assert_eq!(bound_reply(text), text, "{t:?} {lang:?}");
+        }
+    }
+}
+
+#[test]
+fn each_sidecar_code_has_its_own_text_in_each_language() {
+    for lang in [Lang::Es, Lang::En] {
+        let texts: Vec<&str> = SidecarErrorCode::ALL
+            .iter()
+            .map(|&c| template(Template::Sidecar(c), lang))
+            .collect();
+        for (i, a) in texts.iter().enumerate() {
+            for b in &texts[i + 1..] {
+                assert_ne!(a, b, "{lang:?}: two codes share a text");
+            }
+        }
+    }
+}
+
+#[test]
+fn sidecar_texts_say_what_happened_and_what_to_do() {
+    let en = |c| template(Template::Sidecar(c), Lang::En);
+    let es = |c| template(Template::Sidecar(c), Lang::Es);
+    assert!(en(SidecarErrorCode::MicMissing).contains("microphone"));
+    assert!(es(SidecarErrorCode::MicMissing).contains("micrófono"));
+    assert!(en(SidecarErrorCode::MicBusy).contains("another app"));
+    assert!(es(SidecarErrorCode::MicBusy).contains("Otra app"));
+    assert!(en(SidecarErrorCode::CudaOom).contains("memory"));
+    assert!(es(SidecarErrorCode::CudaOom).contains("memoria"));
+    // Every voice failure points at the typed fallback.
+    for code in SidecarErrorCode::ALL {
+        assert!(en(code).contains("Type"), "{code:?}: {}", en(code));
+        assert!(es(code).contains("Escribe"), "{code:?}: {}", es(code));
     }
 }
 

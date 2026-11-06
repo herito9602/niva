@@ -43,6 +43,25 @@ The system MUST use voice activity detection to decide the user finished speakin
 - WHEN the user stops speaking
 - THEN capture ends and the command is processed
 
+### Requirement: Voice failure never decides for the user
+When the voice sidecar reports an unusable-voice error (no microphone, microphone busy, GPU out of memory, models not loaded, protocol error or internal error), the system MUST mark voice unavailable and MUST NOT return to voice use until the voice supervisor reports it ready again. A turn that was listening MUST end in the error state with a message that names what happened, in the language of the current request (the last used language if there is none). A pending confirmation MUST stay pending, answerable by click only; an error MUST NOT confirm, reject or cancel it. A sleep countdown MUST keep running and stay cancellable by input and the shortcut; an error MUST NOT start the sleep early or cancel it silently. An action in progress, a thinking turn and a reminder alert MUST NOT be interrupted. A failed speech (`TTS_FAILED`) is not one of these errors and does not make voice unavailable.
+
+#### Scenario: Microphone busy while listening
+- GIVEN Niva is listening
+- WHEN the sidecar reports that the microphone is in use by another app
+- THEN the listen ends, Niva shows an error that says so and offers the text window
+- AND the next activation by shortcut or wake word says voice is not ready
+
+#### Scenario: Voice fails during a confirmation
+- GIVEN Niva waits for a yes or no on closing an app
+- WHEN the sidecar reports an error
+- THEN the question stays open with the buttons, a spoken answer is no longer accepted, and the 10 s timeout still cancels it
+
+#### Scenario: Voice fails during the sleep countdown
+- GIVEN the 10 s sleep countdown is running
+- WHEN the sidecar reports an error
+- THEN the countdown continues and any key, mouse movement or the shortcut still cancels it
+
 ## Assumptions to confirm
 - Slice 3 uses a stock wake word model; the custom "Hey Niva" model lands in slice 5. The criteria above apply to the custom model.
 - Listening timeout: 6 s with no speech, then a 15 s utterance cap after `speech_start` (design State Machine, listening row).
