@@ -215,6 +215,25 @@ fn a_which_one_question_lists_every_candidate_in_both_languages() {
     }
 }
 
+/// The question is the confirm listen's Whisper prompt, so Whisper may echo
+/// it: no confirmation question, even about an app named like an answer, may
+/// read as a spoken yes.
+#[test]
+fn no_confirmation_question_reads_as_a_spoken_yes() {
+    use crate::state_machine::{Answer, classify_confirmation};
+    for lang in LANGS {
+        let mut prompts: Vec<String> = PowerKind::ALL
+            .map(|action| render(&Msg::ConfirmPower { action }, lang))
+            .to_vec();
+        for exe in ["calculatorapp", "sí", "si", "yes", "ok", "dale", "confirm"] {
+            prompts.push(render(&Msg::ConfirmClose { exe: exe.into() }, lang));
+        }
+        for prompt in prompts {
+            assert_ne!(classify_confirmation(&prompt), Answer::Yes, "{prompt:?}");
+        }
+    }
+}
+
 #[test]
 fn power_prompts_and_outcomes_name_each_action_differently() {
     for lang in LANGS {

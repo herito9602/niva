@@ -24,6 +24,34 @@ def test_listen_after_silence_transcribes_and_echoes_the_id(h):
     assert not h.engine.listening
 
 
+def test_a_confirm_listen_hands_its_language_and_question_to_the_transcriber(h):
+    h.engine.on_command(Listen(5, "confirm", "es", "¿Cierro la calculadora?"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, 25))
+    assert h.stt.calls == [{"mode": "confirm", "lang": "es", "context": "¿Cierro la calculadora?"}]
+
+
+def test_a_command_listen_hands_no_language_and_no_question(h):
+    h.engine.on_command(Listen(5, "command", "es", "¿Cierro la calculadora?"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, 25))
+    assert h.stt.calls == [{"mode": "command", "lang": None, "context": None}]
+
+
+def test_an_old_style_confirm_listen_still_works(h):
+    h.engine.on_command(Listen(5, "confirm"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, 25))
+    assert h.stt.calls == [{"mode": "confirm", "lang": None, "context": None}]
+    assert h.types() == ["speech_start", "transcript"]
+
+
+def test_a_hallucination_the_gate_emptied_is_an_empty_transcript_with_its_own_reason(h):
+    h.stt.text, h.stt.dropped = "", 1
+    h.engine.on_command(Listen(5, "confirm", "en", "Should I close the calculator?"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, 25))
+    assert h.events[-1]["type"] == "transcript" and h.events[-1]["text"] == ""
+    assert h.discards.counts["hallucination_gate"] == 1
+    assert h.discards.counts["empty_transcript"] == 1
+
+
 def test_end_ms_is_the_end_of_speech_not_the_decision_time(h):
     h.engine.on_command(Listen(1, "command"))
     h.feed(frames(SPEECH, 10))

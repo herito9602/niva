@@ -9,6 +9,8 @@
 
 use std::time::Duration;
 
+use crate::replies::Lang;
+
 #[cfg(test)]
 mod coverage;
 #[cfg(test)]
@@ -422,6 +424,11 @@ pub enum Event {
     Transcript {
         id: u64,
         text: String,
+        /// The language the speech recognizer detected (design D1: the request
+        /// language of audio is Whisper's, restricted to es/en). `None` for a
+        /// source that does not know it; the reply language then comes from the
+        /// text heuristic, as for typed input.
+        lang: Option<Lang>,
     },
     NoSpeech {
         id: u64,
@@ -530,6 +537,8 @@ pub enum RequestInput {
     User {
         text: String,
         slot: Option<PendingSlot>,
+        /// The detected language of a spoken request (see `Event::Transcript`).
+        lang: Option<Lang>,
     },
     /// The no-tools summary call after a `web_search`.
     SearchSummary,
@@ -770,7 +779,7 @@ pub fn reduce(mut state: State, event: Event) -> (State, Vec<Effect>) {
         Event::Wake => state.on_wake(&mut fx),
         Event::Shortcut => state.on_shortcut(&mut fx),
         Event::SpeechStart { .. } => state.on_speech_start(&mut fx),
-        Event::Transcript { text, .. } => state.on_transcript(text, &mut fx),
+        Event::Transcript { text, lang, .. } => state.on_transcript(text, lang, &mut fx),
         Event::NoSpeech { .. } => state.on_no_speech(&mut fx),
         Event::EmptyTranscript { .. } => state.on_empty_transcript(&mut fx),
         Event::TextSubmitted { text } => state.on_text_submitted(text, &mut fx),
@@ -914,11 +923,11 @@ impl State {
 
     /// Starts the LLM call for a user utterance. The pending slot, if any, is
     /// consumed: it travels with the request as context for exactly one turn.
-    fn think_about(&mut self, text: String, fx: &mut Vec<Effect>) {
+    fn think_about(&mut self, text: String, lang: Option<Lang>, fx: &mut Vec<Effect>) {
         let slot = self.pending.take();
         self.transition(Phase::Thinking, fx);
         self.followup_turn = slot.is_some();
-        self.begin_request(RequestInput::User { text, slot }, fx);
+        self.begin_request(RequestInput::User { text, slot, lang }, fx);
     }
 
     fn begin_request(&mut self, input: RequestInput, fx: &mut Vec<Effect>) {
@@ -928,11 +937,11 @@ impl State {
         self.start_timer(TimerKind::Llm, fx);
     }
 
-    fn on_transcript(&mut self, text: String, fx: &mut Vec<Effect>) {
+    fn on_transcript(&mut self, text: String, lang: Option<Lang>, fx: &mut Vec<Effect>) {
         match self.phase {
             Phase::Listening => {
                 self.listen_id = None; // the sidecar listen is already over
-                self.think_about(text, fx);
+                self.think_about(text, lang, fx);
             }
             // A click-only confirmation has no voice channel: a spoken answer
             // cannot be a real one, whatever it says.
@@ -1108,11 +1117,11 @@ impl State {
             | Phase::Listening
             | Phase::Success
             | Phase::Error
-            | Phase::ReminderAlert => self.think_about(text, fx),
+            | Phase::ReminderAlert => self.think_about(text, None, fx),
             // Only while a pending slot waits for its answer.
             Phase::Thinking => {
                 if self.pending.is_some() {
-                    self.think_about(text, fx);
+                    self.think_about(text, None, fx);
                 }
             }
             Phase::Acting | Phase::ConfirmationNeeded | Phase::Countdown => {}

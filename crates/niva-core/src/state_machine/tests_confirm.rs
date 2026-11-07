@@ -303,6 +303,7 @@ fn a_spoken_yes_accepts_and_a_spoken_no_rejects() {
     let yes = Event::Transcript {
         id: 3,
         text: "Sí".into(),
+        lang: None,
     };
     let (s, fx) = step(&state_in(Phase::ConfirmationNeeded), yes);
     assert_eq!(s.phase, Phase::Acting);
@@ -311,6 +312,7 @@ fn a_spoken_yes_accepts_and_a_spoken_no_rejects() {
     let no = Event::Transcript {
         id: 3,
         text: "cancela".into(),
+        lang: None,
     };
     let (s, fx) = step(&state_in(Phase::ConfirmationNeeded), no);
     assert_eq!(s.phase, Phase::Success);
@@ -323,6 +325,7 @@ fn an_unclear_answer_reissues_the_listen_with_a_new_id_and_keeps_the_timer() {
         Event::Transcript {
             id: 3,
             text: "yes close it and also open chrome".into(),
+            lang: None,
         },
         Event::NoSpeech { id: 3 },
         Event::EmptyTranscript { id: 3 },
@@ -351,6 +354,7 @@ fn the_old_listen_id_is_stale_after_a_reissue() {
         Event::Transcript {
             id: 3,
             text: "yes".into(),
+            lang: None,
         },
     );
 }
@@ -365,6 +369,7 @@ fn a_click_only_confirmation_has_no_listen_to_answer() {
         Event::Transcript {
             id: 3,
             text: "yes".into(),
+            lang: None,
         },
     );
 }
@@ -531,6 +536,7 @@ fn voice_down_in_confirmation_keeps_the_click_path_and_the_timer() {
         Event::Transcript {
             id: 3,
             text: "yes".into(),
+            lang: None,
         },
     );
     let (s, _) = step(&s, Event::Accept { id: CONFIRM_ID });

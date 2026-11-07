@@ -37,7 +37,7 @@ pub fn template_caption(template: Template) -> &'static str {
     replies::template(template, Lang::En)
 }
 
-fn say_text(say: &Say, lang: Lang) -> String {
+pub(crate) fn say_text(say: &Say, lang: Lang) -> String {
     match say {
         Say::Text(text) => text.clone(),
         Say::Template(template) => replies::template(*template, lang).to_owned(),
@@ -371,6 +371,7 @@ mod tests {
             self.send(Event::Transcript {
                 id,
                 text: text.into(),
+                lang: None,
             })
         }
 

@@ -13,6 +13,7 @@ fn yes(id: u64) -> Event {
     Event::Transcript {
         id,
         text: "yes".into(),
+        lang: None,
     }
 }
 
@@ -445,6 +446,7 @@ fn a_spoken_yes_is_ignored_when_the_confirmation_is_click_only() {
         Event::Transcript {
             id: CONFIRM_LISTEN_ID,
             text: "no".into(),
+            lang: None,
         },
     );
 }

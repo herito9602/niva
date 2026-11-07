@@ -33,17 +33,19 @@ use std::{
 
 use niva_core::state_machine::Event;
 use tauri::{
-    AppHandle, Manager, PhysicalPosition, WebviewWindow,
+    AppHandle, Manager, PhysicalPosition, RunEvent, WebviewWindow,
     menu::{Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
 };
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
+use crate::adapters::audio_cue::RodioCue;
 use crate::adapters::ollama::{OllamaProvider, keeper};
+use crate::adapters::voice_sidecar::{Status, Voice};
 use crate::click_through::{HitTesting, IslandWindow, prepare_island, show_island_window};
 use crate::confirm_buttons::{ConfirmGate, GateUi};
 use crate::cursor::CursorPoller;
-use crate::dispatcher::{Core, Input, InputTx, startup_events};
+use crate::dispatcher::{Core, Input, InputTx};
 use crate::effect_runner::{EffectRunner, EventSink, Host};
 use crate::requests::Requests;
 use crate::ui_adapter::{ISLAND_LABEL, TauriUiAdapter};
@@ -149,7 +151,7 @@ const _: DevAssistantWith = dev::assistant_with;
 /// run it on Ollama and the real Windows adapter of the safe actions, with no
 /// dev code in them.
 #[cfg(debug_assertions)]
-fn build_requests(app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
+fn build_requests(app: &AppHandle, sink: EventSink) -> (Arc<dyn Requests>, Arc<keeper::Readiness>) {
     use tauri::Emitter;
 
     let app = app.clone();
@@ -163,28 +165,67 @@ fn build_requests(app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
     // while the keeper says it is ready and the dev LLM until then.
     let ollama = Arc::new(OllamaProvider::new());
     let handle = keeper::spawn(ollama.clone(), log.clone());
+    let llm_ready = handle.ready.clone();
     // Search is the real one in debug too (the user's own key; without one the
     // reply says so). Only the PC and the reminders stay dry-run.
     let search = Arc::new(adapters::search::TavilySearch::from_environment());
     let assistant = dev::adaptive_assistant(log, ollama, handle, search);
-    Arc::new(requests::AssistantRequests::new(assistant, sink))
+    (
+        Arc::new(requests::AssistantRequests::new(assistant, sink)),
+        llm_ready,
+    )
 }
 
 /// Release builds: the real Ollama (kept warm by the keeper, never a fallback
 /// model) and the Windows adapter of every action. A risky plan asks for a
 /// confirmation, answered by the island's buttons; see `release.rs`.
 #[cfg(not(debug_assertions))]
-fn build_requests(_app: &AppHandle, sink: EventSink) -> Arc<dyn Requests> {
+fn build_requests(
+    _app: &AppHandle,
+    sink: EventSink,
+) -> (Arc<dyn Requests>, Arc<keeper::Readiness>) {
     let log: Arc<dyn Fn(String) + Send + Sync> = Arc::new(|line| eprintln!("{line}"));
     let ollama = Arc::new(OllamaProvider::new());
     let handle = keeper::spawn(ollama.clone(), log);
+    let llm_ready = handle.ready.clone();
     let assistant = release::assistant(
         Arc::new(keeper::WarmLlm::new(ollama, handle)),
         Arc::new(adapters::windows_pc::WindowsPc::real()),
         Arc::new(adapters::system_clock::SystemClock),
         Arc::new(adapters::search::TavilySearch::from_environment()),
     );
-    Arc::new(requests::AssistantRequests::new(assistant, sink))
+    (
+        Arc::new(requests::AssistantRequests::new(assistant, sink)),
+        llm_ready,
+    )
+}
+
+/// The id of the tray icon, so the voice status can reach its tooltip.
+const TRAY_ID: &str = "niva-tray";
+
+/// Starts the voice supervisor (task 3.4) in debug and release alike. It never
+/// fails the app: with no sidecar the voice stays down and the text window is
+/// the way in. Its events enter the dispatcher like any other, and its status
+/// is the tray tooltip.
+fn start_voice(app: &AppHandle, sink: EventSink, llm_ready: Arc<keeper::Readiness>) -> Voice {
+    let handle = app.clone();
+    let status = Arc::new(move |status: Status| {
+        let text = format!("Niva: {}", status.describe());
+        let app = handle.clone();
+        // The tray belongs to the main thread; the status comes from the
+        // supervisor's.
+        let _ = handle.run_on_main_thread(move || {
+            if let Some(tray) = app.tray_by_id(TRAY_ID) {
+                let _ = tray.set_tooltip(Some(text));
+            }
+        });
+    });
+    Voice::start(
+        sink,
+        status,
+        Arc::new(|line| eprintln!("{line}")),
+        Some(Arc::new(move || llm_ready.is_ready())),
+    )
 }
 
 /// Opens the "Type a command" window. Built off the event loop thread, so a
@@ -267,10 +308,16 @@ pub fn run() {
                     let _ = tx.send(Input::Event(event));
                 })
             };
-            let requests = build_requests(app.handle(), sink.clone());
+            let (requests, llm_ready) = build_requests(app.handle(), sink.clone());
+            // The voice sidecar: speech in and out, and the host's own cues.
+            let voice = start_voice(app.handle(), sink.clone(), llm_ready);
+            let link = voice.link();
+            app.manage(voice);
             // The sleep countdown reads the user's last input time (no hook). Without
             // a source the runner fails every countdown closed.
-            let runner = EffectRunner::new(sink, host, requests);
+            let runner = EffectRunner::new(sink, host, requests)
+                .with_voice(link.clone(), link)
+                .with_cue(Arc::new(RodioCue::new()));
             #[cfg(windows)]
             let runner =
                 runner.with_activity(Arc::new(adapters::windows_activity::WindowsActivity));
@@ -286,9 +333,6 @@ pub fn run() {
                 )),
                 Box::new(now_ms),
             );
-            for event in startup_events(cfg!(debug_assertions)) {
-                let _ = tx.send(Input::Event(event));
-            }
             tauri::async_runtime::spawn(dispatcher::run(core, rx));
 
             // A taken shortcut must not abort startup: the tray toggle remains.
@@ -310,16 +354,23 @@ pub fn run() {
                 MenuItem::with_id(app, "toggle", "Show / hide island", true, None::<&str>)?;
             let type_command =
                 MenuItem::with_id(app, "type", "Type a command", true, None::<&str>)?;
+            let restart_voice =
+                MenuItem::with_id(app, "restart_voice", "Restart voice", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&toggle, &type_command, &quit])?;
+            let menu = Menu::with_items(app, &[&toggle, &type_command, &restart_voice, &quit])?;
 
-            let mut tray = TrayIconBuilder::new()
+            let mut tray = TrayIconBuilder::with_id(TRAY_ID)
                 .tooltip("Niva")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "toggle" => send_event(app, Event::Shortcut),
                     "type" => open_text_window(app),
+                    "restart_voice" => {
+                        if let Some(voice) = app.try_state::<Voice>() {
+                            voice.restart();
+                        }
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -338,6 +389,16 @@ pub fn run() {
             tray.build(app)?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Stop the sidecar before the process ends: it holds the microphone.
+            // (If the app is killed instead, the job object around the sidecar
+            // ends it; see `adapters::voice_sidecar::process`.)
+            if matches!(event, RunEvent::Exit)
+                && let Some(voice) = app.try_state::<Voice>()
+            {
+                voice.shutdown();
+            }
+        });
 }

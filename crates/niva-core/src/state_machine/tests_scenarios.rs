@@ -53,6 +53,7 @@ impl Run {
         self.send(Event::Transcript {
             id,
             text: text.into(),
+            lang: None,
         });
         assert_eq!(self.phase(), Phase::Thinking);
     }
@@ -128,6 +129,7 @@ fn scenario_risky_call_confirmed_by_voice() {
     let fx = run.send(Event::Transcript {
         id: listen,
         text: "yes".into(),
+        lang: None,
     });
     assert_eq!(run.phase(), Phase::Acting);
     assert!(fx.contains(&Effect::RunTool { req }));

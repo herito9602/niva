@@ -920,6 +920,7 @@ mod tests {
             let input = RequestInput::User {
                 text: text.into(),
                 slot: None,
+                lang: None,
             };
             assert!(!assistant.start_request(req, &input).is_empty());
             assistant.record_confirmation(ConfirmInput::Click(true));
@@ -1016,6 +1017,7 @@ mod tests {
         RequestInput::User {
             text: text.into(),
             slot: None,
+            lang: None,
         }
     }
 
@@ -1207,6 +1209,7 @@ mod tests {
             let input = RequestInput::User {
                 text: "do it".into(),
                 slot: None,
+                lang: None,
             };
             assert!(!assistant.start_request(req, &input).is_empty());
             assistant.record_confirmation(ConfirmInput::Click(true));

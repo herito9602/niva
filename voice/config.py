@@ -53,6 +53,22 @@ class Tunables:
     tts_first_chunk_s: float = 2.0
     # Peak amplitude (int16) above which a chunk counts as non-silent.
     silent_peak: int = 24
+    # Hallucination gate: a Whisper segment whose no_speech_prob is ABOVE this is
+    # dropped, in every mode. Measured on the owner's recordings (2026-11-07,
+    # Whisper small, fp16): the 0.32 s tail of Niva's own voice came out as "Thank
+    # you." with no_speech_prob 0.59-0.60; real words had 0.02-0.14. 0.5 sits in
+    # the gap with margin on both sides. Tune it with real use.
+    no_speech_prob_max: float = 0.5
+    # Confirm answers are one or two words ("Si.", "Cancelar"): 12 tokens is
+    # enough and keeps a 1 s clip from returning hundreds of characters (446 chars
+    # were seen in the live run).
+    confirm_max_new_tokens: int = 12
+    # Commands: the bound grows with the clip (tokens per second of audio, a
+    # generous speaking rate), between a floor and the hard cap below. INVENTED
+    # numbers, loose on purpose: they only stop runaway text, not real commands.
+    command_tokens_per_s: float = 10.0
+    command_min_new_tokens: int = 24
+    command_max_new_tokens: int = 224
 
     @property
     def pre_speech_frames(self) -> int:

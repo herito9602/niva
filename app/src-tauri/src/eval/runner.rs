@@ -222,6 +222,7 @@ pub fn run_case(
     let input = RequestInput::User {
         text: case.utterance.clone(),
         slot: None,
+        lang: None,
     };
     let events = assistant.start_request(req, &input);
     let first = recorder.take().into_iter().next();

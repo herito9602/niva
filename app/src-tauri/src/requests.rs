@@ -241,6 +241,7 @@ mod tests {
             RequestInput::User {
                 text: text.into(),
                 slot: None,
+                lang: None,
             }
         }
 

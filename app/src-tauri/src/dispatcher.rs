@@ -36,10 +36,12 @@ pub enum Input {
     SetMedia(MediaMode),
 }
 
-/// Events dispatched once at startup (task 1.15, CO1). The reducer defaults to
-/// `voice_available = false`. Debug builds announce the voice as ready so the
-/// shortcut can be exercised before the real supervisor exists (slice 3);
-/// release builds keep it false, so the shortcut shows the `error` pose.
+/// Events dispatched once at startup in the TESTS (task 1.15, CO1). The
+/// reducer defaults to `voice_available = false`, and since task 3.4 the voice
+/// supervisor is the only thing that turns it on, in debug and release alike
+/// (so the shortcut shows the `error` pose until the sidecar says `ready`).
+/// The app no longer calls this; the tests use it to start with a ready voice.
+#[cfg(test)]
 pub fn startup_events(debug_build: bool) -> Vec<Event> {
     if debug_build {
         vec![Event::VoiceReadinessChanged { ready: true }]
@@ -269,6 +271,7 @@ mod tests {
             self.send(Event::Transcript {
                 id,
                 text: "do it".into(),
+                lang: None,
             });
             assert_eq!(self.phase(), Phase::Thinking);
         }
@@ -481,6 +484,7 @@ mod tests {
             Some(Event::Transcript {
                 id: state.listen_id.unwrap(),
                 text: "hello".into(),
+                lang: None,
             })
         })));
         r.pump();
@@ -495,6 +499,7 @@ mod tests {
             Some(Event::Transcript {
                 id: state.listen_id.unwrap_or(0),
                 text: "hello".into(),
+                lang: None,
             })
         })));
         r.pump();
@@ -713,6 +718,7 @@ mod tests {
                 self.send(Event::Transcript {
                     id,
                     text: "yes".into(),
+                    lang: None,
                 });
             }
 
@@ -978,6 +984,7 @@ mod tests {
             r.send(Event::Transcript {
                 id: 1,
                 text: "yes".into(),
+                lang: None,
             });
             assert_eq!(r.phase(), Phase::ConfirmationNeeded);
             r.click(true);

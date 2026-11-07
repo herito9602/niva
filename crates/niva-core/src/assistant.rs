@@ -94,7 +94,7 @@ pub fn confirmation_input(state: &State, event: &Event) -> Option<ConfirmInput> 
     match event {
         Event::Accept { id } if state.confirm_id == Some(*id) => Some(ConfirmInput::Click(true)),
         Event::Reject { id } if state.confirm_id == Some(*id) => Some(ConfirmInput::Click(false)),
-        Event::Transcript { id, text }
+        Event::Transcript { id, text, lang: _ }
             if state.listen_id == Some(*id) && !state.confirm_click_only =>
         {
             Some(ConfirmInput::Voice(text.clone()))
@@ -313,8 +313,8 @@ impl Assistant {
         // reducer (its events would be dropped by id), so do not even call
         // the model, and never touch the session the newer one owns.
         match input {
-            RequestInput::User { text, slot } => {
-                let Some(lang) = self.begin_user(req, text, slot.as_ref()) else {
+            RequestInput::User { text, slot, lang } => {
+                let Some(lang) = self.begin_user(req, text, slot.as_ref(), *lang) else {
                     return Vec::new();
                 };
                 self.paused_after_begin(req);
@@ -365,13 +365,24 @@ impl Assistant {
     /// write share the lock, so an older worker can never wipe the state a
     /// newer one set up. Returns the reply language, or `None` if a newer
     /// request already started.
-    fn begin_user(&self, req: u64, text: &str, slot: Option<&PendingSlot>) -> Option<Lang> {
+    fn begin_user(
+        &self,
+        req: u64,
+        text: &str,
+        slot: Option<&PendingSlot>,
+        spoken: Option<Lang>,
+    ) -> Option<Lang> {
         let mut session = self.session();
         if req < session.latest_req {
             return None;
         }
         session.latest_req = req;
-        let lang = replies::detect_language(text)
+        // Audio: the language the recognizer detected (design D1). Typed text
+        // has none and uses the text heuristic, then the language of the question
+        // it answers, then the fixed default. (A pending question is answered by
+        // typing today, so `spoken` and `slot` do not meet yet.)
+        let lang = spoken
+            .or_else(|| replies::detect_language(text))
             .or(slot.and(session.asked_lang))
             .unwrap_or(DEFAULT_LANG);
         session.lang = lang;

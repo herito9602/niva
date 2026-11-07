@@ -177,6 +177,7 @@ impl DebugEvent {
             DebugEvent::Transcript { text } => Event::Transcript {
                 id: listen,
                 text: cap(text),
+                lang: None,
             },
             DebugEvent::NoSpeech => Event::NoSpeech { id: listen },
             DebugEvent::EmptyTranscript => Event::EmptyTranscript { id: listen },
@@ -361,7 +362,8 @@ mod tests {
                 .unwrap(),
             Event::Transcript {
                 id,
-                text: "hi".into()
+                text: "hi".into(),
+                lang: None
             }
         );
         assert_eq!(
@@ -390,7 +392,8 @@ mod tests {
             event,
             Event::Transcript {
                 id: 0,
-                text: "hi".into()
+                text: "hi".into(),
+                lang: None
             }
         );
         let (state, fx) = reduce(idle.clone(), event);
@@ -419,6 +422,7 @@ mod tests {
             Event::Transcript {
                 id,
                 text: "x".into(),
+                lang: None,
             },
         )
         .0;
@@ -612,6 +616,7 @@ mod tests {
             Event::Transcript {
                 id,
                 text: "x".into(),
+                lang: None,
             },
         )
         .0;

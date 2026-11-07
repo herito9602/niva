@@ -34,6 +34,10 @@ tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
 ureq = { version = "3", default-features = false, features = ["native-tls-no-default"] }
 # `niva-eval` only (feature `eval`): reads eval/commands.yaml.
 serde_norway = { version = "0.9", optional = true }
+# Task 3.4, `adapters/audio_cue.rs`: the chime and the listening cue, played by the
+# host so they work with the sidecar down. `playback` only: the cues are
+# generated sine tones, so no file decoder (flac, mp3, vorbis, wav) is needed.
+rodio = { version = "0.23", default-features = false, features = ["playback"] }
 
 [target.'cfg(windows)'.dependencies]
 # GetLocalTime, for the local time the system prompt states; GetLastInputInfo
@@ -46,12 +50,15 @@ serde_norway = { version = "0.9", optional = true }
 # SeShutdownPrivilege token adjustment) and Win32_Storage_Packaging_Appx
 # (GetApplicationUserModelId, to match a UWP frame to its process); PostMessageW and EnumWindows come from
 # Win32_UI_WindowsAndMessaging, already on.
+# Task 3.4: Win32_System_JobObjects, a job with KILL_ON_JOB_CLOSE around the voice
+# sidecar so it cannot outlive the app and keep the microphone.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_Packaging_Appx",
     "Win32_System_Com",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
     "Win32_System_Power",
     "Win32_System_Registry",
     "Win32_System_RemoteDesktop",

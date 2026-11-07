@@ -642,6 +642,7 @@ fn a_hostile_page_goes_through_the_no_tools_summary_as_quoted_data() {
     let input = RequestInput::User {
         text: "search rust".into(),
         slot: None,
+        lang: None,
     };
     assert!(matches!(
         assistant.start_request(1, &input).as_slice(),

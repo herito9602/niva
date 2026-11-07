@@ -290,7 +290,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         stt = WhisperTranscriber.load(
-            args.whisper_model, allow_cpu=args.allow_cpu, local_files_only=not args.allow_download
+            args.whisper_model,
+            allow_cpu=args.allow_cpu,
+            local_files_only=not args.allow_download,
+            tunables=tunables,
         )
     except SttError as exc:
         log.error("Whisper did not load: %s", exc.msg)

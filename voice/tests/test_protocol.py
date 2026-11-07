@@ -28,6 +28,41 @@ def test_parses_every_host_command():
     assert parse_command('{"type":"shutdown"}') == Shutdown()
 
 
+def test_a_confirm_listen_can_carry_the_language_and_the_question_it_answers():
+    line = json.dumps(
+        {"type": "listen", "id": 8, "mode": "confirm", "lang": "es", "context": "¿Cierro la calculadora?"},
+        ensure_ascii=False,
+    )
+    assert parse_command(line) == Listen(8, "confirm", "es", "¿Cierro la calculadora?")
+
+
+def test_an_old_style_listen_has_no_language_and_no_context():
+    command = parse_command('{"type":"listen","id":8,"mode":"confirm"}')
+    assert (command.lang, command.context) == (None, None)
+    command = parse_command('{"type":"listen","id":8,"mode":"confirm","lang":null,"context":null}')
+    assert (command.lang, command.context) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"type":"listen","id":8,"mode":"confirm","lang":"fr"}',
+        '{"type":"listen","id":8,"mode":"confirm","lang":7}',
+        '{"type":"listen","id":8,"mode":"confirm","context":7}',
+    ],
+)
+def test_a_listen_with_a_bad_language_or_context_is_a_protocol_error(line):
+    with pytest.raises(ProtocolError):
+        parse_command(line)
+
+
+def test_a_very_long_context_is_cut_to_its_last_characters():
+    long_text = "x" * 500 + "¿Cierro la calculadora?"
+    command = parse_command(json.dumps({"type": "listen", "id": 1, "mode": "confirm", "context": long_text}))
+    assert len(command.context) == protocol.MAX_CONTEXT_CHARS
+    assert command.context.endswith("¿Cierro la calculadora?")
+
+
 def test_ids_are_echoed_as_large_unsigned_integers():
     big = 2**63 + 5
     assert parse_command(json.dumps({"type": "listen", "id": big, "mode": "command"})).id == big

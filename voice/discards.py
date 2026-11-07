@@ -21,6 +21,7 @@ class Discard(StrEnum):
     WAKE_NEAR_MISS = "wake_near_miss"  # a score just under the threshold
     NO_SPEECH = "no_speech"
     EMPTY_TRANSCRIPT = "empty_transcript"
+    HALLUCINATION_GATE = "hallucination_gate"  # a segment dropped for its no_speech_prob
     STALE_LISTEN = "stale_listen"  # a listen replaced or cancelled with audio in hand
     LISTEN_WHILE_MIC_DOWN = "listen_mic_down"
     STALE_CANCEL = "stale_cancel"  # cancel/force_end for an id that is not the open listen
