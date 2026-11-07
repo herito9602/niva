@@ -7,6 +7,12 @@ sidecar never writes anything else to stdout; logs go to stderr.
 Host -> sidecar (design.md, "Sidecar protocol")::
 
     {"type": "listen", "id": 7, "mode": "command" | "confirm"}
+    {"type": "listen", "id": 8, "mode": "confirm", "lang": "es", "context": "..."}
+                                            # lang and context are optional (added); only a
+                                            # confirm listen uses them: the language of the
+                                            # question the host just spoke and its text. The
+                                            # sidecar forces that language and gives the text
+                                            # to Whisper as its prompt. Never logged.
     {"type": "cancel_listen", "id": 7}
     {"type": "force_end", "id": 7}          # added: carries Effect::ForceEndOfSpeech
     {"type": "speak", "id": 8, "text": "...", "lang": "es" | "en"}
@@ -37,6 +43,8 @@ from typing import Any
 
 LANGS = ("es", "en")
 LISTEN_MODES = ("command", "confirm")
+# Whisper keeps the END of a prompt when it is too long; so does this cut.
+MAX_CONTEXT_CHARS = 200
 
 
 class ErrorCode(StrEnum):
@@ -63,6 +71,8 @@ class ProtocolError(ValueError):
 class Listen:
     id: int
     mode: str
+    lang: str | None = None  # confirm only: the language of the question just spoken
+    context: str | None = None  # confirm only: the question's text (never logged)
 
 
 @dataclass(frozen=True)
@@ -109,6 +119,21 @@ def _choice(obj: dict[str, Any], key: str, allowed: tuple[str, ...]) -> str:
     return value
 
 
+def _optional_choice(obj: dict[str, Any], key: str, allowed: tuple[str, ...]) -> str | None:
+    if obj.get(key) is None:
+        return None
+    return _choice(obj, key, allowed)
+
+
+def _optional_text(obj: dict[str, Any], key: str, limit: int) -> str | None:
+    value = obj.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ProtocolError(f"field '{key}' must be a string")
+    return value[-limit:]
+
+
 def parse_command(line: str) -> Command:
     """Parse one host line. Raises :class:`ProtocolError` on anything unreadable."""
     try:
@@ -121,7 +146,12 @@ def parse_command(line: str) -> Command:
         raise ProtocolError("message must be a JSON object")
     kind = obj.get("type")
     if kind == "listen":
-        return Listen(_uint(obj, "id"), _choice(obj, "mode", LISTEN_MODES))
+        return Listen(
+            _uint(obj, "id"),
+            _choice(obj, "mode", LISTEN_MODES),
+            _optional_choice(obj, "lang", LANGS),
+            _optional_text(obj, "context", MAX_CONTEXT_CHARS),
+        )
     if kind == "cancel_listen":
         return CancelListen(_uint(obj, "id"))
     if kind == "force_end":
@@ -159,8 +189,9 @@ def speech_start(listen_id: int) -> dict[str, Any]:
 
 
 def transcript(listen_id: int, text: str, lang: str, lang_prob: float, end_ms: int) -> dict[str, Any]:
-    """``lang_prob`` is the combined es+en probability (the D1 minimum gate uses
-    it); ``end_ms`` is the sidecar monotonic time (ms) of the last speech frame."""
+    """``lang_prob`` is the combined es+en probability, reported for the logs only
+    (no gate uses it any more, design D1); ``end_ms`` is the sidecar monotonic
+    time (ms) of the last speech frame."""
     return {
         "type": "transcript",
         "id": listen_id,

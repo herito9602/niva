@@ -9,7 +9,9 @@
 
 use std::time::SystemTime;
 
+use crate::replies::Lang;
 use crate::safety::{Approved, CloseApp, Power};
+use crate::state_machine::ListenMode;
 use crate::tools::{ReminderTime, ToolCall, VolumeChange};
 
 #[cfg(any(test, feature = "testing"))]
@@ -119,6 +121,69 @@ pub trait PcActions: Send + Sync {
     fn set_volume(&self, change: VolumeChange) -> Result<VolumeResult, PcError>;
     /// Risky: lock, sleep, restart or shutdown.
     fn power(&self, approved: Approved<Power>) -> Result<(), PcError>;
+}
+
+/// A confirmation question as it was spoken: its language and its words. The
+/// words can quote what the user asked, so `Debug` shows only their size.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SpokenPrompt {
+    pub lang: Lang,
+    pub text: String,
+}
+
+impl std::fmt::Debug for SpokenPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SpokenPrompt {{ lang: {:?}, text: <{} chars> }}",
+            self.lang,
+            self.text.chars().count()
+        )
+    }
+}
+
+/// The listening half of the voice sidecar (wake word, VAD and STT sit behind
+/// it because they share the microphone stream). What the sidecar hears comes
+/// back as events through the host's queue; these calls only send commands, so
+/// they never block on audio. `false` means the command could not be sent
+/// (no sidecar is running): the reducer's own timers then end the turn.
+pub trait SpeechEngine: Send + Sync {
+    fn listen(&self, id: u64, mode: ListenMode) -> bool;
+    /// Like [`listen`](Self::listen), plus the confirmation question the host
+    /// just spoke. A confirm answer is one short word that recognizers get
+    /// wrong without context, so an engine that can use the question's
+    /// language and text does (`None`: it detects the language). The default
+    /// ignores the question.
+    fn listen_with_prompt(&self, id: u64, mode: ListenMode, prompt: Option<&SpokenPrompt>) -> bool {
+        let _ = prompt;
+        self.listen(id, mode)
+    }
+    fn cancel_listen(&self, id: u64) -> bool;
+    /// End the utterance now (the max-utterance cap).
+    fn force_end_of_speech(&self, id: u64) -> bool;
+}
+
+/// The speaking half of the voice sidecar (TTS). `SpeakStarted`, `SpeakDone`
+/// and `TtsFailed` come back as events.
+pub trait Speaker: Send + Sync {
+    /// Whether speech can be produced right now. While it cannot, the runner
+    /// skips every `Speak` and reports it done at once.
+    fn is_available(&self) -> bool;
+    fn speak(&self, id: u64, text: &str, lang: Lang) -> bool;
+    fn stop(&self) -> bool;
+}
+
+/// Short sounds played by the host itself, so they work when the sidecar is
+/// down (design "Fullscreen policy": the chime is never the webview's or the
+/// sidecar's).
+pub trait AudioCue: Send + Sync {
+    /// Plays the alert chime and calls `done` once, when it ended or could not
+    /// play (no output device). Never blocks.
+    fn chime(&self, done: Box<dyn FnOnce() + Send>);
+    /// A soft cue for "listening started".
+    fn listening_cue(&self);
+    /// Cuts a playing cue short (its `done` still runs).
+    fn stop(&self);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -48,6 +48,68 @@ Four tests use local-only files and skip themselves when missing: the owner's
 | Piper voices `es_AR-daniela-high.onnx`, `en_US-lessac-medium.onnx` | `NIVA_PIPER_DIR` or `--piper-dir` | none (no offline fallback) |
 | Silero VAD | bundled with faster-whisper | |
 
+## Short answers and hallucinations (2026-11-07)
+
+Whisper gets one-word answers wrong ("Si" detected as English and written "C", "Cancel"
+as "Council."), and invents text over silence or over the tail of Niva's own voice
+("Thank you."). Two measures, both in `stt.py`, tunables in `config.py`:
+
+- **Confirm listens know their question.** The host sends `lang` and `context` (the
+  text of the confirmation it just spoke) with `listen{confirm}`. The sidecar forces
+  that language, gives the question as `initial_prompt`, limits the answer to
+  `confirm_max_new_tokens` (12) and turns timestamps off. The prompt is the question,
+  never answer words ("Yes. No. Okay." turned an English tail into "Okay."). A listen
+  without them (or a command) detects the language as before. `context` is never logged.
+- **No-speech gate, every mode.** A segment with `no_speech_prob` above
+  `no_speech_prob_max` (0.5) is dropped; if nothing remains the transcript is empty
+  and the host reissues the confirm listen or shows the empty-transcript error. The
+  output length is bounded too (`command_*_new_tokens` by clip length).
+
+Offline check on the owner's recordings (`spikes/vad/audio` 11-13, 20; Whisper small,
+fp16): old settings "C" / "No" / "cancelar" / "Council."; new settings "Si." / "No." /
+"Cancelar" / "Cancel", and every 0.32 s tail empty.
+
+## Run it with the Niva host (task 3.4)
+
+The Rust host starts, feeds and supervises this process; there is nothing to launch by
+hand. It speaks the protocol of `protocol.py` over stdio, logs the sidecar's stderr with
+the prefix `[niva-voice:py]`, restarts a crash up to 3 times (the counter resets after 5
+stable minutes), restarts once with the next smaller Whisper model after `CUDA_OOM`
+(`small`, then `base`), and falls back to text mode when it gives up. The tray entry
+"Restart voice" resets all of that and starts again.
+
+Closing the sidecar's stdin ends it (checked through `uv`: 0.4 s); the host sends
+`shutdown`, closes stdin, waits 3 s and only then kills the whole process tree. Every
+sidecar also sits in a Windows job object that dies with the app, so it cannot outlive
+Niva and keep the microphone.
+
+How the host finds things (all optional in a dev checkout):
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `NIVA_VOICE` | `off` (also `0`, `false`, `no`) keeps Niva in text mode | on |
+| `NIVA_VOICE_DIR` | folder with `main.py` | `voice\` next to the app; in a debug build, this repository's `voice\` |
+| `NIVA_VOICE_PYTHON` | a Python executable, run as `python main.py ...` (for example `voice\.venv\Scripts\python.exe`, which avoids the `uv` launcher) | `uv run --offline --no-project python main.py ...` |
+| `NIVA_WAKE_MODEL_DIR` | openWakeWord `.onnx` folder | the package folder, which has none: set it |
+| `NIVA_PIPER_DIR` | Piper voices | none (no offline voice) |
+| `NIVA_WHISPER_MODEL` | first Whisper model of the ladder (name or path) | `small`, then `base` |
+| `NIVA_MIC_DEVICE` | microphone index or name (`--mic-device`; one value, so a name with spaces works) | the system default |
+| `NIVA_VOICE_ARGS` | extra options for `main.py`, split on spaces (`--no-edge`, `--allow-cpu`, `--verbose`) | none |
+
+Try Niva by voice (this opens the microphone and plays sound; `uv` must be on `PATH` and
+`voice\.venv` must exist, see Setup):
+
+```powershell
+cd D:\trabajo\ProyectoAsistente\app
+$env:NIVA_WAKE_MODEL_DIR = "$env:LOCALAPPDATA\uv\cache\environments-v2\spike-voice-32308f98e9d78df1\Lib\site-packages\openwakeword\resources\models"
+$env:NIVA_PIPER_DIR = "D:\trabajo\ProyectoAsistente\spikes\voice\models"
+npm run tauri dev
+```
+
+Wait for the tray tooltip to say "Niva: voice ready" (about 20 s for the models, and up to
+30 s more if Ollama is still warming up the LLM), then say "Hey Jarvis, open Spotify" or
+press Ctrl+Shift+Space.
+
 ## Try it with the real microphone
 
 This opens the microphone and plays sound. It acts as a tiny host (`--dev-host`): say

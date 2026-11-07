@@ -568,6 +568,7 @@ fn a_spoken_cancel_is_not_heard_yet_and_the_event_slice_3_will_send_cancels() {
         Event::Transcript {
             id: 1,
             text: "cancel".into(),
+            lang: None,
         },
     );
     let (after, _) = step(&s, Event::CountdownCancel { id: COUNTDOWN_ID });

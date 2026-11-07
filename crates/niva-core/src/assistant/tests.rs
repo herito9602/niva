@@ -309,6 +309,18 @@ impl Rig {
         }
     }
 
+    /// The user presses the shortcut and says `text`, which the recognizer
+    /// heard in `lang`.
+    fn speak(&mut self, text: &str, lang: Option<Lang>) {
+        self.send(Event::Shortcut);
+        let id = self.state.listen_id.expect("a listen is open");
+        self.send(Event::Transcript {
+            id,
+            text: text.into(),
+            lang,
+        });
+    }
+
     fn type_text(&mut self, text: &str) {
         self.send(Event::TextSubmitted { text: text.into() });
     }
@@ -334,6 +346,7 @@ impl Rig {
         self.send(Event::Transcript {
             id,
             text: text.into(),
+            lang: None,
         });
     }
 
@@ -530,6 +543,28 @@ fn a_spoken_yes_confirms_a_close() {
     );
 }
 
+/// The recognizer always names a language, so a real spoken answer carries one.
+#[test]
+fn a_spoken_yes_with_a_recognized_language_confirms_a_close() {
+    for lang in [Lang::Es, Lang::En] {
+        let mut r = Rig::new(vec![calls(vec![close("notepad")])], &PROCS);
+        r.type_text("close notepad");
+        let id = r.state.listen_id.expect("an open listen");
+        r.send(Event::Transcript {
+            id,
+            text: "sí".into(),
+            lang: Some(lang),
+        });
+        assert_eq!(r.phase(), Phase::Success, "{lang:?}");
+        assert_eq!(
+            r.pc.calls(),
+            vec![PcCall::CloseApp {
+                exe: "notepad.exe".into()
+            }]
+        );
+    }
+}
+
 #[test]
 fn an_unclear_spoken_answer_does_not_confirm_and_a_no_cancels() {
     let mut r = Rig::new(vec![calls(vec![close("notepad")])], &PROCS);
@@ -668,6 +703,7 @@ fn restart_and_shutdown_are_click_only() {
         r.send(Event::Transcript {
             id: 99,
             text: "yes".into(),
+            lang: None,
         });
         assert_eq!(r.phase(), Phase::ConfirmationNeeded);
         assert!(r.pc.calls().is_empty());
@@ -1248,6 +1284,43 @@ fn a_tie_without_a_pending_turn_uses_the_fixed_default_not_the_previous_language
     assert_eq!(r.assistant.lang(), replies::DEFAULT_LANG);
 }
 
+#[test]
+fn a_spanish_voice_command_with_no_spanish_word_is_answered_in_spanish() {
+    // No accent and no stopword: the text heuristic ties and would say English.
+    // The recognizer's language wins (design D1).
+    let mut r = Rig::new(vec![calls(vec![open("Spotify")])], &PROCS);
+    r.speak("siguiente cancion", Some(Lang::Es));
+    assert_eq!(r.assistant.lang(), Lang::Es);
+    assert_ne!(r.last(), "Opened Spotify.");
+}
+
+#[test]
+fn a_voice_command_the_text_heuristic_would_misread_follows_the_recognizer() {
+    let mut r = Rig::new(vec![calls(vec![open("Spotify")])], &PROCS);
+    r.speak("open Spotify ñandú", Some(Lang::En));
+    assert_eq!(r.assistant.lang(), Lang::En);
+    assert_eq!(r.last(), "Opened Spotify.");
+}
+
+#[test]
+fn a_voice_transcript_without_a_language_falls_back_to_the_text_heuristic() {
+    let mut r = Rig::new(vec![calls(vec![open("Spotify")])], &PROCS);
+    r.speak("abrí Spotify", None);
+    assert_eq!(r.assistant.lang(), Lang::Es);
+}
+
+#[test]
+fn typed_text_keeps_using_the_text_heuristic_and_the_default() {
+    let mut r = Rig::new(
+        vec![calls(vec![open("Spotify")]), calls(vec![open("Spotify")])],
+        &PROCS,
+    );
+    r.type_text("siguiente canción");
+    assert_eq!(r.assistant.lang(), Lang::Es);
+    r.type_text("Spotify");
+    assert_eq!(r.assistant.lang(), replies::DEFAULT_LANG);
+}
+
 // --- confirmation answers: the whole-utterance matcher is reused -----------------
 
 fn id() -> ConfirmationId {
@@ -1317,7 +1390,8 @@ fn only_clicks_and_the_open_listens_transcript_answer_a_confirmation() {
             &state,
             &Event::Transcript {
                 id: listen,
-                text: "yes".into()
+                text: "yes".into(),
+                lang: None
             }
         ),
         Some(ConfirmInput::Voice("yes".into()))
@@ -1328,7 +1402,8 @@ fn only_clicks_and_the_open_listens_transcript_answer_a_confirmation() {
             &state,
             &Event::Transcript {
                 id: listen + 50,
-                text: "yes".into()
+                text: "yes".into(),
+                lang: None
             }
         ),
         None
@@ -1346,7 +1421,8 @@ fn only_clicks_and_the_open_listens_transcript_answer_a_confirmation() {
             &click_only,
             &Event::Transcript {
                 id: listen,
-                text: "yes".into()
+                text: "yes".into(),
+                lang: None
             }
         ),
         None
@@ -1440,6 +1516,7 @@ fn user(text: &str) -> RequestInput {
     RequestInput::User {
         text: text.into(),
         slot: None,
+        lang: None,
     }
 }
 
@@ -2001,6 +2078,7 @@ fn user_input(text: &str) -> RequestInput {
     RequestInput::User {
         text: text.into(),
         slot: None,
+        lang: None,
     }
 }
 
@@ -2232,6 +2310,7 @@ fn a_new_request_drops_the_approval_of_an_unfinished_countdown() {
     let newer = RequestInput::User {
         text: "hello".into(),
         slot: None,
+        lang: None,
     };
     assert!(!r.assistant.start_request(req + 10, &newer).is_empty());
     assert!(r.assistant.finish_countdown(req).is_empty());
@@ -2540,7 +2619,7 @@ fn a_committed_risky_plan_is_stored_and_asks_for_a_confirmation() {
         request,
         label: RiskyLabel::Close,
     }]);
-    assistant.begin_user(1, "close spotify", None);
+    assistant.begin_user(1, "close spotify", None, None);
     let events = assistant.commit_plan(1, Lang::En, Vec::new(), risky);
     assert!(
         matches!(events.as_slice(), [Event::ToolCalls { .. }]),

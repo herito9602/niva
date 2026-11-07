@@ -11,6 +11,7 @@ fn user(text: &str, slot: Option<PendingSlot>) -> Effect {
         input: RequestInput::User {
             text: text.into(),
             slot,
+            lang: None,
         },
     }
 }
@@ -23,6 +24,7 @@ fn transcript(id: u64) -> Event {
     Event::Transcript {
         id,
         text: "open notepad".into(),
+        lang: None,
     }
 }
 
@@ -95,6 +97,7 @@ fn stale_ids_are_dropped_by_every_id_carrying_event_in_every_state() {
         Event::Transcript {
             id: stale,
             text: "yes".into(),
+            lang: None,
         },
         Event::NoSpeech { id: stale },
         Event::EmptyTranscript { id: stale },
@@ -330,4 +333,49 @@ fn text_in_an_alert_stops_chime_and_speech_then_thinks() {
             llm_timer(),
         ]
     );
+}
+
+#[test]
+fn the_language_of_a_spoken_command_travels_into_the_request() {
+    let (s, _) = reduce(
+        State::default(),
+        Event::VoiceReadinessChanged { ready: true },
+    );
+    let (s, _) = reduce(s, Event::Shortcut);
+    let id = s.listen_id.unwrap();
+    let (_, fx) = reduce(
+        s,
+        Event::Transcript {
+            id,
+            text: "siguiente".into(),
+            lang: Some(Lang::Es),
+        },
+    );
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::StartRequest {
+            input: RequestInput::User {
+                lang: Some(Lang::Es),
+                ..
+            },
+            ..
+        }
+    )));
+}
+
+#[test]
+fn typed_text_carries_no_language() {
+    let (_, fx) = reduce(
+        State::default(),
+        Event::TextSubmitted {
+            text: "siguiente".into(),
+        },
+    );
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::StartRequest {
+            input: RequestInput::User { lang: None, .. },
+            ..
+        }
+    )));
 }

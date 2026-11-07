@@ -527,6 +527,7 @@ fn sample(kind: EventKind, state: &State) -> Event {
         EventKind::Transcript => Event::Transcript {
             id: listen,
             text: "yes".into(),
+            lang: None,
         },
         EventKind::NoSpeech => Event::NoSpeech { id: listen },
         EventKind::EmptyTranscript => Event::EmptyTranscript { id: listen },

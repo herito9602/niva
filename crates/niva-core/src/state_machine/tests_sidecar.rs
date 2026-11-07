@@ -225,6 +225,7 @@ fn after_an_error_a_spoken_answer_is_ignored_for_good() {
             Event::Transcript {
                 id,
                 text: text.into(),
+                lang: None,
             },
         );
     }
@@ -451,6 +452,7 @@ fn an_error_for_a_listen_that_already_ended_is_dropped() {
         Event::Transcript {
             id: LISTEN_ID,
             text: "hi".into(),
+            lang: None,
         },
     );
     assert_ignored(thinking, err_for(CODE, LISTEN_ID));

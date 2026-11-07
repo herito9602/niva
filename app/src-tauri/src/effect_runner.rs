@@ -19,22 +19,31 @@
 //!   is no task, and no read, when no countdown runs.
 //! - `FinishCountdown{req}` goes to the [`Requests`] handler, nowhere else.
 //!
-//! Stubs until later slices (all logged): `Speak` has no TTS (the speech
-//! "ends" at once, see [`MediaMode`]), `Chime` plays no sound, `Listen`,
-//! `CancelListen`, `ForceEndOfSpeech` (slice 3) and `EnqueueReminder`,
-//! `DrainReminders` (slice 4) do nothing. `StartRequest`, `RunTool` and
-//! `CancelRequest` go to the [`Requests`] handler.
+//! Voice (task 3.4): `Listen`, `CancelListen` and `ForceEndOfSpeech` go to the
+//! [`SpeechEngine`] port, `Speak` and `StopSpeaking` to the [`Speaker`] port
+//! and `Chime` to the [`AudioCue`] port. While the speaker says it is not
+//! available (the sidecar is down, or voice is marked down), a `Speak` is
+//! skipped and reported done at once, and a `Chime` still plays: it does not
+//! need the sidecar. Without those ports (tests, `niva-eval`) the effects
+//! behave as the stubs did: `Speak` and `Chime` end at once, the listen
+//! effects do nothing.
+//!
+//! Stubs until slice 4 (logged): `EnqueueReminder` and `DrainReminders` do
+//! nothing. `StartRequest`, `RunTool` and `CancelRequest` go to the
+//! [`Requests`] handler. No log line carries a reply or a transcript.
 
 use std::{sync::Arc, time::Duration};
 
 use niva_core::activity::{InputWatch, POLL_INTERVAL, Watch};
-use niva_core::ports::{ActivityError, InputActivity};
+use niva_core::ports::{
+    ActivityError, AudioCue, InputActivity, Speaker, SpeechEngine, SpokenPrompt,
+};
 use niva_core::reading::{reading_time, settle_delay};
-use niva_core::state_machine::{Effect, Event, ReplyKind, Say, TimerKind};
+use niva_core::state_machine::{Effect, Event, ListenMode, ReplyKind, Say, TimerKind};
 use tokio::task::JoinHandle;
 
 use crate::requests::Requests;
-use crate::ui_adapter::template_caption;
+use crate::ui_adapter::{say_text, template_caption};
 
 /// Where timer fires and synthesized replies go: the dispatcher's queue.
 pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
@@ -113,6 +122,14 @@ pub struct EffectRunner {
     activity: Arc<dyn InputActivity>,
     /// The poller of the running countdown, if any.
     watcher: Option<JoinHandle<()>>,
+    /// The voice sidecar's listening half, its speaking half and the host's own
+    /// sounds. Each is optional: without one the effect is the old stub.
+    speech: Option<Arc<dyn SpeechEngine>>,
+    speaker: Option<Arc<dyn Speaker>>,
+    cue: Option<Arc<dyn AudioCue>>,
+    /// The confirmation question spoken last, for the confirm listen that
+    /// follows it. Any other `Speak`, and a command `Listen`, make it stale.
+    prompt: Option<SpokenPrompt>,
 }
 
 impl EffectRunner {
@@ -127,7 +144,24 @@ impl EffectRunner {
             reading: None,
             activity: Arc::new(NoActivity),
             watcher: None,
+            speech: None,
+            speaker: None,
+            cue: None,
+            prompt: None,
         }
+    }
+
+    /// Wires the voice sidecar: what it hears and what it says.
+    pub fn with_voice(mut self, speech: Arc<dyn SpeechEngine>, speaker: Arc<dyn Speaker>) -> Self {
+        self.speech = Some(speech);
+        self.speaker = Some(speaker);
+        self
+    }
+
+    /// Wires the host's own sounds (the alert chime).
+    pub fn with_cue(mut self, cue: Arc<dyn AudioCue>) -> Self {
+        self.cue = Some(cue);
+        self
     }
 
     /// Where the sleep countdown reads the user's input. Without one every
@@ -180,6 +214,38 @@ impl EffectRunner {
             Effect::StopSpeaking => {
                 self.disarm_watchdog(None);
                 self.reading = None;
+                if let Some(speaker) = &self.speaker {
+                    speaker.stop();
+                }
+                if let Some(cue) = &self.cue {
+                    cue.stop();
+                }
+            }
+            Effect::Listen { id, mode } => {
+                if self.mode == MediaMode::Instant
+                    && let Some(speech) = &self.speech
+                {
+                    // The question only helps a confirm answer; a command listen
+                    // also forgets it, so a later confirm never reuses an old one.
+                    if mode == ListenMode::Command {
+                        self.prompt = None;
+                    }
+                    if !speech.listen_with_prompt(id, mode, self.prompt.as_ref()) {
+                        eprintln!("[niva] listen {id}: the voice is not running");
+                    }
+                } else {
+                    eprintln!("[niva] listen {id} ({mode:?}): no voice attached");
+                }
+            }
+            Effect::CancelListen { id } => {
+                if let Some(speech) = &self.speech {
+                    speech.cancel_listen(id);
+                }
+            }
+            Effect::ForceEndOfSpeech { id } => {
+                if let Some(speech) = &self.speech {
+                    speech.force_end_of_speech(id);
+                }
             }
             Effect::StartRequest { req, input } => self.requests.start(req, input),
             Effect::RunTool { req } => self.requests.run_tools(req),
@@ -187,13 +253,7 @@ impl EffectRunner {
             Effect::WatchInput { id } => self.watch_input(id),
             Effect::StopWatchingInput => self.stop_watching(),
             Effect::FinishCountdown { req } => self.requests.finish_countdown(req),
-            Effect::Chime { id } => {
-                if self.mode == MediaMode::Instant {
-                    (self.sink)(Event::ChimeDone { id });
-                } else {
-                    eprintln!("[niva] chime {id} held (no ChimeDone)");
-                }
-            }
+            Effect::Chime { id } => self.chime(id),
             other => eprintln!("[niva] stub effect (later slice): {other:?}"),
         }
     }
@@ -291,8 +351,25 @@ impl EffectRunner {
         });
     }
 
+    /// The alert chime, played by the host (it works with the sidecar down).
+    /// `ChimeDone` follows when it ended or could not play.
+    fn chime(&mut self, id: u64) {
+        if self.mode != MediaMode::Instant {
+            eprintln!("[niva] chime {id} held (no ChimeDone)");
+            return;
+        }
+        match &self.cue {
+            Some(cue) => {
+                let sink = self.sink.clone();
+                cue.chime(Box::new(move || sink(Event::ChimeDone { id })));
+            }
+            None => (self.sink)(Event::ChimeDone { id }),
+        }
+    }
+
     fn speak(&mut self, id: u64, kind: ReplyKind, say: &Say) {
-        eprintln!("[niva] speak {id} (no TTS yet): {say:?}");
+        // Never the text itself: a reply can quote what the user asked.
+        eprintln!("[niva] speak {id} ({kind:?}, {} chars)", char_count(say));
         // Only final replies are held for reading; prompts wait for an answer.
         self.reading = (kind == ReplyKind::Final).then(|| ReadingHold {
             speak_id: id,
@@ -300,7 +377,24 @@ impl EffectRunner {
             reading: reading_time(char_count(say)),
         });
         self.arm_watchdog(id, speak_watchdog_duration(say));
-        if self.mode == MediaMode::Instant {
+        // Every speak replaces the remembered question, held or not, so a
+        // later confirm listen never carries an older confirmation's question.
+        let lang = self.requests.lang();
+        self.prompt = (kind == ReplyKind::ConfirmPrompt).then(|| SpokenPrompt {
+            lang,
+            text: say_text(say, lang),
+        });
+        if self.mode != MediaMode::Instant {
+            return; // the debug window holds the media: only the watchdog ends it
+        }
+        // With the sidecar down (or no speaker at all) the speech "ends" at
+        // once; the watchdog above still guards a sidecar that never answers.
+        let spoken = self
+            .speaker
+            .as_ref()
+            .filter(|speaker| speaker.is_available())
+            .is_some_and(|speaker| speaker.speak(id, &say_text(say, lang), lang));
+        if !spoken {
             (self.sink)(Event::SpeakDone { id });
             self.disarm_watchdog(Some(id));
         }
@@ -369,6 +463,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingRequests {
         calls: Mutex<Vec<String>>,
+        lang: Mutex<niva_core::replies::Lang>,
     }
 
     impl Requests for RecordingRequests {
@@ -389,7 +484,7 @@ mod tests {
         }
         fn observe(&self, _: &niva_core::state_machine::State, _: &Event) {}
         fn lang(&self) -> niva_core::replies::Lang {
-            niva_core::replies::Lang::default()
+            *self.lang.lock().unwrap()
         }
     }
 
@@ -1047,5 +1142,338 @@ mod tests {
         assert_eq!(*r.requests.calls.lock().unwrap(), vec!["finish 9"]);
         advance(ms(60_000)).await;
         assert!(drain(&mut r.rx).is_empty());
+    }
+
+    // --- voice (task 3.4): the ports ---------------------------------------
+
+    use niva_core::ports::{AudioCue, Speaker, SpeechEngine};
+    use niva_core::replies::Lang;
+
+    /// Records every call; `up` is what `is_available` answers.
+    #[derive(Default)]
+    struct FakeVoice {
+        calls: Mutex<Vec<String>>,
+        up: std::sync::atomic::AtomicBool,
+    }
+
+    impl FakeVoice {
+        fn up() -> Arc<FakeVoice> {
+            let voice = Arc::new(FakeVoice::default());
+            voice.up.store(true, std::sync::atomic::Ordering::SeqCst);
+            voice
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl SpeechEngine for FakeVoice {
+        fn listen(&self, id: u64, mode: ListenMode) -> bool {
+            self.listen_with_prompt(id, mode, None)
+        }
+        fn listen_with_prompt(
+            &self,
+            id: u64,
+            mode: ListenMode,
+            prompt: Option<&niva_core::ports::SpokenPrompt>,
+        ) -> bool {
+            let context = prompt.map_or(String::new(), |p| {
+                format!(" [{}] {}", p.lang.code(), p.text)
+            });
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("listen {id} {mode:?}{context}"));
+            true
+        }
+        fn cancel_listen(&self, id: u64) -> bool {
+            self.calls.lock().unwrap().push(format!("cancel {id}"));
+            true
+        }
+        fn force_end_of_speech(&self, id: u64) -> bool {
+            self.calls.lock().unwrap().push(format!("force_end {id}"));
+            true
+        }
+    }
+
+    impl Speaker for FakeVoice {
+        fn is_available(&self) -> bool {
+            self.up.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn speak(&self, id: u64, text: &str, lang: Lang) -> bool {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("speak {id} {} {text}", lang.code()));
+            true
+        }
+        fn stop(&self) -> bool {
+            self.calls.lock().unwrap().push("stop".into());
+            true
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeCue {
+        calls: Mutex<Vec<String>>,
+        done: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+    }
+
+    impl AudioCue for FakeCue {
+        fn chime(&self, done: Box<dyn FnOnce() + Send>) {
+            self.calls.lock().unwrap().push("chime".into());
+            self.done.lock().unwrap().push(done);
+        }
+        fn listening_cue(&self) {
+            self.calls.lock().unwrap().push("listening".into());
+        }
+        fn stop(&self) {
+            self.calls.lock().unwrap().push("cue stop".into());
+        }
+    }
+
+    fn voice_rig(voice: &Arc<FakeVoice>) -> Rig {
+        let mut r = rig();
+        r.runner = EffectRunner::new(r.runner.sink.clone(), r.host.clone(), r.requests.clone())
+            .with_voice(voice.clone(), voice.clone());
+        r
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_listen_effects_go_to_the_speech_port() {
+        let voice = FakeVoice::up();
+        let mut r = voice_rig(&voice);
+        r.runner.run(vec![
+            Effect::Listen {
+                id: 3,
+                mode: ListenMode::Command,
+            },
+            Effect::ForceEndOfSpeech { id: 3 },
+            Effect::CancelListen { id: 3 },
+            Effect::Listen {
+                id: 4,
+                mode: ListenMode::Confirm,
+            },
+        ]);
+        assert_eq!(
+            voice.calls(),
+            vec![
+                "listen 3 Command",
+                "force_end 3",
+                "cancel 3",
+                "listen 4 Confirm"
+            ]
+        );
+        assert!(drain(&mut r.rx).is_empty());
+    }
+
+    fn confirm_prompt(id: u64, text: &str) -> Effect {
+        Effect::Speak {
+            id,
+            kind: ReplyKind::ConfirmPrompt,
+            say: Say::Text(text.into()),
+        }
+    }
+
+    fn listen(id: u64, mode: ListenMode) -> Effect {
+        Effect::Listen { id, mode }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_confirm_listen_carries_the_prompt_just_spoken_and_a_command_listen_does_not() {
+        let voice = FakeVoice::up();
+        let mut r = voice_rig(&voice);
+        *r.requests.lang.lock().unwrap() = Lang::Es;
+        r.runner.run(vec![
+            confirm_prompt(1, "¿Cierro la calculadora?"),
+            listen(2, ListenMode::Confirm),
+            listen(3, ListenMode::Confirm), // reissued after an unclear answer
+            listen(4, ListenMode::Command),
+        ]);
+        assert_eq!(
+            voice.calls(),
+            vec![
+                "speak 1 es ¿Cierro la calculadora?",
+                "listen 2 Confirm [es] ¿Cierro la calculadora?",
+                "listen 3 Confirm [es] ¿Cierro la calculadora?",
+                "listen 4 Command"
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reply_spoken_in_held_mode_still_makes_the_question_stale() {
+        let voice = FakeVoice::up();
+        let mut r = voice_rig(&voice);
+        r.runner.run(vec![confirm_prompt(1, "Close it?")]);
+        r.runner.set_media_mode(MediaMode::Held);
+        r.runner.run(vec![speak(2, Say::Text("Done".into()))]);
+        r.runner.set_media_mode(MediaMode::Instant);
+        r.runner.run(vec![listen(3, ListenMode::Confirm)]);
+        let listens: Vec<String> = voice
+            .calls()
+            .into_iter()
+            .filter(|c| c.starts_with("listen"))
+            .collect();
+        assert_eq!(listens, vec!["listen 3 Confirm"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_missing_or_stale_prompt_means_a_confirm_listen_without_one() {
+        let voice = FakeVoice::up();
+        let mut r = voice_rig(&voice);
+        // No prompt was spoken at all.
+        r.runner.run(vec![listen(1, ListenMode::Confirm)]);
+        // A prompt, then another reply, then a confirm listen: the prompt is stale.
+        r.runner.run(vec![
+            confirm_prompt(2, "Close it?"),
+            speak(3, Say::Text("Done".into())),
+            listen(4, ListenMode::Confirm),
+        ]);
+        // A prompt, a command turn, then a confirm listen: stale as well.
+        r.runner.run(vec![
+            confirm_prompt(5, "Close it?"),
+            listen(6, ListenMode::Command),
+            listen(7, ListenMode::Confirm),
+        ]);
+        let listens: Vec<String> = voice
+            .calls()
+            .into_iter()
+            .filter(|c| c.starts_with("listen"))
+            .collect();
+        assert_eq!(
+            listens,
+            vec![
+                "listen 1 Confirm",
+                "listen 4 Confirm",
+                "listen 6 Command",
+                "listen 7 Confirm"
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_speak_goes_to_the_sidecar_and_waits_for_its_answer() {
+        let voice = FakeVoice::up();
+        let mut r = voice_rig(&voice);
+        r.runner.run(vec![speak(5, Say::Text("Done".into()))]);
+        assert_eq!(voice.calls(), vec!["speak 5 en Done"]);
+        // Nothing is synthesized: the sidecar's `speak_done` ends it.
+        assert!(drain(&mut r.rx).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_template_is_spoken_in_the_language_of_the_request() {
+        let voice = FakeVoice::up();
+        let mut r = voice_rig(&voice);
+        *r.requests.lang.lock().unwrap() = Lang::Es;
+        r.runner
+            .run(vec![speak(5, Say::Template(Template::ActionDone))]);
+        let calls = voice.calls();
+        assert!(calls[0].starts_with("speak 5 es "), "{calls:?}");
+        assert!(calls[0].len() > "speak 5 es ".len());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sidecar_that_never_answers_a_speak_is_ended_by_the_watchdog() {
+        let voice = FakeVoice::up();
+        let mut r = voice_rig(&voice);
+        r.runner.run(vec![speak(5, Say::Text("Done".into()))]);
+        advance(ms(4_999)).await;
+        assert!(drain(&mut r.rx).is_empty());
+        advance(ms(1)).await;
+        assert_eq!(
+            drain(&mut r.rx),
+            vec![Event::Watchdog {
+                kind: TimerKind::SpeakWatchdog,
+                token: 5
+            }]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_sidecar_answering_disarms_the_watchdog() {
+        let voice = FakeVoice::up();
+        let mut r = voice_rig(&voice);
+        r.runner.run(vec![speak(5, Say::Text("Done".into()))]);
+        r.runner.observe(&Event::SpeakDone { id: 5 });
+        advance(ms(60_000)).await;
+        assert!(drain(&mut r.rx).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_speak_while_voice_is_down_is_skipped_and_done_at_once() {
+        let voice = Arc::new(FakeVoice::default());
+        let mut r = voice_rig(&voice);
+        r.runner.run(vec![speak(5, Say::Text("Done".into()))]);
+        assert!(voice.calls().is_empty());
+        assert_eq!(drain(&mut r.rx), vec![Event::SpeakDone { id: 5 }]);
+        advance(ms(60_000)).await;
+        assert!(drain(&mut r.rx).is_empty(), "the watchdog was left armed");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn held_media_sends_nothing_to_the_sidecar() {
+        let voice = FakeVoice::up();
+        let mut r = voice_rig(&voice);
+        r.runner.set_media_mode(MediaMode::Held);
+        r.runner.run(vec![
+            speak(5, Say::Text("Done".into())),
+            Effect::Listen {
+                id: 6,
+                mode: ListenMode::Command,
+            },
+        ]);
+        assert!(voice.calls().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stopping_speech_stops_the_sidecar_and_the_chime() {
+        let voice = FakeVoice::up();
+        let cue = Arc::new(FakeCue::default());
+        let mut r = voice_rig(&voice);
+        r.runner = EffectRunner::new(r.runner.sink.clone(), r.host.clone(), r.requests.clone())
+            .with_voice(voice.clone(), voice.clone())
+            .with_cue(cue.clone());
+        r.runner.run(vec![Effect::StopSpeaking]);
+        assert_eq!(voice.calls(), vec!["stop"]);
+        assert_eq!(*cue.calls.lock().unwrap(), vec!["cue stop"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_chime_plays_even_with_voice_down_and_reports_done_when_it_ends() {
+        let voice = Arc::new(FakeVoice::default());
+        let cue = Arc::new(FakeCue::default());
+        let mut r = voice_rig(&voice);
+        r.runner = EffectRunner::new(r.runner.sink.clone(), r.host.clone(), r.requests.clone())
+            .with_voice(voice.clone(), voice.clone())
+            .with_cue(cue.clone());
+        r.runner.run(vec![Effect::Chime { id: 9 }]);
+        assert_eq!(*cue.calls.lock().unwrap(), vec!["chime"]);
+        assert!(
+            drain(&mut r.rx).is_empty(),
+            "ChimeDone before the chime ended"
+        );
+        let done = cue.done.lock().unwrap().pop().unwrap();
+        done();
+        assert_eq!(drain(&mut r.rx), vec![Event::ChimeDone { id: 9 }]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_runner_without_the_voice_ports_keeps_the_old_behavior() {
+        let mut r = rig();
+        r.runner.run(vec![
+            Effect::Listen {
+                id: 1,
+                mode: ListenMode::Command,
+            },
+            Effect::Chime { id: 2 },
+            speak(3, Say::Text("x".into())),
+        ]);
+        assert_eq!(
+            drain(&mut r.rx),
+            vec![Event::ChimeDone { id: 2 }, Event::SpeakDone { id: 3 }]
+        );
     }
 }

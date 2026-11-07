@@ -71,13 +71,18 @@ class FakeStt:
     def __init__(self, text: str = "open spotify", lang: str = "en", lang_prob: float = 0.99) -> None:
         self.text, self.lang, self.lang_prob = text, lang, lang_prob
         self.heard: list[np.ndarray] = []
+        self.dropped = 0
+        self.calls: list[dict] = []  # the mode, lang and context of each transcription
         self.fail: Exception | None = None
 
-    def transcribe(self, audio: np.ndarray) -> SttResult:
+    def transcribe(
+        self, audio: np.ndarray, *, mode: str = "command", lang: str | None = None, context: str | None = None
+    ) -> SttResult:
         self.heard.append(audio)
+        self.calls.append({"mode": mode, "lang": lang, "context": context})
         if self.fail:
             raise self.fail
-        return SttResult(self.text, self.lang, self.lang_prob)
+        return SttResult(self.text, self.lang, self.lang_prob, dropped_segments=self.dropped)
 
 
 class FakeSpeaker:

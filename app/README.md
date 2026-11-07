@@ -13,7 +13,11 @@ npm run tauri dev
 
 Tests: `npm test` (vitest) here, `cargo test` at the workspace root.
 
+Voice: the app starts the speech sidecar of `../voice` by itself (debug and release alike).
+Without it, or with `NIVA_VOICE=off`, Niva works in text mode. Setup, variables and the
+command to try it by voice are in `../voice/README.md` ("Run it with the Niva host").
+
 ## Use
 
-- Ctrl+Shift+Space toggles the island (starts hidden). Tray icon: "Show Niva" / "Quit"; double-click shows it.
+- Ctrl+Shift+Space toggles the island (starts hidden). Tray icon: "Show / hide island", "Type a command", "Restart voice", "Quit"; double-click shows it. The tooltip says what the voice is doing.
 - Click the pill to toggle the "thinking" state.

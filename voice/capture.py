@@ -50,7 +50,9 @@ Emit = Callable[[dict[str, Any]], None]
 
 
 class Transcriber(Protocol):
-    def transcribe(self, audio: np.ndarray) -> SttResult: ...
+    def transcribe(
+        self, audio: np.ndarray, *, mode: str = "command", lang: str | None = None, context: str | None = None
+    ) -> SttResult: ...
 
 
 class SpeakerPort(Protocol):
@@ -78,6 +80,8 @@ class _Listen:
     id: int
     mode: str
     lead: deque[np.ndarray]
+    lang: str | None = None  # confirm only: the language of the question the host spoke
+    context: str | None = None  # confirm only: its text. Never logged.
     utterance: list[np.ndarray] = field(default_factory=list)
     in_speech: bool = False
     waited_frames: int = 0  # live frames since the listen opened with no live speech yet
@@ -268,6 +272,8 @@ class Engine:
             id=command.id,
             mode=command.mode,
             lead=deque(maxlen=t.pre_speech_frames + t.onset_frames),
+            lang=command.lang if command.mode == "confirm" else None,
+            context=command.context if command.mode == "confirm" else None,
         )
         newest = self._frame_ms
         for index, (old, stamp) in enumerate(history):
@@ -356,13 +362,15 @@ class Engine:
 
         audio = np.concatenate(frames).astype(np.float32) / 32768.0
         try:
-            result = self._stt.transcribe(audio)
+            result = self._stt.transcribe(audio, mode=listen.mode, lang=listen.lang, context=listen.context)
         except SttError as exc:
             raise SidecarFatal(exc.code, exc.msg, listen.id) from exc
         except Exception as exc:  # noqa: BLE001 - classify whatever the runtime raised
             raise SidecarFatal(classify_runtime_error(exc), f"speech-to-text failed: {exc}", listen.id) from exc
 
         text = result.text.strip()
+        if result.dropped_segments:
+            self._discards.record(Discard.HALLUCINATION_GATE)
         if not text:
             self._discards.record(Discard.EMPTY_TRANSCRIPT)
         self._emit(protocol.transcript(listen.id, text, result.lang, result.lang_prob, end_ms))

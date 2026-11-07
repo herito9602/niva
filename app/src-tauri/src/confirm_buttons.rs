@@ -512,6 +512,7 @@ mod tests {
             Event::Transcript {
                 id,
                 text: "close spotify".into(),
+                lang: None,
             },
         )
         .0;

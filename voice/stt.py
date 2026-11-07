@@ -2,6 +2,17 @@
 
 Setup follows spike S1 (spikes/voice/S1_RESULTS.md): ``small``, float16, beam 1,
 no VAD filter, detect Spanish vs English first, then transcribe in the winner.
+
+Two things on top of S1 (live run and offline repro of 2026-11-07, voice/README.md):
+
+* A confirmation answer is one word, which detection and Whisper both get wrong
+  ("Si" detected as English and written "C"). The host says which language it
+  just spoke and what it asked, so a confirm listen forces that language and gives
+  the question as ``initial_prompt``. The prompt is the QUESTION and never a list
+  of answers: priming with "Yes. No. Okay." turned silence into "Okay.".
+* A segment whose ``no_speech_prob`` is above ``Tunables.no_speech_prob_max`` is a
+  hallucination ("Thank you." over the tail of Niva's own voice) and is dropped;
+  what is left may be nothing, which the host treats as an empty transcript.
 Compute types are probed and fall back truthfully: a model that loaded in a
 different type than float16 says so in the log, and a GPU that cannot be used
 is an error, not a silent CPU run.
@@ -19,6 +30,7 @@ from typing import Any
 
 import numpy as np
 
+from config import SAMPLE_RATE, Tunables
 from protocol import ErrorCode
 
 log = logging.getLogger("niva.voice.stt")
@@ -43,9 +55,10 @@ class SttError(Exception):
 class SttResult:
     text: str
     lang: str  # "es" or "en", the higher of the two (never another language)
-    lang_prob: float  # combined es + en probability
+    lang_prob: float  # combined es + en probability; 1.0 when the host named the language
     p_es: float = 0.0
     p_en: float = 0.0
+    dropped_segments: int = 0  # segments the no-speech gate removed
 
 
 def is_oom(exc: BaseException) -> bool:
@@ -124,10 +137,11 @@ def detect_es_en(model: Any, audio: np.ndarray) -> tuple[str, float, float]:
 
 
 class WhisperTranscriber:
-    def __init__(self, model: Any, compute_type: str, device: str):
+    def __init__(self, model: Any, compute_type: str, device: str, tunables: Tunables | None = None):
         self._model = model
         self.compute_type = compute_type
         self.device = device
+        self._t = tunables or Tunables()
 
     @classmethod
     def load(
@@ -136,6 +150,7 @@ class WhisperTranscriber:
         *,
         allow_cpu: bool = False,
         local_files_only: bool = True,
+        tunables: Tunables | None = None,
     ) -> WhisperTranscriber:
         """Load Whisper. Never downloads unless ``local_files_only`` is False."""
         add_nvidia_dll_dirs()
@@ -167,7 +182,7 @@ class WhisperTranscriber:
 
         model, compute_type = load_model(make, supported, device)
         log.info("whisper %s on %s (%s)", name_or_path, device, compute_type)
-        transcriber = cls(model, compute_type, device)
+        transcriber = cls(model, compute_type, device, tunables)
         transcriber.warm_up()
         return transcriber
 
@@ -182,15 +197,55 @@ class WhisperTranscriber:
                 raise SttError(ErrorCode.CUDA_OOM, f"out of GPU memory warming up Whisper: {exc}") from exc
             raise SttError(ErrorCode.MODEL_LOAD, f"Whisper warm-up failed: {exc}") from exc
 
-    def transcribe(self, audio: np.ndarray) -> SttResult:
-        lang, p_es, p_en = detect_es_en(self._model, audio)
-        segments, _info = self._model.transcribe(
-            audio,
-            language=lang,
-            beam_size=1,
-            vad_filter=False,
-            condition_on_previous_text=False,
-            temperature=0.0,
+    def _max_new_tokens(self, mode: str, samples: int) -> int:
+        t = self._t
+        if mode == "confirm":
+            return t.confirm_max_new_tokens
+        seconds = samples / SAMPLE_RATE
+        wanted = int(seconds * t.command_tokens_per_s) + 1
+        return max(t.command_min_new_tokens, min(t.command_max_new_tokens, wanted))
+
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        *,
+        mode: str = "command",
+        lang: str | None = None,
+        context: str | None = None,
+    ) -> SttResult:
+        """``lang`` and ``context`` only count in confirm mode (see the module doc)."""
+        confirm = mode == "confirm"
+        forced = lang if confirm and lang in ("es", "en") else None
+        if forced is not None:
+            chosen, p_es, p_en = forced, float(forced == "es"), float(forced == "en")
+        else:
+            chosen, p_es, p_en = detect_es_en(self._model, audio)
+        options: dict[str, Any] = {
+            "language": chosen,
+            "beam_size": 1,
+            "vad_filter": False,
+            "condition_on_previous_text": False,
+            "temperature": 0.0,
+            "max_new_tokens": self._max_new_tokens(mode, len(audio)),
+        }
+        if confirm:
+            options["without_timestamps"] = True
+            if forced is not None and context:
+                options["initial_prompt"] = context
+        segments, _info = self._model.transcribe(audio, **options)
+        kept: list[str] = []
+        dropped = 0
+        for segment in segments:
+            if getattr(segment, "no_speech_prob", 0.0) > self._t.no_speech_prob_max:
+                dropped += 1
+            else:
+                kept.append(segment.text)
+        text = "".join(kept).strip()
+        return SttResult(
+            text=text,
+            lang=chosen,
+            lang_prob=1.0 if forced is not None else p_es + p_en,
+            p_es=p_es,
+            p_en=p_en,
+            dropped_segments=dropped,
         )
-        text = "".join(segment.text for segment in segments).strip()
-        return SttResult(text=text, lang=lang, lang_prob=p_es + p_en, p_es=p_es, p_en=p_en)
