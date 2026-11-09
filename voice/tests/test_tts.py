@@ -19,6 +19,8 @@ from tts import (
     is_silent,
     threaded_chunks,
 )
+from tts import _Run
+from voice_fx import RobotVoice, float_to_pcm16, pcm16_to_float
 
 SAMPLE_MP3 = Path(__file__).resolve().parents[2] / "spikes" / "voice" / "s1_audio" / "en00.mp3"
 
@@ -128,6 +130,7 @@ def test_one_voice_per_language():
             list(engine.chunks("hola", lang, threading.Event()))
     assert asked == [EDGE_VOICES["es"], EDGE_VOICES["en"]]
     assert EDGE_VOICES["es"] != EDGE_VOICES["en"]
+    assert EDGE_VOICES == {"es": "es-US-PalomaNeural", "en": "en-US-AriaNeural"}
 
 
 # -------------------------------------------------------------------- speaker
@@ -155,10 +158,12 @@ class FakeOutput:
         self.timeline, self.sample_rate, self.fail = timeline, rate, fail_on_write
         self.aborted = False
         self.closed = False
+        self.written = []
 
     def write(self, pcm):
         if self.fail:
             raise OutputError("device went away")
+        self.written.append(pcm)
         self.timeline.log.append(("write", is_silent(pcm, 24)))
 
     def abort(self):
@@ -187,7 +192,10 @@ class FakeEngine:
             raise self._error_after
 
 
-def build(engines, fail_on_write=False):
+PLAIN = Tunables(robot_voice=False)  # the plumbing tests care about order and ids, not about the effect
+
+
+def build(engines, fail_on_write=False, tunables=PLAIN):
     timeline = Timeline()
     ended = []
     outputs = []
@@ -197,7 +205,7 @@ def build(engines, fail_on_write=False):
         outputs.append(out)
         return out
 
-    speaker = Speaker(engines, make_output, timeline.emit, ended.append, Tunables())
+    speaker = Speaker(engines, make_output, timeline.emit, ended.append, tunables)
     return speaker, timeline, ended, outputs
 
 
@@ -371,7 +379,7 @@ def test_stop_while_the_output_is_opening_writes_and_announces_nothing():
         outputs.append(out)
         return out
 
-    speaker = Speaker([FakeEngine("edge", [AUDIBLE, AUDIBLE])], make_output, tl.emit, ended.append, Tunables())
+    speaker = Speaker([FakeEngine("edge", [AUDIBLE, AUDIBLE])], make_output, tl.emit, ended.append, PLAIN)
     speaker.speak(1, "Hello.", "en")
     time.sleep(0.05)
     speaker.stop()
@@ -381,3 +389,176 @@ def test_stop_while_the_output_is_opening_writes_and_announces_nothing():
     assert tl.count("speak_started") == 0 and tl.count("speak_done") == 0 and tl.count("error") == 0
     assert outputs[0].closed
     assert ended == [1]
+
+
+# ---------------------------------------------------------------- robot voice
+
+
+def voiced(seconds=0.5, rate=24_000, chunk=480):
+    """A vowel-like buzz, cut into engine-sized chunks."""
+    t = np.arange(int(seconds * rate)) / rate
+    wave = 0.4 * np.sin(2 * np.pi * 180 * t) + 0.2 * np.sin(2 * np.pi * 540 * t)
+    pcm = (wave * 32767).astype(np.int16)
+    return [PcmChunk(pcm[i : i + chunk].tobytes(), rate) for i in range(0, len(pcm), chunk)]
+
+
+def written_samples(outputs):
+    return np.frombuffer(b"".join(b"".join(out.written) for out in outputs), dtype=np.int16)
+
+
+def robot_reference(chunks):
+    """What the effect alone makes of these chunks: the exact samples expected on the device."""
+    fx = RobotVoice(chunks[0].sample_rate)
+    parts = [float_to_pcm16(fx.process(pcm16_to_float(c.data))) for c in chunks]
+    parts.append(float_to_pcm16(fx.flush()))
+    return np.frombuffer(b"".join(parts), dtype=np.int16)
+
+
+def test_robot_voice_changes_what_reaches_the_device_and_still_announces_the_speech():
+    chunks = voiced()
+    speaker, tl, ended, outputs = build([FakeEngine("edge", chunks)], tunables=Tunables())
+    run_speak(speaker)
+    dry = np.frombuffer(b"".join(c.data for c in chunks), dtype=np.int16)
+    played = written_samples(outputs)
+    assert abs(len(played) - len(dry) / 1.2) <= 2  # pitched up: 20 % shorter, tail flushed
+    assert np.array_equal(played, robot_reference(chunks))  # exactly the effect's output...
+    n = min(len(played), len(dry))
+    assert np.abs(played[:n].astype(int) - dry[:n].astype(int)).mean() > 1000  # ...which is not the dry voice
+    assert tl.count("speak_started") == 1 and tl.count("speak_done") == 1 and tl.count("error") == 0
+    assert ended == [7]
+
+
+def test_robot_voice_off_plays_the_engine_audio_unchanged():
+    chunks = voiced()
+    speaker, tl, _, outputs = build([FakeEngine("edge", chunks)], tunables=Tunables(robot_voice=False))
+    run_speak(speaker)
+    assert b"".join(b"".join(out.written) for out in outputs) == b"".join(c.data for c in chunks)
+
+
+def test_robot_voice_is_not_announced_before_audible_samples_reach_the_device():
+    speaker, tl, _, _ = build([FakeEngine("edge", voiced(0.3))], tunables=Tunables())
+    run_speak(speaker)
+    kinds = [entry[0:2] for entry in tl.log]
+    first_audible_write = kinds.index(("write", False))
+    assert kinds.index(("event", "speak_started")) == first_audible_write + 1
+
+
+def test_robot_voice_effect_state_does_not_leak_between_utterances():
+    chunks = voiced(0.3)
+    speaker, _, _, outputs = build([FakeEngine("edge", chunks)], tunables=Tunables())
+    run_speak(speaker, speak_id=1)
+    run_speak(speaker, speak_id=2)  # the same Speaker, a second utterance
+    fresh, _, _, fresh_outputs = build([FakeEngine("edge", chunks)], tunables=Tunables())
+    run_speak(fresh)
+    assert len(outputs) == 2
+    assert b"".join(outputs[1].written) == b"".join(fresh_outputs[0].written)
+    assert b"".join(outputs[0].written) == b"".join(outputs[1].written)
+
+
+def test_robot_voice_does_not_carry_a_failed_engines_state_into_the_fallback():
+    """Edge feeds the effect some (still inaudible) audio and then dies; Piper must sound
+    exactly as if it had run alone, not continue the dead engine's signal."""
+    partial = voiced(0.02)  # one chunk: inside the effect's start-up latency, nothing audible yet
+    piper_chunks = voiced(0.3)
+    edge = FakeEngine("edge", partial, error_after=ConnectionError("dropped"))
+    piper = FakeEngine("piper", piper_chunks)
+    speaker, tl, _, outputs = build([edge, piper], tunables=Tunables())
+    run_speak(speaker)
+    assert len(outputs) == 1 and edge.calls and piper.calls  # edge wrote nothing; piper took over
+    assert np.array_equal(written_samples(outputs), robot_reference(piper_chunks))
+    assert tl.count("speak_started") == 1 and tl.count("speak_done") == 1 and tl.count("error") == 0
+
+
+def test_robot_voice_applies_to_the_piper_fallback_too():
+    edge = FakeEngine("edge", error=ConnectionError("offline"))
+    piper = FakeEngine("piper", voiced(0.3, rate=22_050))
+    speaker, tl, _, outputs = build([edge, piper], tunables=Tunables())
+    run_speak(speaker, lang="es")
+    played = written_samples(outputs)
+    assert outputs[0].sample_rate == 22_050
+    assert np.array_equal(played, robot_reference(piper._chunks)) and tl.count("speak_done") == 1
+
+
+def test_robot_voice_stop_discards_the_pending_tail():
+    """The effect holds a tail back; a stop must drop it instead of writing it late."""
+    gate = threading.Event()
+    engine = FakeEngine("edge", voiced(0.2, chunk=4800), gate=gate)  # one chunk, then blocked
+    speaker, tl, ended, outputs = build([engine], tunables=Tunables())
+    speaker.speak(3, "Hello.", "en")
+    deadline = time.monotonic() + 2
+    while tl.count("speak_started") == 0 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert tl.count("speak_started") == 1
+    speaker.stop()
+    writes_at_stop = len(outputs[0].written)
+    gate.set()  # the engine now ends: the tail would be flushed here
+    speaker.join(3)
+    assert len(outputs[0].written) == writes_at_stop  # nothing written after the stop
+    assert tl.count("speak_done") == 0 and tl.count("error") == 0 and ended == [3]
+
+
+def test_finishing_the_effect_of_a_stopped_utterance_writes_nothing():
+    speaker, tl, _, outputs = build([FakeEngine("edge", [])], tunables=Tunables())
+    run = _Run(tl.emit)
+    run.fx = RobotVoice(24_000)
+    run.fx.process(pcm16_to_float(voiced(0.3, chunk=4800)[0].data))  # leaves a tail inside
+    run.cancel.set()
+    assert speaker._finish_effect(run) == b"" and outputs == [] and run.fx is None
+
+
+def test_a_device_failure_while_flushing_after_a_mid_utterance_engine_death_is_reported_as_such():
+    messages = []
+    tl = Timeline()
+    outputs = []
+
+    class FailsOnSecondWrite(FakeOutput):
+        def write(self, pcm):
+            if self.written:
+                raise OutputError("device went away")
+            super().write(pcm)
+
+    def make_output(rate):
+        outputs.append(FailsOnSecondWrite(tl, rate))
+        return outputs[-1]
+
+    edge = FakeEngine("edge", voiced(0.2, chunk=4800), error_after=ConnectionError("dropped"))
+    ended = []
+    speaker = Speaker([edge], make_output, lambda m: (messages.append(m), tl.emit(m)), ended.append, Tunables())
+    run_speak(speaker, speak_id=9)
+    errors = [m for m in messages if m["type"] == "error"]
+    assert len(errors) == 1
+    assert errors[0]["code"] == "TTS_FAILED" and errors[0]["id"] == 9 and errors[0]["msg"] == "device went away"
+    assert tl.count("speak_done") == 0 and ended == [9]
+
+
+def test_a_sample_rate_change_mid_stream_plays_both_rates_and_flushes_the_old_tail():
+    first, second = voiced(0.2, rate=24_000), voiced(0.2, rate=22_050)
+    speaker, tl, ended, outputs = build([FakeEngine("edge", first + second)], tunables=Tunables())
+    run_speak(speaker)
+    assert [o.sample_rate for o in outputs] == [24_000, 22_050]
+    assert np.array_equal(np.frombuffer(b"".join(outputs[0].written), np.int16), robot_reference(first))
+    assert np.array_equal(np.frombuffer(b"".join(outputs[1].written), np.int16), robot_reference(second))
+    assert tl.count("speak_started") == 1 and tl.count("speak_done") == 1 and tl.count("error") == 0
+    assert ended == [7]
+
+
+def test_the_flushed_old_rate_tail_counts_as_heard_audio():
+    """Only that tail is audible: the new rate carries silence, so `speak_started` hinges on it."""
+    short = voiced(0.02)  # inside the start-up latency: nothing is written until the flush
+    silence = [PcmChunk(bytes(960), 22_050)]
+    speaker, tl, _, outputs = build([FakeEngine("edge", short + silence)], tunables=Tunables())
+    run_speak(speaker)
+    assert outputs[0].sample_rate == 24_000 and outputs[0].written  # the old tail did reach the device
+    assert tl.count("speak_started") == 1 and tl.count("speak_done") == 1 and tl.count("error") == 0
+
+
+def test_odd_sized_chunks_do_not_crash_the_effect_and_play_the_same_samples():
+    chunks = voiced(0.3)
+    raw = b"".join(c.data for c in chunks)
+    odd = [PcmChunk(raw[i : i + 481], 24_000) for i in range(0, len(raw), 481)]  # 481 bytes: splits samples
+    speaker, tl, _, outputs = build([FakeEngine("edge", odd)], tunables=Tunables())
+    run_speak(speaker)
+    assert tl.count("error") == 0 and tl.count("speak_started") == 1 and tl.count("speak_done") == 1
+    played, reference = written_samples(outputs), robot_reference(chunks)
+    assert played.shape == reference.shape
+    assert np.abs(played.astype(int) - reference.astype(int)).max() <= 2  # chunking noise only

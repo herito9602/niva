@@ -77,6 +77,10 @@ class Tunables:
     command_tokens_per_s: float = 10.0
     command_min_new_tokens: int = 24
     command_max_new_tokens: int = 224
+    # Niva's voice is a cute little robot (owner's choice, 2026-11-09): every
+    # synthesized reply goes through the effect in voice_fx.py. False speaks the
+    # plain voices (`--no-robot-voice`).
+    robot_voice: bool = True
 
     @property
     def pre_speech_frames(self) -> int:

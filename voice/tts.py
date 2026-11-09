@@ -27,10 +27,11 @@ import protocol
 from audio_io import AudioOutput, OutputError
 from config import Tunables
 from protocol import ErrorCode
+from voice_fx import RobotVoice, float_to_pcm16, pcm16_to_float
 
 log = logging.getLogger("niva.voice.tts")
 
-EDGE_VOICES = {"es": "es-AR-ElenaNeural", "en": "en-US-AriaNeural"}
+EDGE_VOICES = {"es": "es-US-PalomaNeural", "en": "en-US-AriaNeural"}
 PIPER_VOICE_FILES = {"es": "es_AR-daniela-high.onnx", "en": "en_US-lessac-medium.onnx"}
 EDGE_SAMPLE_RATE = 24_000
 
@@ -285,6 +286,8 @@ class _Run:
     def __init__(self, emit: Callable[[dict[str, Any]], None]) -> None:
         self.cancel = threading.Event()
         self.output: AudioOutput | None = None
+        self.fx: RobotVoice | None = None  # robot effect state of the current engine's audio
+        self.odd = b""  # a lone trailing byte of an odd-sized chunk, completed by the next one
         self.lock = threading.Lock()
         self._emit = emit
 
@@ -385,15 +388,23 @@ class Speaker:
             return False
         started = False
         failures: list[str] = []
+
+        def heard(pcm: bytes) -> None:
+            """`speak_started` goes out only once audible samples really reached the device."""
+            nonlocal started
+            if not started and pcm and not is_silent(pcm, self._t.silent_peak):
+                started = True
+                run.say(protocol.speak_started(speak_id))
+
         for engine in self._engines:
+            run.fx, run.odd = None, b""  # a new engine is a new signal: no effect state carries over
             try:
                 for chunk in engine.chunks(spoken, lang, cancel):
                     if cancel.is_set():
                         return False
-                    self._write(run, chunk)
-                    if not started and not is_silent(chunk.data, self._t.silent_peak):
-                        started = True
-                        run.say(protocol.speak_started(speak_id))
+                    self._play(run, chunk, heard)
+                if not cancel.is_set():
+                    heard(self._finish_effect(run))  # tail held back by the effect
             except _DeviceFailure as exc:
                 run.say(protocol.error(ErrorCode.TTS_FAILED, str(exc), speak_id))
                 return False
@@ -404,6 +415,13 @@ class Speaker:
                     return False
                 if started:
                     log.warning("%s stopped mid-utterance: %s", engine.name, exc)
+                    try:
+                        heard(self._finish_effect(run))
+                    except _DeviceFailure as device_exc:
+                        run.say(protocol.error(ErrorCode.TTS_FAILED, str(device_exc), speak_id))
+                        return False
+                    except _Cancelled:
+                        return False
                     break
                 failures.append(f"{engine.name}: {exc}")
                 log.warning("%s failed before any audio: %s", engine.name, exc)
@@ -418,6 +436,36 @@ class Speaker:
         detail = " | ".join(failures) or "no speech engine available"
         run.say(protocol.error(ErrorCode.TTS_FAILED, detail, speak_id))
         return False
+
+    def _play(self, run: _Run, chunk: PcmChunk, heard: Callable[[bytes], None]) -> None:
+        """Apply the robot effect (when enabled), write the result and report what
+        reached the device to `heard`. The effect holds back a short tail, so the
+        first chunks can write nothing."""
+        if not self._t.robot_voice:
+            self._write(run, chunk)
+            heard(chunk.data)
+            return
+        if run.fx is not None and run.fx.sample_rate != chunk.sample_rate:
+            heard(self._finish_effect(run))  # the rate changed mid-stream: close the old signal
+        pcm = run.odd + chunk.data
+        run.odd = pcm[-1:] if len(pcm) % 2 else b""
+        pcm = pcm[: len(pcm) - len(run.odd)]
+        if run.fx is None:
+            run.fx = RobotVoice(chunk.sample_rate)
+        data = float_to_pcm16(run.fx.process(pcm16_to_float(pcm)))
+        if data:
+            self._write(run, PcmChunk(data, chunk.sample_rate))
+        heard(data)
+
+    def _finish_effect(self, run: _Run) -> bytes:
+        """Write what the effect still holds at the end of an engine's audio, and reset it."""
+        fx, run.fx, run.odd = run.fx, None, b""
+        if fx is None or run.cancel.is_set():
+            return b""
+        data = float_to_pcm16(fx.flush())
+        if data:
+            self._write(run, PcmChunk(data, fx.sample_rate))
+        return data
 
     def _write(self, run: _Run, chunk: PcmChunk) -> None:
         try:

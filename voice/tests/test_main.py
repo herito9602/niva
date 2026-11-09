@@ -253,6 +253,13 @@ def test_cli_flags_parse(flag):
     assert tunables.end_silence_ms == 500  # the owner's VAD decision stays the default
 
 
+def test_the_robot_voice_is_on_by_default_and_the_flag_turns_it_off():
+    from main import parse_args, tunables_from
+
+    assert tunables_from(parse_args([])).robot_voice is True
+    assert tunables_from(parse_args(["--no-robot-voice"])).robot_voice is False
+
+
 # ------------------------------------------------- review regressions (W1-W4, S3, S4)
 
 
