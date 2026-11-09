@@ -76,7 +76,7 @@ pub const TOOL_SPECS: [ToolSpec; 7] = [
     },
     ToolSpec {
         name: "set_volume",
-        description: "Change the master volume. Pass exactly ONE of: level (set to a percentage), delta (raise or lower by a number of points) or mute (mute or unmute).",
+        description: "Change the master volume. Pass exactly ONE of: level (set to a percentage), delta (raise or lower by a number of points) or mute (mute or unmute). Also use it to mute or silence the computer's sound ('silenciá la compu', 'mute the PC').",
         params: &[
             integer("level", "Absolute volume 0-100."),
             integer(
