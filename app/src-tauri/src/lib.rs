@@ -10,6 +10,7 @@ mod dispatcher;
 mod effect_runner;
 #[cfg(feature = "eval")]
 pub mod eval;
+mod latency;
 #[cfg(windows)]
 pub mod release;
 mod requests;
@@ -41,12 +42,13 @@ use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
 use crate::adapters::audio_cue::RodioCue;
 use crate::adapters::ollama::{OllamaProvider, keeper};
-use crate::adapters::voice_sidecar::{Status, Voice};
+use crate::adapters::voice_sidecar::{HostClock, ListenModes, Status, Voice};
 use crate::click_through::{HitTesting, IslandWindow, prepare_island, show_island_window};
 use crate::confirm_buttons::{ConfirmGate, GateUi};
 use crate::cursor::CursorPoller;
 use crate::dispatcher::{Core, Input, InputTx};
 use crate::effect_runner::{EffectRunner, EventSink, Host};
+use crate::latency::Latency;
 use crate::requests::Requests;
 use crate::ui_adapter::{ISLAND_LABEL, TauriUiAdapter};
 use crate::visibility::{HIDE_DELAY_MS, HideGuard, ShortcutStatus, shortcut_status};
@@ -207,7 +209,12 @@ const TRAY_ID: &str = "niva-tray";
 /// fails the app: with no sidecar the voice stays down and the text window is
 /// the way in. Its events enter the dispatcher like any other, and its status
 /// is the tray tooltip.
-fn start_voice(app: &AppHandle, sink: EventSink, llm_ready: Arc<keeper::Readiness>) -> Voice {
+fn start_voice(
+    app: &AppHandle,
+    sink: EventSink,
+    clock: HostClock,
+    llm_ready: Arc<keeper::Readiness>,
+) -> Voice {
     let handle = app.clone();
     let status = Arc::new(move |status: Status| {
         let text = format!("Niva: {}", status.describe());
@@ -223,9 +230,27 @@ fn start_voice(app: &AppHandle, sink: EventSink, llm_ready: Arc<keeper::Readines
     Voice::start(
         sink,
         status,
+        clock,
         Arc::new(|line| eprintln!("{line}")),
         Some(Arc::new(move || llm_ready.is_ready())),
     )
+}
+
+/// The per-turn latency log (task 3.5), in debug and release alike. `clock`
+/// is the one the voice translator uses. With no folder to write to there is
+/// no log; a failing disk never touches a turn (see `latency::sink`).
+fn start_latency(clock: HostClock, modes: Arc<ListenModes>) -> Option<Latency> {
+    let path = latency::sink::default_log_path()?;
+    eprintln!("[niva] latency log: {}", path.display());
+    let emit = latency::sink::start(path)?;
+    let (for_stamps, for_whisper) = (modes.clone(), modes);
+    Some(Latency::new(
+        Box::new(move || clock()),
+        Box::new(now_ms),
+        Box::new(move |id| for_stamps.stamp(id)),
+        Box::new(move || for_whisper.whisper()),
+        emit,
+    ))
 }
 
 /// Opens the "Type a command" window. Built off the event loop thread, so a
@@ -310,7 +335,14 @@ pub fn run() {
             };
             let (requests, llm_ready) = build_requests(app.handle(), sink.clone());
             // The voice sidecar: speech in and out, and the host's own cues.
-            let voice = start_voice(app.handle(), sink.clone(), llm_ready);
+            // One monotonic clock for the voice translator and the latency
+            // trace: every stage of a turn is on the same axis.
+            let host_clock: HostClock = {
+                let started = Instant::now();
+                Arc::new(move || started.elapsed().as_millis() as u64)
+            };
+            let voice = start_voice(app.handle(), sink.clone(), host_clock.clone(), llm_ready);
+            let latency = start_latency(host_clock, voice.modes());
             let link = voice.link();
             app.manage(voice);
             // The sleep countdown reads the user's last input time (no hook). Without
@@ -321,7 +353,7 @@ pub fn run() {
             #[cfg(windows)]
             let runner =
                 runner.with_activity(Arc::new(adapters::windows_activity::WindowsActivity));
-            let core = Core::new(
+            let mut core = Core::new(
                 runner,
                 // The gate sees every view before the island does.
                 Arc::new(GateUi::new(
@@ -333,6 +365,9 @@ pub fn run() {
                 )),
                 Box::new(now_ms),
             );
+            if let Some(latency) = latency {
+                core.set_latency(latency);
+            }
             tauri::async_runtime::spawn(dispatcher::run(core, rx));
 
             // A taken shortcut must not abort startup: the tray toggle remains.

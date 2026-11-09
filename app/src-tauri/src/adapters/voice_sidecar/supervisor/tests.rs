@@ -223,6 +223,7 @@ struct Rig {
     sup: Supervisor,
     launcher: Arc<FakeLauncher>,
     link: Arc<Link>,
+    modes: Arc<ListenModes>,
     events: Arc<Mutex<Vec<Event>>>,
     statuses: Arc<Mutex<Vec<Status>>>,
     logs: Arc<Mutex<Vec<String>>>,
@@ -258,7 +259,7 @@ fn rig_with(settings: Settings, plans: &[Plan]) -> Rig {
     let sup = Supervisor::start(Deps {
         launcher: launcher.clone(),
         link: link.clone(),
-        modes,
+        modes: modes.clone(),
         events: {
             let events = events.clone();
             Arc::new(move |event| events.lock().unwrap().push(event))
@@ -278,6 +279,7 @@ fn rig_with(settings: Settings, plans: &[Plan]) -> Rig {
         sup,
         launcher,
         link,
+        modes,
         events,
         statuses,
         logs,
@@ -471,6 +473,19 @@ fn out_of_memory_restarts_once_with_the_smaller_model() {
     second.ready();
     r.wait_event(READY_ON);
     assert!(r.link.is_up());
+}
+
+#[test]
+fn the_latency_trace_can_read_the_whisper_model_in_use() {
+    let r = rig();
+    assert_eq!(r.modes.whisper(), None);
+    let first = r.launcher.run(0);
+    assert_eq!(r.modes.whisper().as_deref(), Some("small"));
+    first.say(r#"{"type":"error","code":"CUDA_OOM","msg":"out of memory"}"#);
+    first.exit_with(3);
+    let second = r.launcher.run(1);
+    assert_eq!(second.model, "base");
+    wait_for(|| r.modes.whisper().as_deref() == Some("base"));
 }
 
 #[test]

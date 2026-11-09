@@ -17,7 +17,7 @@
 //! translator), and sends `Listen`, `Speak` and friends to the ports.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub mod config;
 pub mod link;
@@ -34,7 +34,8 @@ pub use supervisor::{EventOut, Gate, StatusOut, Supervisor};
 use config::VoiceConfig;
 use process::CommandLauncher;
 use supervisor::{Deps, Settings};
-use translate::{ListenModes, Log};
+use translate::Log;
+pub use translate::{HostClock, ListenModes};
 
 /// How long the first start waits for the LLM to be warm (design "Model-load
 /// order": "a bounded wait (e.g. 30 s)").
@@ -45,6 +46,7 @@ pub const LLM_WARM_UP_WAIT: Duration = Duration::from_secs(30);
 pub struct Voice {
     supervisor: Supervisor,
     link: Arc<Link>,
+    modes: Arc<ListenModes>,
 }
 
 impl Voice {
@@ -53,9 +55,13 @@ impl Voice {
     ///
     /// `llm_warm` says whether the LLM is warm; the first start waits for it
     /// (at most [`LLM_WARM_UP_WAIT`]) so the larger GPU allocation lands first.
+    ///
+    /// `clock` is the host's monotonic clock (milliseconds); the latency trace
+    /// reads the same one, which is what puts every stage on one axis.
     pub fn start(
         events: EventOut,
         status: StatusOut,
+        clock: HostClock,
         log: Log,
         llm_warm: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     ) -> Voice {
@@ -67,7 +73,6 @@ impl Voice {
         });
         let modes = Arc::new(ListenModes::default());
         let link = Link::new(modes.clone());
-        let started = Instant::now();
         let supervisor = Supervisor::start(Deps {
             launcher: Arc::new(CommandLauncher::new(|model| {
                 // Read again at every start, so "Restart voice" sees a
@@ -75,18 +80,27 @@ impl Voice {
                 VoiceConfig::detect().launch_spec(model)
             })),
             link: link.clone(),
-            modes,
+            modes: modes.clone(),
             events,
-            clock: Arc::new(move || started.elapsed().as_millis() as u64),
+            clock,
             log,
             status,
             settings,
         });
-        Voice { supervisor, link }
+        Voice {
+            supervisor,
+            link,
+            modes,
+        }
     }
 
     pub fn link(&self) -> Arc<Link> {
         self.link.clone()
+    }
+
+    /// What the voice side shares with the latency trace (task 3.5).
+    pub fn modes(&self) -> Arc<ListenModes> {
+        self.modes.clone()
     }
 
     /// The tray's "Restart voice".

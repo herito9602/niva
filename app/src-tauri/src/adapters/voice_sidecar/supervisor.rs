@@ -273,6 +273,7 @@ impl Run {
     fn spawn(&mut self, model: &str) -> Option<Signal> {
         match self.deps.launcher.spawn(model) {
             Err(why) => {
+                self.deps.modes.set_whisper(None);
                 self.log(format!("[niva-voice] cannot start the sidecar: {why}"));
                 Some(if why.kind() == std::io::ErrorKind::Unsupported {
                     Signal::Disabled
@@ -283,6 +284,7 @@ impl Run {
             Ok(spawned) => {
                 self.run_id += 1;
                 let run_id = self.run_id;
+                self.deps.modes.set_whisper(Some(model));
                 self.log(format!("[niva-voice] sidecar started (whisper: {model})"));
                 let (out_tx, out_rx) = channel::<Outgoing>();
                 let mut stdin = spawned.stdin;

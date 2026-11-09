@@ -105,11 +105,12 @@ fn schemas_follow_the_json_schema_shape_ollama_expects() {
 const E1_TOOLS: &str = include_str!("e1_tools.json");
 
 /// E1's tools with the deliberate changes since: the `close_app` (E1 attempt
-/// 3) and `power_action` (attempt 4) descriptions gained sentences. Nothing
-/// else differs, and the E1 text is still the start of each description.
+/// 3), `power_action` (attempt 4) and `set_volume` (Batch 38) descriptions
+/// gained sentences. Nothing else differs, and the E1 text is still the start
+/// of each description.
 fn e1_with_known_changes() -> Value {
     let mut theirs: Value = serde_json::from_str(E1_TOOLS).unwrap();
-    for (index, name) in [(1, "close_app"), (4, "power_action")] {
+    for (index, name) in [(1, "close_app"), (2, "set_volume"), (4, "power_action")] {
         let function = &mut theirs[index]["function"];
         assert_eq!(function["name"], name);
         let e1_text = function["description"].as_str().unwrap().to_string();
