@@ -24,6 +24,8 @@
 //! [`KeysUi`] keeps the keys in step with the views the host publishes. It sits
 //! next to the buttons' `GateUi` and changes nothing about them.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use niva_core::state_machine::Event;
@@ -37,6 +39,9 @@ pub const ARM_MS: u64 = 500;
 
 /// Tray tooltip when the chord could not be registered.
 pub const KEY_UNAVAILABLE_TOOLTIP: &str = "Confirm key unavailable";
+
+/// Tray tooltip once the chord registers again.
+pub const DEFAULT_TOOLTIP: &str = "Niva";
 
 /// The two confirmation keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +107,9 @@ struct Pending {
     esc_registered: bool,
     /// When the chord was registered (host clock); `None` while it is not.
     chord_armed_at: Option<u64>,
+    /// The chord was pressed inside the arm window, so it may be a key that was
+    /// already held when it was registered: no press counts until a release.
+    chord_held: bool,
     answered: bool,
 }
 
@@ -112,6 +120,8 @@ pub struct ConfirmKeys {
     clock: Clock,
     log: LogFn,
     pending: Mutex<Option<Pending>>,
+    /// The tray says the chord is unavailable and has not been reset yet.
+    tooltip_flagged: AtomicBool,
 }
 
 impl ConfirmKeys {
@@ -129,6 +139,7 @@ impl ConfirmKeys {
             clock,
             log,
             pending: Mutex::new(None),
+            tooltip_flagged: AtomicBool::new(false),
         }
     }
 
@@ -165,6 +176,7 @@ impl ConfirmKeys {
                         id: shown.id,
                         esc_registered: false,
                         chord_armed_at: None,
+                        chord_held: false,
                         answered: false,
                     });
                     ops.push(Op::Register(Key::Esc));
@@ -189,8 +201,16 @@ impl ConfirmKeys {
 
     /// A key event from the OS. Only a press counts, and only once per
     /// confirmation: a repeat of a held key finds the confirmation answered.
+    /// A chord pressed inside the arm window may be a key held since before it
+    /// was registered, so after one the chord needs a release before a press
+    /// counts (the plugin reports every `WM_HOTKEY`, repeats included).
     pub fn press(&self, key: Key, state: KeyState) {
-        if state != KeyState::Pressed {
+        if state == KeyState::Released {
+            if key == Key::Chord
+                && let Some(current) = self.lock().as_mut()
+            {
+                current.chord_held = false;
+            }
             return;
         }
         let now = (self.clock)();
@@ -207,9 +227,16 @@ impl ConfirmKeys {
                 Key::Esc if current.esc_registered => Event::Reject { id },
                 Key::Chord => match current.chord_armed_at {
                     Some(armed_at) if now.saturating_sub(armed_at) >= ARM_MS => {
+                        if current.chord_held {
+                            return;
+                        }
                         Event::Accept { id }
                     }
-                    _ => return,
+                    Some(_) => {
+                        current.chord_held = true;
+                        return;
+                    }
+                    None => return,
                 },
                 Key::Esc => return,
             };
@@ -237,16 +264,22 @@ impl ConfirmKeys {
         for op in ops {
             match op {
                 Op::Unregister(key) => self.registry.unregister(key),
-                Op::Register(Key::Esc) => match self.registry.register(Key::Esc) {
-                    Ok(()) => self.with_pending(id, |p| p.esc_registered = true),
+                Op::Register(Key::Esc) => match self.try_register(Key::Esc) {
+                    Ok(()) => self.record(id, Key::Esc, |p| p.esc_registered = true),
                     Err(err) => {
                         (self.log)(format!("[niva] Esc is unavailable as a confirm key: {err}"))
                     }
                 },
-                Op::Register(Key::Chord) => match self.registry.register(Key::Chord) {
+                Op::Register(Key::Chord) => match self.try_register(Key::Chord) {
                     Ok(()) => {
                         let now = (self.clock)();
-                        self.with_pending(id, |p| p.chord_armed_at = Some(now));
+                        self.record(id, Key::Chord, |p| {
+                            p.chord_armed_at = Some(now);
+                            p.chord_held = false;
+                        });
+                        if self.tooltip_flagged.swap(false, Ordering::SeqCst) {
+                            self.tooltip.set_tooltip(DEFAULT_TOOLTIP);
+                        }
                     }
                     Err(err) => self.chord_refused(id, &err),
                 },
@@ -260,6 +293,7 @@ impl ConfirmKeys {
         (self.log)(format!(
             "[niva] Ctrl+Shift+Enter is unavailable, rejecting the confirmation: {err}"
         ));
+        self.tooltip_flagged.store(true, Ordering::SeqCst);
         self.tooltip.set_tooltip(KEY_UNAVAILABLE_TOOLTIP);
         let ops = {
             let mut pending = self.lock();
@@ -283,11 +317,33 @@ impl ConfirmKeys {
         }
     }
 
-    fn with_pending(&self, id: u64, change: impl FnOnce(&mut Pending)) {
-        if let Some(current) = self.lock().as_mut()
-            && current.id == id
-        {
-            change(current);
+    /// Registers through the seam. A panic in the registry is a refusal: the
+    /// key is unregistered best effort, so nothing stays registered that no
+    /// bookkeeping will ever release.
+    fn try_register(&self, key: Key) -> Result<(), String> {
+        match catch_unwind(AssertUnwindSafe(|| self.registry.register(key))) {
+            Ok(result) => result,
+            Err(_) => {
+                self.registry.unregister(key);
+                Err("the shortcut registry failed".into())
+            }
+        }
+    }
+
+    /// Records a key the OS accepted for confirmation `id`. If that
+    /// confirmation was released, answered or replaced while the registration
+    /// ran (the lock is not held across it), nobody else would unregister the
+    /// key, so it goes now.
+    fn record(&self, id: u64, key: Key, change: impl FnOnce(&mut Pending)) {
+        let recorded = match self.lock().as_mut() {
+            Some(current) if current.id == id && !current.answered => {
+                change(current);
+                true
+            }
+            _ => false,
+        };
+        if !recorded {
+            self.registry.unregister(key);
         }
     }
 }
@@ -349,14 +405,50 @@ mod tests {
     use super::*;
     use crate::ui_adapter::{ViewModel, ViewPayload};
 
+    /// Blocks the next `register` of a key until the test lets it go.
+    struct Blocker {
+        key: Key,
+        entered: std::sync::mpsc::Sender<()>,
+        proceed: std::sync::mpsc::Receiver<()>,
+    }
+
+    /// Behaves like the plugin: registering a key that is already registered is
+    /// an error, and unregistering one that is not does nothing.
     #[derive(Default)]
     struct FakeRegistry {
         on: Mutex<Vec<Key>>,
         log: Mutex<Vec<String>>,
         failing: Mutex<Vec<Key>>,
+        /// `register` succeeds at the OS and then panics.
+        panicking: Mutex<Vec<Key>>,
+        blocker: Mutex<Option<Blocker>>,
     }
 
     impl FakeRegistry {
+        fn heal(&self, key: Key) {
+            self.failing.lock().unwrap().retain(|k| *k != key);
+        }
+
+        fn panic_after_registering(&self, key: Key) {
+            self.panicking.lock().unwrap().push(key);
+        }
+
+        /// The next `register(key)` reports it entered, then waits for the
+        /// returned sender.
+        fn block_next(
+            &self,
+            key: Key,
+        ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+            let (entered, entered_rx) = std::sync::mpsc::channel();
+            let (proceed_tx, proceed) = std::sync::mpsc::channel();
+            *self.blocker.lock().unwrap() = Some(Blocker {
+                key,
+                entered,
+                proceed,
+            });
+            (entered_rx, proceed_tx)
+        }
+
         fn registered(&self) -> Vec<Key> {
             let mut on = self.on.lock().unwrap().clone();
             on.sort_by_key(|k| *k as u8);
@@ -378,7 +470,28 @@ mod tests {
             if self.failing.lock().unwrap().contains(&key) {
                 return Err("taken".into());
             }
-            self.on.lock().unwrap().push(key);
+            let blocker = {
+                let mut slot = self.blocker.lock().unwrap();
+                if slot.as_ref().is_some_and(|b| b.key == key) {
+                    slot.take()
+                } else {
+                    None
+                }
+            };
+            if let Some(blocker) = blocker {
+                blocker.entered.send(()).unwrap();
+                blocker.proceed.recv().unwrap();
+            }
+            {
+                let mut on = self.on.lock().unwrap();
+                if on.contains(&key) {
+                    return Err("already registered".into());
+                }
+                on.push(key);
+            }
+            if self.panicking.lock().unwrap().contains(&key) {
+                panic!("the registry blew up");
+            }
             Ok(())
         }
 
@@ -531,6 +644,8 @@ mod tests {
         r.press(Key::Chord);
         assert!(r.sent().is_empty());
         assert_eq!(r.reg.registered(), vec![Key::Esc, Key::Chord]);
+        // The early press was let go; a fresh press at 500 ms counts.
+        r.keys.press(Key::Chord, KeyState::Released);
         r.advance(1);
         r.press(Key::Chord);
         assert_eq!(r.sent(), vec![Event::Accept { id: 7 }]);
@@ -830,6 +945,157 @@ mod tests {
         // Fail closed also means one answer: nothing else goes out.
         r.press(Key::Esc);
         assert_eq!(r.sent().len(), 1);
+    }
+
+    #[test]
+    fn tooltip_is_reset_at_the_next_successful_chord_registration() {
+        let r = rig();
+        r.reg.fail(Key::Chord);
+        r.keys.on_view(Some(power(7, true)));
+        assert_eq!(
+            *r.tip.0.lock().unwrap(),
+            vec![KEY_UNAVAILABLE_TOOLTIP.to_owned()]
+        );
+        r.reg.heal(Key::Chord);
+        r.keys.on_view(None);
+        r.keys.on_view(Some(power(8, true)));
+        assert_eq!(
+            *r.tip.0.lock().unwrap(),
+            vec![
+                KEY_UNAVAILABLE_TOOLTIP.to_owned(),
+                DEFAULT_TOOLTIP.to_owned()
+            ]
+        );
+        // Later registrations leave the tooltip alone (the voice status owns it).
+        r.keys.on_view(None);
+        r.keys.on_view(Some(power(9, true)));
+        assert_eq!(r.tip.0.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_panicking_register_leaves_no_key_behind_and_fails_closed() {
+        let r = rig();
+        r.reg.panic_after_registering(Key::Esc);
+        r.keys.on_view(Some(close(1)));
+        assert!(r.reg.registered().is_empty(), "Esc was released");
+        assert!(!r.logs.lock().unwrap().is_empty());
+
+        let r = rig();
+        r.reg.panic_after_registering(Key::Chord);
+        r.keys.on_view(Some(power(7, true)));
+        assert!(r.reg.registered().is_empty(), "nothing is left registered");
+        assert_eq!(r.sent(), vec![Event::Reject { id: 7 }]);
+    }
+
+    // --- races ----------------------------------------------------------------------
+
+    type ExitFn = fn(&Rig);
+
+    /// Runs `view` on another thread, holds its `register(key)` open, runs
+    /// `exit` meanwhile, then lets the register finish.
+    fn exit_during_register(key: Key, shown: Shown, exit: impl FnOnce(&Rig)) -> Rig {
+        let r = rig();
+        let (entered, proceed) = r.reg.block_next(key);
+        let keys = r.keys.clone();
+        let worker = std::thread::spawn(move || keys.on_view(Some(shown)));
+        entered.recv().unwrap();
+        exit(&r);
+        proceed.send(()).unwrap();
+        worker.join().unwrap();
+        r
+    }
+
+    #[test]
+    fn release_while_esc_is_registering_does_not_leave_esc_registered() {
+        let exits: [(&str, ExitFn); 3] = [
+            ("island hidden", |r| r.keys.on_island_hidden()),
+            ("no confirmation", |r| r.keys.on_view(None)),
+            ("quit", |r| r.keys.quit()),
+        ];
+        for (name, exit) in exits {
+            let r = exit_during_register(Key::Esc, close(1), exit);
+            assert!(r.reg.registered().is_empty(), "{name}: Esc leaked");
+        }
+    }
+
+    #[test]
+    fn release_while_chord_is_registering_does_not_leave_chord_registered() {
+        let exits: [(&str, ExitFn); 4] = [
+            ("island hidden", |r| r.keys.on_island_hidden()),
+            ("no confirmation", |r| r.keys.on_view(None)),
+            ("quit", |r| r.keys.quit()),
+            ("Esc answer", |r| r.press(Key::Esc)),
+        ];
+        for (name, exit) in exits {
+            let r = exit_during_register(Key::Chord, power(7, true), exit);
+            assert!(
+                r.reg.registered().is_empty(),
+                "{name}: leaked {:?}",
+                r.reg.registered()
+            );
+        }
+    }
+
+    // --- a held chord ---------------------------------------------------------------
+
+    #[test]
+    fn chord_held_through_arming_is_ignored_until_released() {
+        let r = rig();
+        r.keys.on_view(Some(power(7, true)));
+        // Held when it was registered: presses inside the guard window...
+        r.advance(100);
+        r.press(Key::Chord);
+        // ...and the auto-repeat that follows past it.
+        r.advance(ARM_MS);
+        r.press(Key::Chord);
+        r.advance(30);
+        r.press(Key::Chord);
+        assert!(r.sent().is_empty(), "a held key never answers");
+        // Let go, press again: that is a fresh keystroke.
+        r.keys.press(Key::Chord, KeyState::Released);
+        r.press(Key::Chord);
+        assert_eq!(r.sent(), vec![Event::Accept { id: 7 }]);
+    }
+
+    #[test]
+    fn press_release_press_after_arming_is_accepted() {
+        let r = rig();
+        r.keys.on_view(Some(power(7, true)));
+        r.advance(100);
+        r.press(Key::Chord);
+        r.keys.press(Key::Chord, KeyState::Released);
+        r.advance(ARM_MS);
+        r.press(Key::Chord);
+        assert_eq!(r.sent(), vec![Event::Accept { id: 7 }]);
+    }
+
+    #[test]
+    fn a_single_fresh_press_after_arming_is_accepted() {
+        let r = rig();
+        r.keys.on_view(Some(power(7, true)));
+        r.advance(ARM_MS + 1);
+        r.press(Key::Chord);
+        assert_eq!(r.sent(), vec![Event::Accept { id: 7 }]);
+    }
+
+    // --- same id, chord withdrawn ---------------------------------------------------
+
+    #[test]
+    fn same_id_view_without_chord_unregisters_chord_and_keeps_esc() {
+        let r = rig();
+        r.keys.on_view(Some(power(7, true)));
+        assert_eq!(r.reg.registered(), vec![Key::Esc, Key::Chord]);
+        r.keys.on_view(Some(Shown {
+            id: 7,
+            chord: true,
+            spoken: false,
+        }));
+        assert_eq!(r.reg.registered(), vec![Key::Esc]);
+        r.advance(5_000);
+        r.press(Key::Chord);
+        assert!(r.sent().is_empty(), "the withdrawn chord answers nothing");
+        r.press(Key::Esc);
+        assert_eq!(r.sent(), vec![Event::Reject { id: 7 }]);
     }
 
     // --- following the views ----------------------------------------------------------
