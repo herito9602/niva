@@ -80,6 +80,7 @@ class _Listen:
     id: int
     mode: str
     lead: deque[np.ndarray]
+    wake_ms: int | None = None  # command after a wake: when the detection happened
     lang: str | None = None  # confirm only: the language of the question the host spoke
     context: str | None = None  # confirm only: its text. Never logged.
     utterance: list[np.ndarray] = field(default_factory=list)
@@ -116,6 +117,7 @@ class Engine:
         self._endpointer = Endpointer(tunables)
         self._ring: deque[_Stamped] = deque(maxlen=max(1, tunables.pre_speech_frames, tunables.wake_preroll_frames))
         self._pending: list[_Stamped] | None = None  # audio recorded since a wake detection
+        self._wake_ms: int | None = None  # capture time of the newest wake detection
         self._pending_pre = 0  # how many of those are pre-roll (up to the detection itself)
         self._listen: _Listen | None = None
         self._speaking_id: int | None = None
@@ -233,6 +235,7 @@ class Engine:
                 preroll = self._t.wake_preroll_frames
                 self._pending = list(self._ring)[-preroll:] if preroll else [(frame, self._frame_ms)]
                 self._pending_pre = len(self._pending)
+                self._wake_ms = self._frame_ms
                 self._emit(protocol.wake(score))
         elif score >= t.wake_near_miss_floor:
             self._near_peak = max(self._near_peak, score)
@@ -250,6 +253,8 @@ class Engine:
             return
         t = self._t
         history: list[_Stamped]
+        wake_ms = self._wake_ms if self._pending is not None else None
+        self._wake_ms = None
         preroll = None  # frames of `history` that are old audio (the rest was heard after the wake)
         if self._speaking_id is not None:
             # The reply's tail is still in the buffer (or the speech-end notice is late):
@@ -271,6 +276,7 @@ class Engine:
         self._listen = _Listen(
             id=command.id,
             mode=command.mode,
+            wake_ms=wake_ms,
             lead=deque(maxlen=t.pre_speech_frames + t.onset_frames),
             lang=command.lang if command.mode == "confirm" else None,
             context=command.context if command.mode == "confirm" else None,
@@ -303,8 +309,14 @@ class Engine:
             listen.speech_frames += 1
 
         # Live speech means a live frame while the turn is in speech (one loud frame
-        # before the onset is confirmed does not stop the no-speech clock).
-        if not replay and listen.in_speech and prob >= t.vad_threshold:
+        # before the onset is confirmed does not stop the no-speech clock). Frames in
+        # the wake tail window are provisional too: the word is still being finished.
+        in_wake_tail = (
+            listen.wake_ms is not None
+            and self._frame_ms is not None
+            and self._frame_ms - listen.wake_ms < t.wake_tail_ms
+        )
+        if not replay and not in_wake_tail and listen.in_speech and prob >= t.vad_threshold:
             listen.live_speech = True
 
         if listen.in_speech and listen.live_speech and not listen.announced:

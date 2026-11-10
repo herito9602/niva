@@ -152,7 +152,8 @@ def test_command_that_starts_before_the_wake_detection_is_not_cut(h):
 def test_wake_preroll_is_bounded_so_little_of_the_wake_word_leaks_in(h):
     h.feed(frames(SILENCE, 30) + frames(WAKE_WORD, 14) + [frame(WAKE_END)])
     h.engine.on_command(Listen(6, "command"))
-    h.feed(frames(SPEECH, 10) + frames(SILENCE, 25))
+    # A real command lasts longer than the wake tail window (wake_tail_ms).
+    h.feed(frames(SPEECH, 20) + frames(SILENCE, 25))
     heard = levels(h.stt.heard[0])
     wake_frames = sum(1 for v in heard if v in (WAKE_WORD, WAKE_END))
     assert wake_frames <= h.tunables.wake_preroll_frames
@@ -409,6 +410,35 @@ def test_wake_followed_only_by_silence_still_ends_with_no_speech_at_the_normal_t
     assert h.types() == ["wake", "no_speech"]
 
 
+def test_wake_word_tail_heard_after_the_detection_does_not_start_the_turn(h):
+    """Live bug: the detector fires before the word ends, so "...vis" is heard
+    after the detection. A pause then must not end the turn on that tail."""
+    h.feed(frames(SILENCE, 30) + frames(WAKE_WORD, 8) + [frame(WAKE_END)])
+    h.feed(frames(WAKE_WORD, 3))  # the rest of the word, before the host's listen
+    h.engine.on_command(Listen(7, "command"))
+    h.feed(frames(WAKE_WORD, 5))  # ...and a bit more after it (~256 ms of tail in all)
+    h.feed(frames(SILENCE, 28))  # the user waits ~900 ms for the island
+    assert h.types() == ["wake"]  # the pause did not end a turn made of the tail
+    assert h.engine.listening
+    command = [frame(SPEECH + i) for i in range(20)]
+    h.feed(command + frames(SILENCE, 25))
+    assert h.types() == ["wake", "speech_start", "transcript"]
+    assert len(h.stt.heard) == 1
+    heard = levels(h.stt.heard[0])
+    assert all(SPEECH + i in heard for i in range(20))
+    assert WAKE_WORD not in heard and WAKE_END not in heard
+
+
+def test_wake_tail_then_only_silence_still_ends_with_no_speech_in_bounded_time(h):
+    h.feed(frames(WAKE_WORD, 8) + [frame(WAKE_END)] + frames(WAKE_WORD, 6))
+    h.engine.on_command(Listen(8, "command"))
+    h.feed(frames(WAKE_WORD, 4))
+    h.feed(frames(SILENCE, int(6000 / FRAME_MS)))
+    assert h.types() == ["wake", "no_speech"]
+    assert h.stt.heard == []
+    assert not h.engine.listening
+
+
 def test_replacing_a_listen_does_not_replay_the_old_turns_speech(h):
     """S5: the first turn's speech sits in the buffer; the new listen must not take it."""
     h.engine.on_command(Listen(1, "command"))
@@ -462,7 +492,7 @@ def test_end_ms_comes_from_the_frame_stamps_not_from_when_the_loop_gets_to_them(
 def test_end_ms_of_a_late_listen_comes_from_the_replayed_frames_own_stamp(h):
     """The whole command sits in the recording when `listen` finally arrives."""
     h.feed(frames(SILENCE, 5) + frames(WAKE_WORD, 6) + [frame(WAKE_END)])
-    h.feed(frames(SPEECH, 10))
+    h.feed(frames(SPEECH, 20))  # longer than the wake tail window (wake_tail_ms)
     last_speech = h.now
     h.feed(frames(SILENCE, 30))
     h.now += 2000  # the host answers about two seconds late

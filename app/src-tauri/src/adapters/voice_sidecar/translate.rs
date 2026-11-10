@@ -17,34 +17,80 @@
 //! Nothing here logs what the user said or what Niva answers: only counts,
 //! ids, the language and timestamps.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use niva_core::state_machine::{Event, ListenMode, SidecarErrorCode};
 
 use super::policy::Signal;
 use super::wire::Incoming;
+use crate::latency::Stamp;
 
 /// Below this combined es + en probability the log says so. Nothing is dropped
 /// for it: the number is only evidence for tuning.
 const LOW_LANG_PROB: f64 = 0.5;
 
+/// How many transcripts' stamps are remembered (one turn is in flight at a
+/// time; the rest is slack for late and stale ones).
+const STAMPS_KEPT: usize = 8;
+
 /// Milliseconds on the host's monotonic clock.
 pub type HostClock = Arc<dyn Fn() -> u64 + Send + Sync>;
 pub type Log = Arc<dyn Fn(String) + Send + Sync>;
 
-/// The mode of the listen in flight, written when the host sends `listen` and
-/// read when its transcript comes back. Only the latest listen matters: an
-/// answer to an older one is dropped by the reducer's stale-id guard anyway.
+/// Small facts the voice side shares with the rest of the host.
+///
+/// - The mode of the listen in flight, written when the host sends `listen`
+///   and read when its transcript comes back. Only the latest listen matters:
+///   an answer to an older one is dropped by the reducer's stale-id guard
+///   anyway.
+/// - The stamps of the last few transcripts, by listen id (task 3.5): the end
+///   of speech on the host clock and when the transcript arrived, read by the
+///   latency trace. A stale transcript cannot erase a live one.
+/// - The Whisper model of the sidecar that was started last (task 3.5).
 #[derive(Debug, Default)]
-pub struct ListenModes(Mutex<Option<(u64, ListenMode)>>);
+pub struct ListenModes {
+    mode: Mutex<Option<(u64, ListenMode)>>,
+    stamp: Mutex<VecDeque<(u64, Stamp)>>,
+    whisper: Mutex<Option<String>>,
+}
 
 impl ListenModes {
+    pub fn set_stamp(&self, id: u64, stamp: Stamp) {
+        let mut stamps = self.stamp.lock().unwrap_or_else(PoisonError::into_inner);
+        stamps.retain(|(known, _)| *known != id);
+        stamps.push_back((id, stamp));
+        while stamps.len() > STAMPS_KEPT {
+            stamps.pop_front();
+        }
+    }
+
+    /// The stamps of transcript `id`, while it is among the last few.
+    pub fn stamp(&self, id: u64) -> Option<Stamp> {
+        let stamps = self.stamp.lock().unwrap_or_else(PoisonError::into_inner);
+        stamps
+            .iter()
+            .find(|(known, _)| *known == id)
+            .map(|(_, stamp)| *stamp)
+    }
+
+    pub fn set_whisper(&self, model: Option<&str>) {
+        *self.whisper.lock().unwrap_or_else(PoisonError::into_inner) = model.map(str::to_owned);
+    }
+
+    pub fn whisper(&self) -> Option<String> {
+        self.whisper
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     pub fn set(&self, id: u64, mode: ListenMode) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some((id, mode));
+        *self.mode.lock().unwrap_or_else(PoisonError::into_inner) = Some((id, mode));
     }
 
     pub fn get(&self, id: u64) -> Option<ListenMode> {
-        match *self.0.lock().unwrap_or_else(PoisonError::into_inner) {
+        match *self.mode.lock().unwrap_or_else(PoisonError::into_inner) {
             Some((latest, mode)) if latest == id => Some(mode),
             _ => None,
         }
@@ -135,9 +181,16 @@ impl Translator {
                 };
                 // The per-request timestamps (design "Metric logging"): the end
                 // of speech on the host's clock, and when the transcript arrived.
-                let end = self
-                    .to_host_ms(end_ms)
-                    .map_or_else(|| "?".to_owned(), |t| t.to_string());
+                let end_host = self.to_host_ms(end_ms);
+                let end = end_host.map_or_else(|| "?".to_owned(), |t| t.to_string());
+                // The same two numbers, for the latency trace (task 3.5).
+                self.modes.set_stamp(
+                    id,
+                    Stamp {
+                        end_of_speech: end_host.and_then(|t| u64::try_from(t).ok()),
+                        transcript: received,
+                    },
+                );
                 (self.log)(format!(
                     "[niva-voice] transcript id={id} mode={} chars={} lang={} lang_prob={lang_prob:.2} \
                      t_end_of_speech={end} t_transcript={received}{}",
@@ -532,6 +585,76 @@ mod tests {
                 text: "siguiente canción".into(),
                 lang: Some(Lang::Es)
             }]
+        );
+    }
+
+    #[test]
+    fn the_transcript_leaves_its_stamps_for_the_latency_trace_and_no_words() {
+        let mut r = rig();
+        r.t.translate(Incoming::Ready { now_ms: 400 });
+        r.now.store(2_000, Ordering::SeqCst);
+        r.t.translate(Incoming::Transcript {
+            id: 7,
+            text: Private::new("open the secret spreadsheet"),
+            lang: Some(Lang::En),
+            lang_prob: 0.97,
+            end_ms: 1_000,
+        });
+        assert_eq!(
+            r.modes.stamp(7),
+            Some(Stamp {
+                end_of_speech: Some(1_600),
+                transcript: 2_000
+            })
+        );
+        // Only the latest transcript is remembered.
+        assert_eq!(r.modes.stamp(6), None);
+    }
+
+    #[test]
+    fn a_stale_transcript_does_not_erase_the_stamp_of_a_live_one() {
+        let modes = ListenModes::default();
+        let live = Stamp {
+            end_of_speech: Some(10),
+            transcript: 20,
+        };
+        let stale = Stamp {
+            end_of_speech: Some(1),
+            transcript: 2,
+        };
+        modes.set_stamp(9, live);
+        modes.set_stamp(8, stale);
+        assert_eq!(modes.stamp(9), Some(live));
+        assert_eq!(modes.stamp(8), Some(stale));
+    }
+
+    #[test]
+    fn the_stamps_are_a_small_bounded_set() {
+        let modes = ListenModes::default();
+        for id in 0..100 {
+            modes.set_stamp(
+                id,
+                Stamp {
+                    end_of_speech: None,
+                    transcript: id,
+                },
+            );
+        }
+        assert_eq!(modes.stamp(0), None);
+        assert!(modes.stamp(99).is_some());
+        assert!(modes.stamp(95).is_some());
+    }
+
+    #[test]
+    fn an_end_of_speech_before_the_first_ready_has_no_stamp_for_it() {
+        let mut r = rig();
+        r.t.translate(transcript(3, "hola", 0.9));
+        assert_eq!(
+            r.modes.stamp(3),
+            Some(Stamp {
+                end_of_speech: None,
+                transcript: 1_000
+            })
         );
     }
 

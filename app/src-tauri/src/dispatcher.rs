@@ -13,6 +13,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use crate::effect_runner::EffectRunner;
 #[cfg(any(test, debug_assertions))]
 use crate::effect_runner::MediaMode;
+use crate::latency::{FxObs, Latency};
 use crate::ui_adapter::{UiEvent, UiPort, ViewModel};
 
 /// Builds an event from the current state (used when an event carries an id
@@ -57,6 +58,9 @@ pub struct Core {
     view: ViewModel,
     ui: Arc<dyn UiPort<UiEvent>>,
     now_ms: Box<dyn Fn() -> u64 + Send>,
+    /// The per-turn latency trace (task 3.5): a read-only observer of each
+    /// dispatch. Absent in most tests.
+    latency: Option<Latency>,
 }
 
 impl Core {
@@ -71,7 +75,13 @@ impl Core {
             view: ViewModel::new(),
             ui,
             now_ms,
+            latency: None,
         }
+    }
+
+    /// Turns the latency trace on.
+    pub fn set_latency(&mut self, latency: Latency) {
+        self.latency = Some(latency);
     }
 
     #[cfg(test)]
@@ -101,13 +111,23 @@ impl Core {
     }
 
     fn dispatch(&mut self, event: Event) {
+        // The trace sees the event as ids and kinds only, and the time it
+        // reached the reducer.
+        let seen = self
+            .latency
+            .as_ref()
+            .map(|latency| (latency.now(), latency.observe(&event)));
         self.runner.observe(&event);
         // Records a confirmation answer (click or spoken yes) for the tool loop
         // before the reducer consumes the event.
         self.runner.requests().observe(&self.state, &event);
         let (state, effects) = reduce(std::mem::take(&mut self.state), event);
         self.state = state;
+        let traced = seen.map(|seen| (seen, FxObs::of(&effects)));
         self.apply(effects);
+        if let (Some(latency), Some(((t, obs), fx))) = (self.latency.as_mut(), traced) {
+            latency.step(t, obs, &fx, Some(self.runner.requests().lang()));
+        }
     }
 
     fn apply(&mut self, effects: Vec<Effect>) {
@@ -320,6 +340,394 @@ mod tests {
                 .unwrap()
                 .contains(&UiEvent::Island { visible: true })
         );
+    }
+
+    // --- task 3.5: the latency trace ---------------------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dispatched_voice_turn_writes_one_record_and_no_text() {
+        use crate::latency::Stamp;
+
+        let mut r = rig(true);
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let tick = Arc::new(Mutex::new(1_000u64));
+        r.core.set_latency(Latency::new(
+            Box::new(move || {
+                let mut tick = tick.lock().unwrap();
+                *tick += 10;
+                *tick
+            }),
+            Box::new(|| 1_700_000_000_000),
+            Box::new(|_| {
+                Some(Stamp {
+                    end_of_speech: Some(900),
+                    transcript: 1_000,
+                })
+            }),
+            Box::new(|| Some("small".into())),
+            {
+                let lines = lines.clone();
+                Box::new(move |line| lines.lock().unwrap().push(line))
+            },
+        ));
+        r.send(Event::Shortcut);
+        let id = r.listen_id();
+        r.send(Event::Transcript {
+            id,
+            text: "SECRET-WORDS open the thing".into(),
+            lang: Some(niva_core::replies::Lang::En),
+        });
+        let req = r.req();
+        r.send(Event::Reply {
+            req,
+            text: "SECRET-REPLY here you go".into(),
+        });
+        // The stub speaker reports the speech done at once: no sound.
+        let lines = lines.lock().unwrap();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let line = &lines[0];
+        assert!(!line.contains("SECRET"), "{line}");
+        let record: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(record["channel"], "voice");
+        assert_eq!(record["path"], "chat");
+        assert_eq!(record["req"], req);
+        assert_eq!(record["lang"], "en");
+        assert_eq!(record["t_end_of_speech"], 900);
+        assert_eq!(record["t_transcript"], 1_000);
+        assert!(record.get("t_first_audio").is_none(), "{line}");
+        assert!(record.get("total_ms").is_none(), "{line}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_full_voice_action_turn_through_the_core_has_its_total_and_stages() {
+        use crate::latency::Stamp;
+        use niva_core::state_machine::ToolsOutcome;
+
+        let mut r = rig(true);
+        // Hold the media so the speech is not synthesised as done: the first
+        // sound is reported by hand, like the sidecar's `speak_started`.
+        r.core.set_media_mode(MediaMode::Held);
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let tick = Arc::new(Mutex::new(1_000u64));
+        r.core.set_latency(Latency::new(
+            Box::new(move || {
+                let mut tick = tick.lock().unwrap();
+                *tick += 10;
+                *tick
+            }),
+            Box::new(|| 1_700_000_000_000),
+            Box::new(|_| {
+                Some(Stamp {
+                    end_of_speech: Some(900),
+                    transcript: 1_000,
+                })
+            }),
+            Box::new(|| Some("small".into())),
+            {
+                let lines = lines.clone();
+                Box::new(move |line| lines.lock().unwrap().push(line))
+            },
+        ));
+        r.send(Event::Shortcut);
+        let id = r.listen_id();
+        r.send(Event::Transcript {
+            id,
+            text: "open the thing".into(),
+            lang: Some(niva_core::replies::Lang::En),
+        });
+        let req = r.req();
+        r.send(Event::ToolCalls {
+            req,
+            verdict: niva_core::state_machine::ToolVerdict::RunSafe,
+        });
+        r.send(Event::ToolsDone {
+            req,
+            outcome: ToolsOutcome::Completed,
+        });
+        assert!(
+            lines.lock().unwrap().is_empty(),
+            "open until the first sound"
+        );
+        let speak = r
+            .core
+            .state()
+            .speak_id
+            .expect("the template is being spoken");
+        r.send(Event::SpeakStarted { id: speak });
+        let lines = lines.lock().unwrap();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let record: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(record["path"], "action");
+        assert_eq!(record["channel"], "voice");
+        assert_eq!(record["validation"], "run_safe");
+        let first = record["t_first_audio"].as_u64().expect("a first sound");
+        assert_eq!(record["total_ms"].as_u64(), Some(first - 900));
+        for key in ["stt_ms", "llm_ms", "tool_ms", "tts_ms", "other_ms"] {
+            assert!(record.get(key).is_some(), "{key} missing: {record}");
+        }
+        assert_eq!(record["stt_ms"], 100);
+    }
+
+    // --- task 3.5: the first real run (Batch 38) -----------------------------
+    //
+    // The shapes of `e2e-1.jsonl`, driven through the real assistant: a scripted
+    // model, the dry-run PC, the real reducer, runner and dispatcher, and a
+    // clock the test sets before each step (so the stage times are exact).
+
+    mod first_run {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use niva_core::assistant::Assistant;
+        use niva_core::ports::{ChatReply, ChatRequest, LlmError, LlmProvider};
+        use niva_core::tools::{ArgValue, ToolCall};
+
+        use super::*;
+        use crate::latency::Stamp;
+        use crate::requests::AssistantRequests;
+
+        struct Script(Mutex<Vec<Result<ChatReply, LlmError>>>);
+
+        impl LlmProvider for Script {
+            fn chat(&self, _request: &ChatRequest) -> Result<ChatReply, LlmError> {
+                self.0.lock().unwrap().remove(0)
+            }
+        }
+
+        fn call(name: &str, args: &[(&str, ArgValue)]) -> Result<ChatReply, LlmError> {
+            Ok(ChatReply {
+                text: String::new(),
+                calls: vec![ToolCall {
+                    name: name.into(),
+                    args: args
+                        .iter()
+                        .map(|(key, value)| ((*key).to_string(), value.clone()))
+                        .collect(),
+                }],
+            })
+        }
+
+        struct Traced {
+            r: Rig,
+            clock: Arc<AtomicU64>,
+            lines: Arc<Mutex<Vec<String>>>,
+        }
+
+        /// Held media (the first sound is reported by hand, like the sidecar's
+        /// `speak_started`), the voice stamped as: end of speech at 1000,
+        /// transcript at 1900.
+        fn traced(script: Vec<Result<ChatReply, LlmError>>) -> Traced {
+            let mut r = rig_with(true, move |sink| {
+                let assistant = Assistant::new(
+                    Arc::new(Script(Mutex::new(script))),
+                    Arc::new(crate::dev::DryRunPc::new(Arc::new(|_| {}))),
+                );
+                Arc::new(AssistantRequests::with_spawn(
+                    assistant,
+                    sink,
+                    Box::new(|job| {
+                        job();
+                        true
+                    }),
+                ))
+            });
+            r.core.set_media_mode(MediaMode::Held);
+            let clock = Arc::new(AtomicU64::new(0));
+            let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+            let for_clock = clock.clone();
+            r.core.set_latency(Latency::new(
+                Box::new(move || for_clock.load(Ordering::SeqCst)),
+                Box::new(|| 1_700_000_000_000),
+                Box::new(|_| {
+                    Some(Stamp {
+                        end_of_speech: Some(1_000),
+                        transcript: 1_900,
+                    })
+                }),
+                Box::new(|| Some("small".into())),
+                {
+                    let lines = lines.clone();
+                    Box::new(move |line| lines.lock().unwrap().push(line))
+                },
+            ));
+            Traced { r, clock, lines }
+        }
+
+        impl Traced {
+            fn at(&self, t: u64) {
+                self.clock.store(t, Ordering::SeqCst);
+            }
+
+            /// Handles one event at `t`, without draining what it queued.
+            fn send_at(&mut self, t: u64, event: Event) {
+                self.at(t);
+                self.r.core.handle(Input::Event(event));
+            }
+
+            /// Handles the next queued input at `t` (the model's answer, a
+            /// tool's result).
+            fn next_at(&mut self, t: u64) {
+                self.at(t);
+                let input = self.r.rx.try_recv().expect("a queued input");
+                self.r.core.handle(input);
+            }
+
+            /// Wake, then the words: the request starts at 1900.
+            fn command(&mut self) -> u64 {
+                self.send_at(500, Event::Shortcut);
+                let id = self.r.listen_id();
+                self.send_at(
+                    1_900,
+                    Event::Transcript {
+                        id,
+                        text: "something".into(),
+                        lang: Some(niva_core::replies::Lang::Es),
+                    },
+                );
+                self.r.req()
+            }
+
+            fn speak_id(&self) -> u64 {
+                self.r.core.state().speak_id.expect("a speech")
+            }
+
+            fn records(&self) -> Vec<serde_json::Value> {
+                self.lines
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect()
+            }
+        }
+
+        fn ms_of(record: &serde_json::Value, key: &str) -> u64 {
+            record[key]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{key} missing: {record}"))
+        }
+
+        /// Record 3 of the evidence: a volume command that worked was labelled
+        /// `cancelled`, its model time counted twice, and no tool time at all.
+        #[tokio::test(start_paused = true)]
+        async fn a_safe_action_is_an_action_with_stages_that_add_up_to_the_total() {
+            let mut t = traced(vec![call("set_volume", &[("level", ArgValue::Int(30))])]);
+            let req = t.command();
+            // The model answers 2061 ms after the request, the tool takes 17 ms,
+            // the first sound comes 1038 ms after the speech was sent.
+            t.next_at(3_961); // ToolCalls (RunSafe)
+            t.next_at(3_978); // Reply: the tools' answer
+            let speak = t.speak_id();
+            t.send_at(5_016, Event::SpeakStarted { id: speak });
+            let records = t.records();
+            assert_eq!(records.len(), 1, "{records:?}");
+            let record = &records[0];
+            assert_eq!(record["path"], "action", "{record}");
+            assert_eq!(record["validation"], "run_safe");
+            assert_eq!(record["req"], req);
+            assert_eq!(ms_of(record, "stt_ms"), 900);
+            assert_eq!(ms_of(record, "llm_ms"), 3_961 - 1_900, "{record}");
+            assert_eq!(ms_of(record, "tool_ms"), 17, "{record}");
+            assert_eq!(ms_of(record, "tts_ms"), 1_038);
+            assert_eq!(ms_of(record, "total_ms"), 4_016);
+            assert_eq!(ms_of(record, "t_llm_done"), 3_961);
+            assert_eq!(ms_of(record, "t_tool_done"), 3_978);
+            let named: u64 = ["stt_ms", "llm_ms", "tool_ms", "tts_ms", "other_ms"]
+                .iter()
+                .map(|key| ms_of(record, key))
+                .sum();
+            assert_eq!(named, ms_of(record, "total_ms"), "{record}");
+        }
+
+        /// Records 1 and 2: the model failed after about 2 s, and the 2 s were
+        /// lost in `other_ms` (no `llm_ms`).
+        #[tokio::test(start_paused = true)]
+        async fn a_failed_model_call_has_its_own_time_and_leaves_no_other_time() {
+            let mut t = traced(vec![Err(LlmError::Unavailable)]);
+            t.command();
+            t.next_at(3_935); // the failure, 2035 ms after the request
+            let speak = t.speak_id();
+            t.send_at(4_100, Event::SpeakStarted { id: speak });
+            let records = t.records();
+            assert_eq!(records.len(), 1, "{records:?}");
+            let record = &records[0];
+            assert_eq!(record["path"], "error");
+            assert_eq!(record["validation"], "llm_failed");
+            assert_eq!(ms_of(record, "llm_ms"), 2_035, "{record}");
+            assert_eq!(ms_of(record, "other_ms"), 0, "{record}");
+        }
+
+        /// Records 7 to 9: a risky call asked for (a lock) is a confirmation,
+        /// and answering it writes no second record; the next command is its
+        /// own record.
+        #[tokio::test(start_paused = true)]
+        async fn a_confirmation_is_one_record_and_the_next_command_is_another() {
+            let mut t = traced(vec![
+                call("power_action", &[("action", ArgValue::Str("lock".into()))]),
+                call("set_volume", &[("level", ArgValue::Int(30))]),
+            ]);
+            let first = t.command();
+            t.next_at(3_900); // ToolCalls (Confirm): the question is spoken
+            let prompt = t.speak_id();
+            t.send_at(4_700, Event::SpeakStarted { id: prompt });
+            // The owner clicks Cancel while the question is still playing.
+            let id = t.r.ui.last_view().confirm.expect("the buttons").id;
+            t.send_at(5_000, Event::Reject { id });
+            let records = t.records();
+            assert_eq!(records.len(), 1, "{records:?}");
+            assert_eq!(records[0]["path"], "confirm");
+            assert_eq!(records[0]["validation"], "confirm");
+            let said = t.speak_id();
+            t.send_at(9_500, Event::SpeakDone { id: said });
+            let second = t.command();
+            // Cancelled before the question ended, so no confirm listen was
+            // opened: four ids per turn, like the evidence's 22 -> 26 -> 30 -> 34.
+            assert_eq!(second, first + 4);
+            t.next_at(12_000);
+            t.next_at(12_010);
+            let speak = t.speak_id();
+            t.send_at(13_000, Event::SpeakStarted { id: speak });
+            let records = t.records();
+            assert_eq!(records.len(), 2, "{records:?}");
+            assert_eq!(records[1]["path"], "action");
+        }
+
+        /// A second command that starts before the first one's speech made a
+        /// sound closes the first (no sound, never invented), and is itself
+        /// recorded.
+        #[tokio::test(start_paused = true)]
+        async fn a_command_before_the_first_sound_writes_the_first_turn_without_audio() {
+            let mut t = traced(vec![
+                call("set_volume", &[("level", ArgValue::Int(30))]),
+                call("set_volume", &[("level", ArgValue::Int(40))]),
+            ]);
+            let first = t.command();
+            t.next_at(3_961);
+            t.next_at(3_978);
+            // No SpeakStarted: the owner presses the shortcut again.
+            t.send_at(4_500, Event::Shortcut);
+            let records = t.records();
+            assert_eq!(records.len(), 1, "{records:?}");
+            assert_eq!(records[0]["req"], first);
+            assert_eq!(records[0]["path"], "action", "{}", records[0]);
+            assert!(records[0].get("t_first_audio").is_none());
+            assert!(records[0].get("total_ms").is_none());
+            let id = t.r.listen_id();
+            t.send_at(
+                5_000,
+                Event::Transcript {
+                    id,
+                    text: "again".into(),
+                    lang: None,
+                },
+            );
+            t.next_at(6_000);
+            t.next_at(6_010);
+            let speak = t.speak_id();
+            t.send_at(7_000, Event::SpeakStarted { id: speak });
+            let records = t.records();
+            assert_eq!(records.len(), 2, "{records:?}");
+            assert_eq!(records[1]["path"], "action");
+        }
     }
 
     // --- reducer + runner loop -------------------------------------------

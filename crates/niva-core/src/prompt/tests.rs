@@ -180,6 +180,30 @@ fn small_talk_about_sleeping_is_not_a_power_request() {
 }
 
 #[test]
+fn set_volume_says_that_silencing_the_computer_is_a_mute() {
+    // Batch 38, the first real run: "Silenciá la compu" came back from Whisper
+    // as a phrase with "la computadora" and the model took "the computer" for
+    // the PC of power_action (lock or sleep). Of 19 spoken ways to say "mute
+    // the computer" (compu, computadora, PC, muteá, callá, en silencio), 7 went
+    // to power_action before this sentence in the set_volume description and
+    // 0 after it.
+    let volume = spec("set_volume");
+    assert!(
+        volume.description.ends_with(
+            "Also use it to mute or silence the computer's sound ('silenciá la compu', 'mute the PC')."
+        ),
+        "{}",
+        volume.description
+    );
+    // The power tool keeps its E1 wording: the fix lives in the other tool.
+    assert!(
+        !spec("power_action").description.contains("set_volume"),
+        "{}",
+        spec("power_action").description
+    );
+}
+
+#[test]
 fn power_action_is_only_for_an_explicit_command_about_the_pc() {
     // E1 attempt 4: the held-out phrasings ("I'm done for today", "me voy a
     // la cama") still produced power_action sleep after the prompt line of

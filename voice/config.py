@@ -25,6 +25,14 @@ class Tunables:
     # keeps its first syllables. Same value and same caveat as above; it can
     # also carry the tail of the wake word itself.
     wake_preroll_ms: int = 300
+    # Speech heard this long after a wake detection is provisional, like the
+    # replayed pre-roll: the detector fires before the word ends, so "...vis" is
+    # still being said after it. If the user pauses (to watch the island) the tail
+    # alone must not end the turn; a one-breath command keeps talking past the
+    # window and so counts. MEASURED on live runs (2026-11-07): tails of 200-400
+    # ms. A command that ends entirely inside this window would be mistaken for
+    # the tail; real commands are longer than the tail plus this.
+    wake_tail_ms: int = 400
     # Stock hey_jarvis placeholder threshold (spikes/voice/RESULTS.md: live
     # scores 0.61-0.85, 0 false activations in 10 idle minutes at 0.5).
     wake_threshold: float = 0.5
@@ -69,6 +77,10 @@ class Tunables:
     command_tokens_per_s: float = 10.0
     command_min_new_tokens: int = 24
     command_max_new_tokens: int = 224
+    # Niva's voice is a cute little robot (owner's choice, 2026-11-09): every
+    # synthesized reply goes through the effect in voice_fx.py. False speaks the
+    # plain voices (`--no-robot-voice`).
+    robot_voice: bool = True
 
     @property
     def pre_speech_frames(self) -> int:
