@@ -92,6 +92,14 @@ class Tunables:
     # are missing it logs once and falls back to the public path
     # (`--no-single-pass-stt` forces that path).
     single_pass_stt: bool = True
+    # Keep one edge-tts websocket open and connect it early (when a listen starts
+    # and when a transcript is about to go out) instead of one connect per
+    # utterance: ~450 ms saved, measured 2026-11-09. A connection idle for more
+    # than `edge_ws_stale_s` is replaced before use (the service dropped an idle
+    # socket at 60 s and kept it at 30 s). False is the one-connection-per-
+    # utterance path of edge-tts itself (`--no-persistent-edge`).
+    persistent_edge_ws: bool = True
+    edge_ws_stale_s: float = 30.0
 
     @property
     def pre_speech_frames(self) -> int:

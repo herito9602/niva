@@ -89,12 +89,16 @@ class FakeSpeaker:
     def __init__(self) -> None:
         self.spoken: list[tuple[int, str, str]] = []
         self.stops = 0
+        self.prepares = 0  # "a reply is likely soon" hints
 
     def speak(self, speak_id: int, text: str, lang: str) -> None:
         self.spoken.append((speak_id, text, lang))
 
     def stop(self) -> None:
         self.stops += 1
+
+    def prepare(self) -> None:
+        self.prepares += 1
 
 
 class Harness:

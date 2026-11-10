@@ -506,3 +506,38 @@ def test_one_frame_over_the_threshold_does_not_stop_the_no_speech_clock(h):
     h.feed(frames(SPEECH, 1))  # a click, not speech: the onset needs two frames
     h.feed(frames(SILENCE, int(6000 / FRAME_MS) + 2))
     assert h.events == [{"type": "no_speech", "id": 3}]
+
+
+# ------------------------------------------------------------------ voice warm-up hints
+
+
+def test_a_wake_detection_tells_the_speaker_a_reply_is_coming(h):
+    h.feed(frames(SILENCE, 10) + [frame(WAKE_END)])
+    assert h.types() == ["wake"] and h.speaker.prepares == 1
+
+
+def test_a_listen_tells_the_speaker_even_without_a_wake(h):
+    h.engine.on_command(Listen(1, "command"))
+    assert h.speaker.prepares == 1
+
+
+def test_the_speaker_is_prepared_before_whisper_runs_not_after(h):
+    seen = []
+    original = h.stt.transcribe
+
+    def transcribe(audio, **kwargs):
+        seen.append(h.speaker.prepares)
+        return original(audio, **kwargs)
+
+    h.stt.transcribe = transcribe
+    h.engine.on_command(Listen(1, "command"))
+    before = h.speaker.prepares
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, 25))
+    assert h.types() == ["speech_start", "transcript"]
+    assert seen == [before + 1], "the connection warms up while Whisper runs"
+
+
+def test_a_listen_refused_because_the_mic_is_down_prepares_nothing(h):
+    h.engine.on_mic_error(ErrorCode.MIC_MISSING, "gone")
+    h.engine.on_command(Listen(1, "command"))
+    assert h.speaker.prepares == 0

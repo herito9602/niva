@@ -232,6 +232,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="transcribe through faster-whisper's public API (two encoder passes)",
     )
+    p.add_argument(
+        "--no-persistent-edge", action="store_true", help="open a new edge-tts connection for every reply"
+    )
     p.add_argument("--mic-device", default=None, help="sounddevice input device index or name")
     p.add_argument(
         "--dev-host", action="store_true", help="act as a tiny host: listen after wake, speak the transcript"
@@ -256,6 +259,8 @@ def tunables_from(args: argparse.Namespace) -> Tunables:
         overrides["preopen_output"] = False
     if args.no_single_pass_stt:
         overrides["single_pass_stt"] = False
+    if args.no_persistent_edge:
+        overrides["persistent_edge_ws"] = False
     return dataclasses.replace(Tunables(), **overrides)
 
 
@@ -324,8 +329,13 @@ def main(argv: list[str] | None = None) -> int:
     mic = SoundDeviceMic(tunables.mic_stall_s, _device(args.mic_device))
     discards = DiscardLog()
     engines: list[Any] = []
+    edge_client = None
     if not args.no_edge:
-        engines.append(EdgeTtsEngine(tunables))
+        if tunables.persistent_edge_ws:
+            from edge_ws import EdgeWsClient
+
+            edge_client = EdgeWsClient(stale_after_s=tunables.edge_ws_stale_s)
+        engines.append(EdgeTtsEngine(tunables, client=edge_client))
     if args.piper_dir:
         piper = PiperEngine(args.piper_dir)
         if piper.available():
@@ -351,6 +361,8 @@ def main(argv: list[str] | None = None) -> int:
         return sidecar.run()
     finally:
         speaker.stop()
+        if edge_client is not None:
+            edge_client.close()
         log.info("discard counts: %s", dict(discards.counts))
 
 

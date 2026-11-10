@@ -142,6 +142,14 @@ off if it misbehaves (add the option to `NIVA_VOICE_ARGS`). Savings are measured
 |---|---|---|
 | `--no-preopen-output` | Opens the sound device while the reply is still being synthesized, not at the first audio. | ~220 ms (MME open) |
 | `--no-single-pass-stt` | Runs the Whisper encoder once and uses it both to choose es/en and to decode (faster-whisper 1.2.1 internals, isolated in `stt.single_pass_decode`; falls back to the public API and logs once if they change). | ~115-190 ms |
+| `--no-persistent-edge` | Keeps one edge-tts websocket open (`edge_ws.py`), connects it when a listen starts and when a transcript is about to go out, replaces it after 30 s idle, retries once on a fresh connection (a reused socket gets 1.5 s to answer; healthy first frames measured 0.13 to 2.1 s), then falls back to the one-connection-per-reply path with the full 2 s first-chunk budget, then Piper (preloaded in the background at startup). | ~310 ms |
+
+Connection warm-up and privacy: with the persistent connection, the sidecar opens the TTS service
+connection (a websocket to Microsoft's edge-tts endpoint) as soon as a wake word is heard or a
+listen starts, so the voice is ready when the reply comes. That happens even if no reply follows
+(a wake word that leads nowhere, a cancelled listen, an empty transcript); no text is sent over it
+until Niva speaks. `--no-persistent-edge` avoids the early connection (a connection is then opened
+only when a reply is spoken), and `--no-edge` never contacts the service at all.
 
 Start margin and endpointer check on the recorded phrases (no microphone):
 

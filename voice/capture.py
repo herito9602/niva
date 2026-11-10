@@ -60,6 +60,8 @@ class SpeakerPort(Protocol):
 
     def stop(self) -> None: ...
 
+    def prepare(self) -> None: ...
+
 
 class SidecarFatal(Exception):
     """An error after which the sidecar cannot keep serving (the host restarts it)."""
@@ -237,6 +239,7 @@ class Engine:
                 self._pending_pre = len(self._pending)
                 self._wake_ms = self._frame_ms
                 self._emit(protocol.wake(score))
+                self._speaker.prepare()  # a reply will follow: connect the voice while the user talks
         elif score >= t.wake_near_miss_floor:
             self._near_peak = max(self._near_peak, score)
         elif self._near_peak:
@@ -252,6 +255,7 @@ class Engine:
             self._emit(protocol.error(code, msg, command.id))
             return
         t = self._t
+        self._speaker.prepare()  # (also covers a shortcut listen, which has no wake)
         history: list[_Stamped]
         wake_ms = self._wake_ms if self._pending is not None else None
         self._wake_ms = None
@@ -373,6 +377,7 @@ class Engine:
         self._end_listen()
 
         audio = np.concatenate(frames).astype(np.float32) / 32768.0
+        self._speaker.prepare()  # the reply is about a second away: connect the voice while Whisper runs
         try:
             result = self._stt.transcribe(audio, mode=listen.mode, lang=listen.lang, context=listen.context)
         except SttError as exc:

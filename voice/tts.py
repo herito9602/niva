@@ -27,6 +27,7 @@ import numpy as np
 import protocol
 from audio_io import AudioOutput, OutputError
 from config import Tunables
+from edge_ws import EdgeWsClient, EdgeWsTimeout, UnsupportedText
 from protocol import ErrorCode
 from voice_fx import RobotVoice, float_to_pcm16, pcm16_to_float
 
@@ -224,15 +225,53 @@ class EdgeTtsEngine:
     name = "edge-tts"
     output_rate = EDGE_SAMPLE_RATE  # lets the speaker open the device before the first chunk
 
-    def __init__(self, tunables: Tunables, mp3_stream: Mp3Stream = edge_mp3_stream, idle_timeout_s: float = 10.0):
+    def __init__(
+        self,
+        tunables: Tunables,
+        mp3_stream: Mp3Stream = edge_mp3_stream,
+        idle_timeout_s: float = 10.0,
+        client: EdgeWsClient | None = None,
+    ):
         self._first = tunables.tts_first_chunk_s
         self._idle = idle_timeout_s
         self._mp3_stream = mp3_stream
+        self._client = client  # the persistent connection; None = a new connection per reply
+
+    def prepare(self) -> None:
+        """A reply is likely soon: have the connection ready."""
+        if self._client is not None:
+            self._client.prewarm()
 
     def chunks(self, text: str, lang: str, cancel: threading.Event) -> Iterator[PcmChunk]:
         voice = EDGE_VOICES[lang]
-        mp3 = threaded_chunks(lambda: self._mp3_stream(text, voice), self._first, self._idle, cancel)
-        yield from decode_mp3_stream(mp3)
+        yield from decode_mp3_stream(self.mp3_chunks(text, voice, cancel))
+
+    def mp3_chunks(self, text: str, voice: str, cancel: threading.Event) -> Iterator[bytes]:
+        """MP3 chunks from the network: the persistent connection first, then the one-off
+        edge-tts connection when that failed before any audio, a timeout included (the
+        one-off attempt gets the full first-audio budget: a slow network must not lose to
+        Piper just because the persistent attempt used some of it). A gap in the middle of
+        the audio goes straight to the next engine."""
+        client = self._client
+        first = self._first
+        if client is not None:
+            started = False
+            try:
+                for piece in client.stream(text, voice, cancel, self._first, self._idle):
+                    started = True
+                    yield piece
+                return
+            except EdgeWsTimeout as exc:
+                if started:
+                    raise TtsTimeout(str(exc)) from exc
+                log.warning("persistent edge-tts connection timed out (%s); using a one-off connection", exc)
+            except UnsupportedText:
+                pass  # a long text: edge-tts splits it into several requests itself
+            except Exception as exc:  # noqa: BLE001
+                if started:
+                    raise
+                log.warning("persistent edge-tts connection failed (%s); using a one-off connection", exc)
+        yield from threaded_chunks(lambda: self._mp3_stream(text, voice), first, self._idle, cancel)
 
 
 class PiperEngine:
@@ -440,6 +479,17 @@ class Speaker:
         run = self._current
         if run is not None:
             run.abort()
+
+    def prepare(self) -> None:
+        """A reply is likely soon (a listen started or a transcript is about to go out):
+        let the engines get ready, e.g. connect."""
+        for engine in self._engines:
+            prepare = getattr(engine, "prepare", None)
+            if prepare is not None:
+                try:
+                    prepare()
+                except Exception as exc:  # noqa: BLE001 - preparing is an optimization only
+                    log.debug("%s could not prepare: %s", engine.name, exc)
 
     def join(self, timeout: float | None = None) -> None:
         thread = self._thread
