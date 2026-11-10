@@ -81,6 +81,41 @@ class Tunables:
     # synthesized reply goes through the effect in voice_fx.py. False speaks the
     # plain voices (`--no-robot-voice`).
     robot_voice: bool = True
+    # Open the output device while the reply is still being synthesized, so the
+    # first audio does not wait for the device (MME open measured at ~294 ms per
+    # utterance, 2026-11-09). False opens it at the first audio, as before
+    # (`--no-preopen-output`).
+    preopen_output: bool = True
+    # Run the Whisper encoder once per utterance and use that output both to pick
+    # es/en and to decode (faster-whisper's own path encodes twice: ~188 ms
+    # saved, measured 2026-11-09). Uses faster-whisper 1.2.1 internals; if they
+    # are missing it logs once and falls back to the public path
+    # (`--no-single-pass-stt` forces that path).
+    single_pass_stt: bool = True
+    # Keep one edge-tts websocket open and connect it early (when a listen starts
+    # and when a transcript is about to go out) instead of one connect per
+    # utterance: ~450 ms saved, measured 2026-11-09. A connection idle for more
+    # than `edge_ws_stale_s` is replaced before use (the service dropped an idle
+    # socket at 60 s and kept it at 30 s). False is the one-connection-per-
+    # utterance path of edge-tts itself (`--no-persistent-edge`).
+    persistent_edge_ws: bool = True
+    edge_ws_stale_s: float = 30.0
+    # Cache the raw edge-tts MP3 of short replies on disk and play repeats from
+    # there (template replies repeat a lot; a hit skips the network: ~140 ms mean,
+    # measured 2026-11-09). Niva's own replies only, never the user's speech; see
+    # tts_cache.py. False disables it (`--no-tts-cache`).
+    tts_cache: bool = True
+    # Replies longer than this are never cached (search summaries, long answers).
+    tts_cache_max_chars: int = 120
+    tts_cache_max_mb: int = 50
+    # Speculative Whisper: once the closing silence reaches `speculative_stt_ms`
+    # (well before `end_silence_ms` confirms the end), transcribe what was said so
+    # far in the background. If the end is confirmed with the same audio, that
+    # result is used and the wait is shortened by up to ms of Whisper time; if
+    # speech resumes first, it is thrown away. Nothing is ever sent before the
+    # VAD end is confirmed. 0 or False disables it (`--no-speculative-stt`).
+    speculative_stt: bool = True
+    speculative_stt_ms: int = 250
 
     @property
     def pre_speech_frames(self) -> int:
@@ -89,6 +124,13 @@ class Tunables:
     @property
     def wake_preroll_frames(self) -> int:
         return max(0, -(-self.wake_preroll_ms // FRAME_MS))
+
+    @property
+    def speculative_stt_frames(self) -> int:
+        """Frames of closing silence that start a speculative transcription (0 = off)."""
+        if not self.speculative_stt or not 0 < self.speculative_stt_ms < self.end_silence_ms:
+            return 0
+        return max(1, -(-self.speculative_stt_ms // FRAME_MS))
 
     @property
     def trailing_pad_frames(self) -> int:

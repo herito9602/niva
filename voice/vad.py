@@ -95,6 +95,15 @@ class Endpointer:
     def in_speech(self) -> bool:
         return self._in_speech
 
+    @property
+    def silence_frames(self) -> int | None:
+        """While a closing silence is running: how many frames it has lasted, not counting
+        its first (the value `End.silence_frames_ago` reaches when the end is confirmed).
+        None when no silence is running."""
+        if not self._in_speech or self._silence_start is None:
+            return None
+        return self._index - 1 - self._silence_start
+
     def push(self, prob: float) -> Onset | End | None:
         i = self._index
         self._index += 1

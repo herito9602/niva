@@ -89,6 +89,7 @@ class FakeSpeaker:
     def __init__(self) -> None:
         self.spoken: list[tuple[int, str, str]] = []
         self.stops = 0
+        self.prepares = 0  # "a reply is likely soon" hints
 
     def speak(self, speak_id: int, text: str, lang: str) -> None:
         self.spoken.append((speak_id, text, lang))
@@ -96,13 +97,16 @@ class FakeSpeaker:
     def stop(self) -> None:
         self.stops += 1
 
+    def prepare(self) -> None:
+        self.prepares += 1
+
 
 class Harness:
-    def __init__(self, tunables: Tunables | None = None, **stt_args) -> None:
+    def __init__(self, tunables: Tunables | None = None, stt: FakeStt | None = None, **stt_args) -> None:
         self.events: list[dict] = []
         self.wake = FakeWake()
         self.vad = FakeVad()
-        self.stt = FakeStt(**stt_args)
+        self.stt = stt or FakeStt(**stt_args)
         self.speaker = FakeSpeaker()
         self.discards = DiscardLog()
         self.now = 1_000_000

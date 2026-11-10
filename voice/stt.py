@@ -20,6 +20,8 @@ is an error, not a silent CPU run.
 
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import logging
 import os
 import sys
@@ -40,6 +42,10 @@ CUDA_COMPUTE_ORDER = ("float16", "int8_float16", "int8", "float32")
 CPU_COMPUTE_ORDER = ("int8", "int8_float32", "float32")
 
 _OOM_HINTS = ("out of memory", "alloc_failed", "memoryallocation", "cudaerrormemory")
+
+# What a faster-whisper whose internals changed raises in `single_pass_decode`. Only these
+# switch the single-pass path off for good; any other failure is treated as that call's problem.
+_INTERNALS_MISMATCH = (ImportError, AttributeError, KeyError, TypeError, NameError)
 
 
 class SttError(Exception):
@@ -136,12 +142,78 @@ def detect_es_en(model: Any, audio: np.ndarray) -> tuple[str, float, float]:
     return ("es" if p_es >= p_en else "en"), p_es, p_en
 
 
+# What a single-pass decoder returns: the language, its es/en probabilities, and the
+# Whisper segments (each with `.text` and `.no_speech_prob`).
+SinglePassResult = tuple[str, float, float, list[Any]]
+SinglePass = Callable[[Any, np.ndarray, "str | None", "dict[str, Any]"], SinglePassResult]
+
+
+def single_pass_decode(model: Any, audio: np.ndarray, forced: str | None, options: dict[str, Any]) -> SinglePassResult:
+    """Encode the audio once; pick es/en from that encoder output; decode from it.
+
+    This is the ONLY place that uses faster-whisper 1.2.1 internals (the version
+    installed; a test guards them): ``feature_extractor``, ``encode``, ``model.detect_language``,
+    ``hf_tokenizer``, ``TranscriptionOptions`` and ``generate_segments`` with its
+    ``encoder_output`` argument. ``generate_segments`` is the same code
+    ``transcribe()`` runs after its language detection, so segmenting, the
+    no-speech skip and the temperature fallback are unchanged; only the second
+    encoder pass is gone. Any mismatch raises, and the caller falls back.
+
+    ``options`` are ``transcribe()`` keyword arguments (``language`` and
+    ``vad_filter`` are handled here / not needed).
+    """
+    from faster_whisper.audio import pad_or_trim
+    from faster_whisper.tokenizer import Tokenizer
+    from faster_whisper.transcribe import TranscriptionOptions, get_suppressed_tokens
+
+    if not model.model.is_multilingual:
+        raise RuntimeError("single-pass decoding needs a multilingual model")
+    features = model.feature_extractor(audio)
+    content_frames = features.shape[-1] - 1  # as generate_segments counts them
+    if content_frames <= 0:
+        raise ValueError("audio too short to encode")
+    encoder_output = model.encode(pad_or_trim(features[..., :content_frames]))
+
+    if forced is not None:
+        chosen, p_es, p_en = forced, float(forced == "es"), float(forced == "en")
+    else:
+        # Restricted to Spanish vs English, like `detect_es_en`: same comparison, no second encoder pass.
+        probs = {token[2:-2]: float(prob) for token, prob in model.model.detect_language(encoder_output)[0]}
+        p_es, p_en = probs.get("es", 0.0), probs.get("en", 0.0)
+        chosen = "es" if p_es >= p_en else "en"
+
+    tokenizer = Tokenizer(model.hf_tokenizer, True, task="transcribe", language=chosen)
+    defaults = {name: param.default for name, param in inspect.signature(model.transcribe).parameters.items()}
+    values: dict[str, Any] = {}
+    for field in dataclasses.fields(TranscriptionOptions):
+        if field.name == "temperatures":
+            temperature = options.get("temperature", defaults["temperature"])
+            values[field.name] = list(temperature) if isinstance(temperature, (list, tuple)) else [temperature]
+        elif field.name in options:
+            values[field.name] = options[field.name]
+        else:
+            values[field.name] = defaults[field.name]  # KeyError here = a different faster-whisper
+    if values["suppress_tokens"]:
+        values["suppress_tokens"] = get_suppressed_tokens(tokenizer, list(values["suppress_tokens"]))
+    segments = list(model.generate_segments(features, tokenizer, TranscriptionOptions(**values), False, encoder_output))
+    return chosen, p_es, p_en, segments
+
+
 class WhisperTranscriber:
-    def __init__(self, model: Any, compute_type: str, device: str, tunables: Tunables | None = None):
+    def __init__(
+        self,
+        model: Any,
+        compute_type: str,
+        device: str,
+        tunables: Tunables | None = None,
+        single_pass: SinglePass | None = None,
+    ):
         self._model = model
         self.compute_type = compute_type
         self.device = device
         self._t = tunables or Tunables()
+        # `None` = the public two-pass path. The seam lets tests drive the fast path with fakes.
+        self._single_pass: SinglePass | None = single_pass or (single_pass_decode if self._t.single_pass_stt else None)
 
     @classmethod
     def load(
@@ -216,12 +288,8 @@ class WhisperTranscriber:
         """``lang`` and ``context`` only count in confirm mode (see the module doc)."""
         confirm = mode == "confirm"
         forced = lang if confirm and lang in ("es", "en") else None
-        if forced is not None:
-            chosen, p_es, p_en = forced, float(forced == "es"), float(forced == "en")
-        else:
-            chosen, p_es, p_en = detect_es_en(self._model, audio)
+        # One set of options for both paths: the single-pass decode must behave like the public call.
         options: dict[str, Any] = {
-            "language": chosen,
             "beam_size": 1,
             "vad_filter": False,
             "condition_on_previous_text": False,
@@ -232,7 +300,32 @@ class WhisperTranscriber:
             options["without_timestamps"] = True
             if forced is not None and context:
                 options["initial_prompt"] = context
-        segments, _info = self._model.transcribe(audio, **options)
+        segments = None
+        if self._single_pass is not None:
+            try:
+                chosen, p_es, p_en, segments = self._single_pass(self._model, audio, forced, dict(options))
+            except Exception as exc:  # noqa: BLE001 - fall back to the public API for this call
+                if is_oom(exc):
+                    raise
+                if isinstance(exc, _INTERNALS_MISMATCH):
+                    log.warning(
+                        "single-pass Whisper unavailable (%s: %s); using the two-pass public API from now on",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    self._single_pass = None  # a different faster-whisper: log once, not on every utterance
+                else:
+                    log.warning(
+                        "single-pass Whisper failed once (%s: %s); using the two-pass public API for this call",
+                        type(exc).__name__,
+                        exc,
+                    )
+        if segments is None:
+            if forced is not None:
+                chosen, p_es, p_en = forced, float(forced == "es"), float(forced == "en")
+            else:
+                chosen, p_es, p_en = detect_es_en(self._model, audio)
+            segments, _info = self._model.transcribe(audio, language=chosen, **options)
         kept: list[str] = []
         dropped = 0
         for segment in segments:

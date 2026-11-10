@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import IO, Any
 
 import protocol
@@ -222,13 +223,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--piper-dir", default=env("NIVA_PIPER_DIR"), help="folder with the Piper voices (fallback TTS)")
     p.add_argument("--no-edge", action="store_true", help="speak with Piper only (nothing leaves the machine)")
     p.add_argument("--no-robot-voice", action="store_true", help="speak with the plain voices, without the robot effect")
+    p.add_argument(
+        "--no-preopen-output",
+        action="store_true",
+        help="open the output device at the first audio, not in parallel with synthesis",
+    )
+    p.add_argument(
+        "--no-single-pass-stt",
+        action="store_true",
+        help="transcribe through faster-whisper's public API (two encoder passes)",
+    )
+    p.add_argument(
+        "--no-persistent-edge", action="store_true", help="open a new edge-tts connection for every reply"
+    )
+    p.add_argument("--no-tts-cache", action="store_true", help="do not cache short synthesized replies on disk")
+    p.add_argument(
+        "--tts-cache-dir",
+        default=None,
+        help="folder for the reply cache (default: NIVA_TTS_CACHE_DIR, else %%LOCALAPPDATA%%\\Niva\\tts-cache)",
+    )
     p.add_argument("--mic-device", default=None, help="sounddevice input device index or name")
     p.add_argument(
         "--dev-host", action="store_true", help="act as a tiny host: listen after wake, speak the transcript"
     )
     p.add_argument("--log-file", default=None)
     p.add_argument("--verbose", action="store_true")
-    for field in ("pre_speech_ms", "wake_preroll_ms", "end_silence_ms"):
+    p.add_argument(
+        "--no-speculative-stt", action="store_true", help="transcribe only after the end of speech is confirmed"
+    )
+    for field in ("pre_speech_ms", "wake_preroll_ms", "end_silence_ms", "speculative_stt_ms"):
         p.add_argument(f"--{field.replace('_', '-')}", type=int, default=None)
     p.add_argument("--wake-threshold", type=float, default=None)
     return p.parse_args(argv)
@@ -237,11 +260,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def tunables_from(args: argparse.Namespace) -> Tunables:
     overrides = {
         name: getattr(args, name)
-        for name in ("pre_speech_ms", "wake_preroll_ms", "end_silence_ms", "wake_threshold")
+        for name in ("pre_speech_ms", "wake_preroll_ms", "end_silence_ms", "speculative_stt_ms", "wake_threshold")
         if getattr(args, name) is not None
     }
     if args.no_robot_voice:
         overrides["robot_voice"] = False
+    if args.no_preopen_output:
+        overrides["preopen_output"] = False
+    if args.no_single_pass_stt:
+        overrides["single_pass_stt"] = False
+    if args.no_persistent_edge:
+        overrides["persistent_edge_ws"] = False
+    if args.no_tts_cache:
+        overrides["tts_cache"] = False
+    if args.no_speculative_stt:
+        overrides["speculative_stt"] = False
     return dataclasses.replace(Tunables(), **overrides)
 
 
@@ -310,8 +343,13 @@ def main(argv: list[str] | None = None) -> int:
     mic = SoundDeviceMic(tunables.mic_stall_s, _device(args.mic_device))
     discards = DiscardLog()
     engines: list[Any] = []
+    edge_client = None
     if not args.no_edge:
-        engines.append(EdgeTtsEngine(tunables))
+        if tunables.persistent_edge_ws:
+            from edge_ws import EdgeWsClient
+
+            edge_client = EdgeWsClient(stale_after_s=tunables.edge_ws_stale_s)
+        engines.append(EdgeTtsEngine(tunables, client=edge_client, cache=_reply_cache(args, tunables)))
     if args.piper_dir:
         piper = PiperEngine(args.piper_dir)
         if piper.available():
@@ -337,7 +375,23 @@ def main(argv: list[str] | None = None) -> int:
         return sidecar.run()
     finally:
         speaker.stop()
+        if edge_client is not None:
+            edge_client.close()
         log.info("discard counts: %s", dict(discards.counts))
+
+
+def _reply_cache(args: argparse.Namespace, tunables: Tunables) -> Any:
+    """The on-disk cache of short synthesized replies, or None when it is off or has no folder."""
+    if not tunables.tts_cache:
+        return None
+    from tts_cache import TtsCache, default_cache_dir
+
+    directory = Path(args.tts_cache_dir) if args.tts_cache_dir else default_cache_dir()
+    if directory is None:
+        log.warning("no folder for the reply cache (LOCALAPPDATA is not set); caching is off")
+        return None
+    log.info("reply cache: %s", directory)
+    return TtsCache(directory, tunables.tts_cache_max_mb * 1024 * 1024, tunables.tts_cache_max_chars)
 
 
 def _preload(piper: Any) -> None:

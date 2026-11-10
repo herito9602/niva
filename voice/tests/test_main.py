@@ -401,3 +401,199 @@ def test_a_different_mic_failure_is_reported_even_after_one_was(failures):
     codes = [e["code"] for e in run.h.events if e["type"] == "error"]
     assert codes == [f.code.value for f in failures]
     run.finish()
+
+
+@pytest.mark.parametrize(
+    ("flag", "field"),
+    [
+        ("--no-preopen-output", "preopen_output"),
+        ("--no-single-pass-stt", "single_pass_stt"),
+        ("--no-persistent-edge", "persistent_edge_ws"),
+        ("--no-tts-cache", "tts_cache"),
+        ("--no-speculative-stt", "speculative_stt"),
+    ],
+)
+def test_each_latency_optimization_is_on_by_default_and_has_its_own_switch(flag, field):
+    from main import parse_args, tunables_from
+
+    assert getattr(tunables_from(parse_args([])), field) is True
+    off = tunables_from(parse_args([flag]))
+    assert getattr(off, field) is False
+    switches = ("preopen_output", "single_pass_stt", "persistent_edge_ws", "tts_cache", "speculative_stt")
+    assert all(getattr(off, other) is True for other in switches if other != field), "one switch, one optimization"
+
+
+def test_the_speculation_threshold_can_be_tuned_from_the_command_line():
+    from main import parse_args, tunables_from
+
+    assert tunables_from(parse_args(["--speculative-stt-ms", "200"])).speculative_stt_ms == 200
+    assert tunables_from(parse_args([])).speculative_stt_ms == 250
+
+
+# ------------------------------------------------------------------ main(): how the TTS pieces are wired
+
+
+class _FakeEdgeClient:
+    instances: list = []
+
+    def __init__(self, **kwargs):
+        self.kwargs, self.closed = kwargs, False
+        _FakeEdgeClient.instances.append(self)
+
+    def close(self):
+        self.closed = True
+
+
+class _RecordingEdgeEngine:
+    instances: list = []
+
+    def __init__(self, tunables, *args, **kwargs):
+        self.tunables, self.kwargs = tunables, kwargs
+        _RecordingEdgeEngine.instances.append(self)
+
+
+@pytest.fixture
+def wired(monkeypatch, tmp_path):
+    """`main()` with every model, device and thread seam replaced: only the wiring is real."""
+    import sys
+    import types
+
+    import edge_ws
+    import main
+    import stt
+    import tts
+    import vad
+    import wake
+
+    _FakeEdgeClient.instances, _RecordingEdgeEngine.instances = [], []
+    for name in ("NIVA_TTS_CACHE_DIR", "NIVA_PIPER_DIR", "NIVA_WAKE_MODEL_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO()))
+    monkeypatch.setattr(main, "claim_stdout", lambda: io.BytesIO())
+    monkeypatch.setattr(main, "setup_logging", lambda args: None)
+    monkeypatch.setattr(main, "read_commands", lambda *args: None)
+    monkeypatch.setattr(main, "SoundDeviceMic", lambda *args: object())
+    monkeypatch.setattr(main, "Engine", lambda **kwargs: object())
+    monkeypatch.setattr(stt, "add_nvidia_dll_dirs", lambda: [])
+    monkeypatch.setattr(stt.WhisperTranscriber, "load", classmethod(lambda cls, *args, **kwargs: object()))
+    monkeypatch.setattr(wake, "OpenWakeWordDetector", lambda directory: object())
+    monkeypatch.setattr(vad, "SileroStream", lambda: object())
+    monkeypatch.setattr(tts, "EdgeTtsEngine", _RecordingEdgeEngine)
+    monkeypatch.setattr(edge_ws, "EdgeWsClient", _FakeEdgeClient)
+
+    class FakeSidecar:
+        outcome: object = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self):
+            if isinstance(FakeSidecar.outcome, BaseException):
+                raise FakeSidecar.outcome
+            return FakeSidecar.outcome
+
+    monkeypatch.setattr(main, "Sidecar", FakeSidecar)
+    return types.SimpleNamespace(main=main.main, sidecar=FakeSidecar, tmp_path=tmp_path)
+
+
+def test_by_default_the_edge_engine_gets_a_persistent_client_and_a_cache_in_local_app_data(wired):
+    assert wired.main([]) == 0
+    (engine,) = _RecordingEdgeEngine.instances
+    (client,) = _FakeEdgeClient.instances
+    assert engine.kwargs["client"] is client and client.kwargs == {"stale_after_s": Tunables().edge_ws_stale_s}
+    assert engine.kwargs["cache"].directory == wired.tmp_path / "appdata" / "Niva" / "tts-cache"
+
+
+def test_no_persistent_edge_gives_the_engine_no_client(wired):
+    assert wired.main(["--no-persistent-edge"]) == 0
+    (engine,) = _RecordingEdgeEngine.instances
+    assert engine.kwargs["client"] is None and _FakeEdgeClient.instances == []
+    assert engine.kwargs["cache"] is not None, "the cache is its own switch"
+
+
+def test_no_tts_cache_gives_the_engine_no_cache(wired):
+    assert wired.main(["--no-tts-cache"]) == 0
+    (engine,) = _RecordingEdgeEngine.instances
+    assert engine.kwargs["cache"] is None and engine.kwargs["client"] is _FakeEdgeClient.instances[0]
+
+
+def test_the_cache_folder_comes_from_the_flag_then_the_environment_then_local_app_data(wired, monkeypatch):
+    flag_dir, env_dir = wired.tmp_path / "from-flag", wired.tmp_path / "from-env"
+    monkeypatch.setenv("NIVA_TTS_CACHE_DIR", str(env_dir))
+    wired.main(["--tts-cache-dir", str(flag_dir)])
+    wired.main([])
+    assert [e.kwargs["cache"].directory for e in _RecordingEdgeEngine.instances] == [flag_dir, env_dir]
+
+
+def test_without_local_app_data_or_a_folder_the_cache_is_off(wired, monkeypatch):
+    monkeypatch.delenv("LOCALAPPDATA")
+    assert wired.main([]) == 0
+    assert _RecordingEdgeEngine.instances[0].kwargs["cache"] is None
+
+
+class _SlowPiper:
+    """A Piper whose preload blocks until released: proves main() does not wait for it."""
+
+    instances: list = []
+
+    def __init__(self, model_dir):
+        self.dir, self.started, self.release = model_dir, threading.Event(), threading.Event()
+        self.fail = False
+        _SlowPiper.instances.append(self)
+
+    name = "piper"
+
+    def available(self):
+        return True
+
+    def preload(self):
+        self.started.set()
+        self.release.wait(5)
+        if self.fail:
+            raise RuntimeError("no memory")
+
+
+def test_piper_is_preloaded_in_the_background_without_delaying_startup(wired, monkeypatch):
+    import tts
+
+    _SlowPiper.instances = []
+    monkeypatch.setattr(tts, "PiperEngine", _SlowPiper)
+    assert wired.main(["--piper-dir", "voices"]) == 0  # returns while the preload is still blocked
+    (piper,) = _SlowPiper.instances
+    assert piper.started.wait(2) and not piper.release.is_set()
+    piper.release.set()
+
+
+def test_without_a_piper_folder_nothing_is_preloaded(wired, monkeypatch):
+    import tts
+
+    _SlowPiper.instances = []
+    monkeypatch.setattr(tts, "PiperEngine", _SlowPiper)
+    assert wired.main([]) == 0
+    assert _SlowPiper.instances == []
+
+
+def test_a_failed_piper_preload_is_logged_once_and_does_not_break_anything(caplog):
+    import main
+
+    piper = _SlowPiper("voices")
+    piper.fail = True
+    piper.release.set()
+    with caplog.at_level("WARNING"):
+        main._preload(piper)
+    assert [r.getMessage() for r in caplog.records].count("Piper preload failed: no memory") == 1
+
+
+def test_no_edge_builds_neither_the_edge_engine_nor_its_client(wired):
+    assert wired.main(["--no-edge"]) == 0
+    assert _RecordingEdgeEngine.instances == [] and _FakeEdgeClient.instances == []
+
+
+def test_the_edge_client_is_closed_when_the_sidecar_ends_normally_or_crashes(wired):
+    wired.main([])
+    assert _FakeEdgeClient.instances[0].closed
+    wired.sidecar.outcome = RuntimeError("boom")
+    with pytest.raises(RuntimeError):
+        wired.main([])
+    assert _FakeEdgeClient.instances[1].closed

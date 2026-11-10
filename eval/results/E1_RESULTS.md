@@ -67,6 +67,33 @@ Alternatives tried and not kept. A sentence in the `power_action` description ("
 
 **The latency gate cannot be judged on this machine today.** The action-path mean was 2506 ms (p50 2231, p95 3910) with and without the change, against 812 ms in `E1-relabel` and 757 ms in `E1-final`, and Ollama takes the same time on the request the app really sends (measured with Ollama's own timing fields). The cause is the GPU, not the code: during decode `nvidia-smi` shows the SM clock at 247 to 292 MHz of 2100 with 96% utilisation, the memory clock at full speed, 62 to 67 C, a **current power limit of 40 W against a default of 80 W**, and the clock event reasons "SW Power Cap" and "SW Thermal Slowdown" active. See the Batch 38 notes in `openspec/changes/niva-mvp/tasks.md` for the breakdown (about 0.5 s of prompt evaluation for 1,224 tokens and about 1.3 s of decode for 26 tokens, 49 ms per token). Re-run E1 with the GPU back at its normal clock before the final gates.
 
+## After the WhatsApp bug: "never end a reply with a question or an offer" (`E1-batch39`, 2026-11-10)
+
+Live bug: asked in Spanish to write a WhatsApp message, Niva (no messaging tool) answered in chat mode with an offer to help draft it. Niva does not keep listening after a chat reply and has no conversation memory, so the offer could not be honoured. The last line of the system prompt changed from `For chit-chat, answer briefly without tools.` to that sentence plus: ` If the user asks for something the tools cannot do, such as writing or sending a message, say briefly that you cannot do that yet. Never end a reply with a question or an offer of more help: the user cannot answer.` The "300 characters" wording is untouched. Because the prompt changed, E1 was re-run (3 runs, `--pause 60`, Ollama 0.40.x, same digest, Niva running on the same GPU, which is power capped as in Batch 38):
+
+```
+targetelease
+iva-eval.exe --runs 3 --pause 60 --out evalesults\E1-batch39
+```
+
+Two cases were added to `eval/commands.yaml` (`chat-es-whatsapp` "Escribile un mensaje a Juan por WhatsApp", `chat-en-whatsapp` "Send a message to John on WhatsApp", both `expected: none`), so this run has 53 cases; the table compares the original 51.
+
+| | `E1-batch38` | `E1-batch39` (same 51 cases) |
+|---|---|---|
+| Correct tool | 98.0% (150/153) | **100.0% (153/153)** |
+| Reply language | 100% (21/21) | 100% (27/27 with the 2 new cases and their replies) |
+| Unrequested risky calls | 0 | **0** |
+| Rejected plans | 0 | 0 |
+| Action-path mean | 2506 ms (capped GPU) | 1977 ms (capped GPU, not comparable with E1-final/relabel) |
+
+`vol-es-unmute` ("Sacá el silencio") now passes 3/3 (`set_volume(mute=false)`); it failed in every run since E1. Not tuned; the prompt line changes the context, and temperature 0 makes this deterministic, but it is a side effect and should not be relied on.
+
+**New cases:** both pass 3/3 with no tool call. The replies were "No puedo escribir mensajes ni usar aplicaciones externas como WhatsApp todavía." and "I cannot send messages through WhatsApp yet.", identical in the 3 runs, and neither ends with a question or an offer.
+
+**Not fully fixed for other chat replies.** The model still ends some chit-chat replies with a question or an offer (counted by hand on the 9 text replies of each run): `chat-es-greeting` ("¿Y tú qué tal estás?" x2, "¿En qué puedo ayudarte hoy?" x1), `chat-en-greeting` ("How can I assist you today?" x2, "How about you?" x1), `chat-en-thanks` ("Let me know if you need anything else." x3), `adv-es-no-apagues` ("¿Hay algo más en lo que pueda ayudarte?" x3), `adv-en-maybe-restart` ("Let me know if you'd like me to restart it later." x2). The sentence fixes the messaging case, not greetings and thanks. Not tuned further. A deterministic option, if this matters: have the core cut a trailing question or offer from chat replies.
+
+Latency gate: still FAIL (1977 ms) for the same reason as Batch 38 (power-capped GPU); not judged. Raw runs and per-case tables: `E1-batch39/`.
+
 ## Result of the final configuration (`E1-final`, 3 runs of 51 cases)
 
 | Gate | Result | Outcome |
@@ -126,4 +153,4 @@ Back-to-back runs get slower (attempts 1 to 3: 750 ms, then 800 to 950, then 108
 
 ## Files
 
-`E1-batch38/` (the run after the `set_volume` sentence, same layout; run on a power-capped GPU, so its latency column is not comparable), `E1-relabel/` (the run after the sleep relabel, same layout), `E1-final/` (final: `run-1.json` to `run-3.json`, `summary.json`, `summary.md`), `attempt-1/` to `attempt-4/`, `heldout-baseline/` (E1 prompt), `heldout-attempt-3/`, `heldout-attempt-4/`. Each run JSON has, per case, the raw calls, the model text, the match result, what the core made of the response (`plan`, `plan_text`, `plan_rejected`), the template reply, and what reached the fake PC.
+`E1-batch39/` (the run after the chat-reply sentence, 53 cases, same layout), `E1-batch38/` (the run after the `set_volume` sentence, same layout; run on a power-capped GPU, so its latency column is not comparable), `E1-relabel/` (the run after the sleep relabel, same layout), `E1-final/` (final: `run-1.json` to `run-3.json`, `summary.json`, `summary.md`), `attempt-1/` to `attempt-4/`, `heldout-baseline/` (E1 prompt), `heldout-attempt-3/`, `heldout-attempt-4/`. Each run JSON has, per case, the raw calls, the model text, the match result, what the core made of the response (`plan`, `plan_text`, `plan_rejected`), the template reply, and what reached the fake PC.

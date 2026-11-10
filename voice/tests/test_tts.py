@@ -11,15 +11,17 @@ from config import Tunables
 from tts import (
     EDGE_VOICES,
     EdgeTtsEngine,
+    OutputPrefetch,
     PcmChunk,
     Speaker,
     TtsTimeout,
+    _Cancelled,
+    _Run,
     clean_for_speech,
     decode_mp3_stream,
     is_silent,
     threaded_chunks,
 )
-from tts import _Run
 from voice_fx import RobotVoice, float_to_pcm16, pcm16_to_float
 
 SAMPLE_MP3 = Path(__file__).resolve().parents[2] / "spikes" / "voice" / "s1_audio" / "en00.mp3"
@@ -259,6 +261,33 @@ def test_falls_back_to_piper_when_edge_fails_before_any_audio():
     assert tl.count("speak_started") == 1 and tl.count("speak_done") == 1 and tl.count("error") == 0
 
 
+def test_piper_preload_loads_each_voice_once_and_a_later_fallback_does_not_reload(monkeypatch, tmp_path):
+    import sys
+    import types
+
+    loads = []
+
+    class FakeVoice:
+        def synthesize(self, text):
+            return [types.SimpleNamespace(audio_int16_bytes=b"\x01\x00", sample_rate=22050)]
+
+    class FakePiperVoice:
+        @staticmethod
+        def load(path):
+            loads.append(path)
+            return FakeVoice()
+
+    monkeypatch.setitem(sys.modules, "piper", types.SimpleNamespace(PiperVoice=FakePiperVoice))
+    from tts import PIPER_VOICE_FILES, PiperEngine
+
+    engine = PiperEngine(tmp_path)
+    engine.preload()
+    assert len(loads) == len(PIPER_VOICE_FILES)
+    assert [c.data for c in engine.chunks("Hola.", "es", threading.Event())] == [b"\x01\x00"]
+    engine.preload()
+    assert len(loads) == len(PIPER_VOICE_FILES), "a fallback after the preload must not load again"
+
+
 def test_falls_back_to_piper_on_a_first_chunk_timeout():
     edge = FakeEngine("edge", error=TtsTimeout("slow"))
     piper = FakeEngine("piper", [AUDIBLE])
@@ -379,9 +408,16 @@ def test_stop_while_the_output_is_opening_writes_and_announces_nothing():
         outputs.append(out)
         return out
 
+    opening = threading.Event()
+    real_make_output = make_output
+
+    def make_output(rate):  # noqa: F811 - signals that the open is under way
+        opening.set()
+        return real_make_output(rate)
+
     speaker = Speaker([FakeEngine("edge", [AUDIBLE, AUDIBLE])], make_output, tl.emit, ended.append, PLAIN)
     speaker.speak(1, "Hello.", "en")
-    time.sleep(0.05)
+    assert opening.wait(2)
     speaker.stop()
     gate.set()
     speaker.join(3)
@@ -562,3 +598,167 @@ def test_odd_sized_chunks_do_not_crash_the_effect_and_play_the_same_samples():
     played, reference = written_samples(outputs), robot_reference(chunks)
     assert played.shape == reference.shape
     assert np.abs(played.astype(int) - reference.astype(int)).max() <= 2  # chunking noise only
+
+
+# ------------------------------------------------------------ output pre-open
+
+
+class RatedEngine(FakeEngine):
+    """An engine that announces its output rate, like the edge-tts one."""
+
+    output_rate = 24_000
+
+
+def wait_until(predicate, seconds=2.0):
+    deadline = time.time() + seconds
+    while not predicate() and time.time() < deadline:
+        time.sleep(0.005)
+    return predicate()
+
+
+def build_prefetch(engines, tunables=PLAIN, open_gate=None, fail_open=False):
+    """Like `build`, but records when each device was opened and can delay or fail the open."""
+    tl = Timeline()
+    ended, outputs = [], []
+
+    def make_output(rate):
+        tl.log.append(("open", rate))
+        if open_gate is not None:
+            open_gate.wait(2)
+        if fail_open:
+            raise OutputError("no device")
+        out = FakeOutput(tl, rate)
+        outputs.append(out)
+        return out
+
+    return Speaker(engines, make_output, tl.emit, ended.append, tunables), tl, ended, outputs
+
+
+def test_the_device_is_opened_before_the_first_chunk_exists():
+    gate = threading.Event()
+
+    class SlowFirst(RatedEngine):
+        def chunks(self, text, lang, cancel):
+            gate.wait(2)  # synthesis still running
+            yield from super().chunks(text, lang, cancel)
+
+    speaker, tl, _, outputs = build_prefetch([SlowFirst("edge", [AUDIBLE])])
+    speaker.speak(1, "Hello.", "en")
+    deadline = time.time() + 2
+    while not any(e[0] == "open" for e in tl.log) and time.time() < deadline:
+        time.sleep(0.01)
+    assert ("open", 24_000) in tl.log and not [e for e in tl.log if e[0] == "write"]
+    gate.set()
+    speaker.join(3)
+    assert len(outputs) == 1 and outputs[0].written  # the pre-opened device is the one that plays
+    assert tl.count("speak_started") == 1 and tl.count("speak_done") == 1
+
+
+def test_without_the_switch_the_device_opens_at_the_first_audio():
+    lazy = Tunables(robot_voice=False, preopen_output=False)
+    speaker, tl, _, outputs = build_prefetch([RatedEngine("edge", [AUDIBLE])], tunables=lazy)
+    run_speak(speaker)
+    assert [e for e in tl.log if e[0] == "open"] == [("open", 24_000)]
+    assert tl.log.index(("open", 24_000)) < next(i for i, e in enumerate(tl.log) if e[0] == "write")
+    assert len(outputs) == 1
+
+
+def test_an_engine_without_a_rate_announcement_opens_lazily():
+    speaker, tl, _, outputs = build_prefetch([FakeEngine("piper", [AUDIBLE])])
+    run_speak(speaker)
+    assert len(outputs) == 1 and tl.count("speak_done") == 1
+
+
+def test_a_device_opened_ahead_with_the_wrong_rate_is_closed_and_replaced():
+    wrong = PcmChunk(AUDIBLE.data, 22_050)
+    speaker, tl, _, outputs = build_prefetch([RatedEngine("edge", [wrong])])
+    run_speak(speaker)
+    assert [o.sample_rate for o in outputs] == [24_000, 22_050]
+    assert outputs[0].closed and not outputs[0].written
+    assert outputs[1].written and tl.count("speak_done") == 1
+
+
+def test_a_device_opened_ahead_is_closed_when_no_audio_ever_arrives():
+    speaker, tl, ended, outputs = build_prefetch([RatedEngine("edge", error=RuntimeError("endpoint down"))])
+    run_speak(speaker)
+    assert len(outputs) == 1 and outputs[0].closed and not outputs[0].written
+    assert tl.count("error") == 1 and tl.count("speak_started") == 0
+    assert ended == [7]
+
+
+def test_stop_while_the_device_is_opening_ahead_closes_it_and_plays_nothing():
+    gate = threading.Event()
+    speaker, tl, ended, outputs = build_prefetch([RatedEngine("edge", [AUDIBLE, AUDIBLE])], open_gate=gate)
+    speaker.speak(1, "Hello.", "en")
+    assert wait_until(lambda: ("open", 24_000) in tl.log)  # the device is opening (and blocked on the gate)
+    speaker.stop()
+    gate.set()
+    speaker.join(3)
+    assert wait_until(lambda: len(outputs) == 1 and outputs[0].closed)  # the opener closes a late device itself
+    assert [e for e in tl.log if e[0] == "write"] == []
+    assert tl.count("speak_started") == 0 and tl.count("speak_done") == 0 and tl.count("error") == 0
+    assert ended == [1]
+
+
+def test_a_device_that_fails_to_open_ahead_is_tts_failed_at_the_first_audio_and_never_started():
+    engines = [RatedEngine("edge", [AUDIBLE]), RatedEngine("piper", [AUDIBLE])]
+    speaker, tl, ended, _ = build_prefetch(engines, fail_open=True)
+    run_speak(speaker)
+    assert tl.count("error") == 1 and tl.count("speak_started") == 0 and tl.count("speak_done") == 0
+    assert ended == [7]
+
+
+def test_each_utterance_opens_its_own_device_ahead():
+    speaker, tl, _, outputs = build_prefetch([RatedEngine("edge", [AUDIBLE])])
+    run_speak(speaker, speak_id=1)
+    run_speak(speaker, speak_id=2)
+    assert len(outputs) == 2 and all(o.closed and o.written for o in outputs)
+
+
+def test_a_stop_interrupts_the_wait_for_a_device_that_is_still_opening():
+    gate = threading.Event()
+    prefetch = OutputPrefetch(lambda rate: gate.wait(5) and FakeOutput(Timeline(), rate), 24_000)
+    outcome = []
+
+    def taker():
+        try:
+            prefetch.take()
+        except BaseException as exc:  # noqa: BLE001
+            outcome.append(type(exc))
+
+    thread = threading.Thread(target=taker)
+    thread.start()
+    prefetch.discard()  # what a stop does while the first audio waits for the device
+    thread.join(2)
+    gate.set()
+    assert not thread.is_alive() and outcome == [_Cancelled]
+
+
+def test_a_device_that_never_opens_is_tts_failed_not_a_hang(monkeypatch):
+    import tts
+
+    monkeypatch.setattr(tts, "OUTPUT_OPEN_TIMEOUT_S", 0.2)
+    gate = threading.Event()
+    speaker, tl, ended, outputs = build_prefetch([RatedEngine("edge", [AUDIBLE])], open_gate=gate)
+    run_speak(speaker)  # joins with a 3 s limit: a hang would leave the thread alive
+    assert not speaker._thread.is_alive()
+    assert tl.count("error") == 1 and tl.count("speak_started") == 0 and tl.count("speak_done") == 0
+    assert ended == [7]
+    gate.set()  # the driver finally answers: the late device is closed, never played
+    assert wait_until(lambda: len(outputs) == 1 and outputs[0].closed) and not outputs[0].written
+
+
+def test_discarding_an_unused_device_aborts_it_before_closing_it():
+    calls = []
+
+    class Recording(FakeOutput):
+        def abort(self):
+            calls.append("abort")
+
+        def close(self):
+            calls.append("close")
+
+    prefetch = OutputPrefetch(lambda rate: Recording(Timeline(), rate), 24_000)
+    assert prefetch._opened.wait(2)
+    prefetch.discard()
+    assert calls == ["abort", "close"]

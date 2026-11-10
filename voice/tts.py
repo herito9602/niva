@@ -16,6 +16,7 @@ import logging
 import queue
 import re
 import threading
+import time
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +27,9 @@ import numpy as np
 import protocol
 from audio_io import AudioOutput, OutputError
 from config import Tunables
+from edge_ws import EdgeWsClient, EdgeWsTimeout, UnsupportedText
 from protocol import ErrorCode
+from tts_cache import TtsCache
 from voice_fx import RobotVoice, float_to_pcm16, pcm16_to_float
 
 log = logging.getLogger("niva.voice.tts")
@@ -34,6 +37,8 @@ log = logging.getLogger("niva.voice.tts")
 EDGE_VOICES = {"es": "es-US-PalomaNeural", "en": "en-US-AriaNeural"}
 PIPER_VOICE_FILES = {"es": "es_AR-daniela-high.onnx", "en": "en_US-lessac-medium.onnx"}
 EDGE_SAMPLE_RATE = 24_000
+# An output device that has not opened after this long is a device failure, not a wait.
+OUTPUT_OPEN_TIMEOUT_S = 10.0
 
 # ---------------------------------------------------------------- clean text
 
@@ -219,16 +224,98 @@ def decode_mp3_stream(chunks: Iterable[bytes], sample_rate: int = EDGE_SAMPLE_RA
 
 class EdgeTtsEngine:
     name = "edge-tts"
+    output_rate = EDGE_SAMPLE_RATE  # lets the speaker open the device before the first chunk
 
-    def __init__(self, tunables: Tunables, mp3_stream: Mp3Stream = edge_mp3_stream, idle_timeout_s: float = 10.0):
+    def __init__(
+        self,
+        tunables: Tunables,
+        mp3_stream: Mp3Stream = edge_mp3_stream,
+        idle_timeout_s: float = 10.0,
+        client: EdgeWsClient | None = None,
+        cache: TtsCache | None = None,
+    ):
         self._first = tunables.tts_first_chunk_s
         self._idle = idle_timeout_s
         self._mp3_stream = mp3_stream
+        self._client = client  # the persistent connection; None = a new connection per reply
+        self._cache = cache  # raw MP3 of short replies; None = always synthesize
+        self._writers: list[threading.Thread] = []  # cache writes in flight (they run off the speaker thread)
+
+    def prepare(self) -> None:
+        """A reply is likely soon: have the connection ready."""
+        if self._client is not None:
+            self._client.prewarm()
 
     def chunks(self, text: str, lang: str, cancel: threading.Event) -> Iterator[PcmChunk]:
         voice = EDGE_VOICES[lang]
-        mp3 = threaded_chunks(lambda: self._mp3_stream(text, voice), self._first, self._idle, cancel)
-        yield from decode_mp3_stream(mp3)
+        cache, key = self._cache, None
+        if cache is not None and cache.cacheable(text):
+            key = cache.key(self.name, voice, text)
+            cached = cache.get(key)
+            if cached is not None:
+                produced = False
+                try:
+                    for pcm in decode_mp3_stream([cached]):  # the same MP3 the network would deliver
+                        produced = True
+                        yield pcm
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    if produced:
+                        raise
+                    log.warning("cached reply did not decode (%s); synthesizing it again", exc)
+                    cache.delete(key)
+        if cache is None or key is None:
+            yield from decode_mp3_stream(self.mp3_chunks(text, voice, cancel))
+            return
+        received: list[bytes] = []
+
+        def tap() -> Iterator[bytes]:
+            for piece in self.mp3_chunks(text, voice, cancel):
+                received.append(piece)
+                yield piece
+
+        yield from decode_mp3_stream(tap())
+        # Reached only when the synthesis ran to its end: a stop closes this generator before here.
+        if not cancel.is_set():
+            # Off the speaker's thread: this code runs before the effect's tail is flushed, and a
+            # disk write plus an eviction scan must not delay the last milliseconds of the reply.
+            writer = threading.Thread(
+                target=cache.put, args=(key, b"".join(received)), name="tts-cache-put", daemon=True
+            )
+            self._writers = [w for w in self._writers if w.is_alive()] + [writer]
+            writer.start()
+
+    def wait_for_cache(self, timeout_s: float = 5.0) -> None:
+        """Block until the cache writes started so far are done (shutdown and tests)."""
+        for writer in list(self._writers):
+            writer.join(timeout_s)
+
+    def mp3_chunks(self, text: str, voice: str, cancel: threading.Event) -> Iterator[bytes]:
+        """MP3 chunks from the network: the persistent connection first, then the one-off
+        edge-tts connection when that failed before any audio, a timeout included (the
+        one-off attempt gets the full first-audio budget: a slow network must not lose to
+        Piper just because the persistent attempt used some of it). A gap in the middle of
+        the audio goes straight to the next engine."""
+        client = self._client
+        first = self._first
+        if client is not None:
+            started = False
+            try:
+                for piece in client.stream(text, voice, cancel, self._first, self._idle):
+                    started = True
+                    yield piece
+                return
+            except EdgeWsTimeout as exc:
+                if started:
+                    raise TtsTimeout(str(exc)) from exc
+                log.warning("persistent edge-tts connection timed out (%s); using a one-off connection", exc)
+            except UnsupportedText:
+                pass  # a long text: edge-tts splits it into several requests itself
+            except Exception as exc:  # noqa: BLE001
+                if started:
+                    raise
+                log.warning("persistent edge-tts connection failed (%s); using a one-off connection", exc)
+        yield from threaded_chunks(lambda: self._mp3_stream(text, voice), first, self._idle, cancel)
 
 
 class PiperEngine:
@@ -280,12 +367,80 @@ class _Cancelled(Exception):
     pass
 
 
+class OutputPrefetch:
+    """Opens the output device on a helper thread while the reply is still being
+    synthesized (opening a stream costs ~300 ms on MME). Exactly one of two things
+    happens to it: the speaker `take`s it for the first write, or `discard` closes
+    it (stop, unused, wrong sample rate). Open failures surface from `take`, at the
+    moment the first audio would be written, like an open done at that moment."""
+
+    def __init__(self, make_output: Callable[[int], AudioOutput], sample_rate: int) -> None:
+        self.sample_rate = sample_rate
+        self._make_output = make_output
+        self._lock = threading.Lock()
+        self._opened = threading.Event()
+        self._output: AudioOutput | None = None
+        self._error: BaseException | None = None
+        self._finished = False  # taken or discarded
+        threading.Thread(target=self._open, name="output-open", daemon=True).start()
+
+    def _open(self) -> None:
+        output: AudioOutput | None = None
+        error: BaseException | None = None
+        try:
+            output = self._make_output(self.sample_rate)
+        except BaseException as exc:  # noqa: BLE001 - re-raised by `take`
+            error = exc
+        with self._lock:
+            late = self._finished  # discarded while the device was opening
+            if not late:
+                self._output, self._error = output, error
+        if late and output is not None:
+            output.abort()
+            output.close()
+        self._opened.set()
+
+    def take(self) -> AudioOutput:
+        """Wait for the device and hand it over. Raises `_Cancelled` when it was discarded
+        meanwhile (a stop), whatever opening it raised, or `OutputError` when it has not
+        opened after `OUTPUT_OPEN_TIMEOUT_S` (a hung driver: reported like a device failure)."""
+        deadline = time.monotonic() + OUTPUT_OPEN_TIMEOUT_S
+        while not self._opened.wait(0.05):
+            with self._lock:
+                if self._finished:  # discarded by a stop while the device was still opening
+                    raise _Cancelled
+                if time.monotonic() >= deadline:
+                    self._finished = True  # `_open` closes the device if it ever arrives
+                    raise OutputError(f"the audio output did not open within {OUTPUT_OPEN_TIMEOUT_S:g} s")
+        with self._lock:
+            if self._finished:
+                raise _Cancelled
+            self._finished = True
+            output, error = self._output, self._error
+            self._output = None
+        if error is not None:
+            raise error
+        assert output is not None
+        return output
+
+    def discard(self) -> None:
+        with self._lock:
+            if self._finished:
+                return
+            self._finished = True
+            output, self._output = self._output, None
+        if output is not None:  # (a device still opening is closed by `_open` when it arrives)
+            output.abort()  # never wait for a buffer: nothing was played, and a stop must not block
+            output.close()
+
+
 class _Run:
     """State of one utterance: its own cancel flag and its own output device."""
 
     def __init__(self, emit: Callable[[dict[str, Any]], None]) -> None:
         self.cancel = threading.Event()
         self.output: AudioOutput | None = None
+        self.prefetch: OutputPrefetch | None = None  # device being opened ahead of the first audio
         self.fx: RobotVoice | None = None  # robot effect state of the current engine's audio
         self.odd = b""  # a lone trailing byte of an odd-sized chunk, completed by the next one
         self.lock = threading.Lock()
@@ -302,8 +457,21 @@ class _Run:
         with self.lock:
             self.cancel.set()
             output = self.output
+            prefetch = self.prefetch
+        if prefetch is not None:
+            prefetch.discard()
         if output is not None:
             output.abort()
+
+    def start_prefetch(self, make_output: Callable[[int], AudioOutput], sample_rate: int) -> None:
+        with self.lock:
+            if not self.cancel.is_set() and self.prefetch is None:
+                self.prefetch = OutputPrefetch(make_output, sample_rate)
+
+    def take_prefetch(self) -> OutputPrefetch | None:
+        with self.lock:
+            prefetch, self.prefetch = self.prefetch, None
+        return prefetch
 
     def adopt(self, output: AudioOutput) -> None:
         with self.lock:
@@ -356,6 +524,17 @@ class Speaker:
         if run is not None:
             run.abort()
 
+    def prepare(self) -> None:
+        """A reply is likely soon (a listen started or a transcript is about to go out):
+        let the engines get ready, e.g. connect."""
+        for engine in self._engines:
+            prepare = getattr(engine, "prepare", None)
+            if prepare is not None:
+                try:
+                    prepare()
+                except Exception as exc:  # noqa: BLE001 - preparing is an optimization only
+                    log.debug("%s could not prepare: %s", engine.name, exc)
+
     def join(self, timeout: float | None = None) -> None:
         thread = self._thread
         if thread is not None:
@@ -373,6 +552,9 @@ class Speaker:
             log.exception("speaking failed")
             run.say(protocol.error(ErrorCode.TTS_FAILED, f"speech failed: {exc}", speak_id))
         finally:
+            unused = run.take_prefetch()
+            if unused is not None:  # no audio ever needed the device that was opened ahead
+                unused.discard()
             run.close_output()  # drains: the sound has really finished after this
             if completed:
                 run.say(protocol.speak_done(speak_id))
@@ -388,6 +570,9 @@ class Speaker:
             return False
         started = False
         failures: list[str] = []
+        output_rate = getattr(self._engines[0], "output_rate", None) if self._engines else None
+        if self._t.preopen_output and output_rate:
+            run.start_prefetch(self._make_output, output_rate)  # opens while the first audio is synthesized
 
         def heard(pcm: bytes) -> None:
             """`speak_started` goes out only once audible samples really reached the device."""
@@ -471,7 +656,16 @@ class Speaker:
         try:
             if run.output is None or run.output.sample_rate != chunk.sample_rate:
                 run.close_output()
-                run.adopt(self._make_output(chunk.sample_rate))
+                run.adopt(self._open_output(run, chunk.sample_rate))
             run.output.write(chunk.data)
         except OutputError as exc:
             raise _DeviceFailure(str(exc)) from exc
+
+    def _open_output(self, run: _Run, sample_rate: int) -> AudioOutput:
+        """The device for this audio: the one opened ahead when its rate fits."""
+        prefetch = run.take_prefetch()
+        if prefetch is not None:
+            if prefetch.sample_rate == sample_rate:
+                return prefetch.take()
+            prefetch.discard()  # the engine delivers another rate than it announced
+        return self._make_output(sample_rate)
