@@ -241,18 +241,18 @@ impl HeldPower {
 /// the reducer ignores `TextSubmitted` while a confirmation is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
-    /// A click on the confirmation buttons. **Host requirement:** in a release
-    /// build only the island's `answer_confirmation` command may produce this,
-    /// and only through the host's `ConfirmGate`, which accepts nothing but the
-    /// id of the confirmation on screen and a choice, one answer per
-    /// confirmation, and no Confirm until the island has reported its buttons
-    /// and half a second has passed. No code reachable from the model or typed
-    /// text may construct it, and no other webview command may.
+    /// A physical input of the user: the Ctrl+Shift+Enter chord (host
+    /// `ConfirmKeys`, which accepts nothing but the id of the confirmation on
+    /// screen, one answer per confirmation, and nothing in the first half
+    /// second after it was armed) or a click on the confirmation buttons
+    /// (host `ConfirmGate`, until they are removed). No code reachable from
+    /// the model, typed text or speech may construct it, and no webview
+    /// command other than the island's `answer_confirmation` may.
     /// Debug builds add one exception: the debug window's Confirm button also
-    /// becomes a click, which is safe only because every `PcActions` a debug
-    /// build runs is dry-run (design "Safety Gate"). Restart and shutdown are
-    /// confirmable through this channel alone.
-    Click,
+    /// becomes a physical answer, which is safe only because every
+    /// `PcActions` a debug build runs is dry-run (design "Safety Gate").
+    /// Restart and shutdown are confirmable through this channel alone.
+    Physical,
     Voice,
 }
 
@@ -422,7 +422,7 @@ impl SafetyGate {
         if !answer.accepted {
             return Err(ApprovalError::NotConfirmed);
         }
-        if request.click_only() && answer.channel != Channel::Click {
+        if request.click_only() && answer.channel != Channel::Physical {
             return Err(ApprovalError::ClickRequired);
         }
         let id = request.confirmation_id;

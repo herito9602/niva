@@ -256,6 +256,23 @@ fn power_prompts_and_outcomes_name_each_action_differently() {
 }
 
 #[test]
+fn power_prompt_names_chord() {
+    // Restart and shutdown can only be confirmed with the chord; the prompt
+    // says so, and says how to cancel. Lock and sleep are answered by voice.
+    for lang in LANGS {
+        for action in [PowerKind::Restart, PowerKind::Shutdown] {
+            let prompt = render(&Msg::ConfirmPower { action }, lang);
+            assert!(prompt.contains("Ctrl+Shift+Enter"), "{lang:?}: {prompt}");
+            assert!(prompt.contains("Esc"), "{lang:?}: {prompt}");
+        }
+        for action in [PowerKind::Lock, PowerKind::Sleep] {
+            let prompt = render(&Msg::ConfirmPower { action }, lang);
+            assert!(!prompt.contains("Ctrl+Shift+Enter"), "{lang:?}: {prompt}");
+        }
+    }
+}
+
+#[test]
 fn a_clamped_volume_says_so() {
     for lang in LANGS {
         let plain = render(

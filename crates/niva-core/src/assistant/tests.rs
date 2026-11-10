@@ -684,13 +684,13 @@ fn restart_and_shutdown_are_click_only() {
         (
             "restart",
             PowerKind::Restart,
-            "Restart the PC?",
+            "Restart the PC? Press Ctrl+Shift+Enter to confirm, or Esc to cancel.",
             "Restarting the PC.",
         ),
         (
             "shutdown",
             PowerKind::Shutdown,
-            "Shut down the PC?",
+            "Shut down the PC? Press Ctrl+Shift+Enter to confirm, or Esc to cancel.",
             "Shutting down the PC.",
         ),
     ] {
@@ -1353,7 +1353,7 @@ fn a_spoken_answer_maps_the_reducers_verdict_to_accepted() {
 #[test]
 fn a_click_is_the_click_channel() {
     let answer = click_answer(id(), true);
-    assert_eq!(answer.channel, Channel::Click);
+    assert_eq!(answer.channel, Channel::Physical);
     assert!(answer.accepted);
     assert!(!click_answer(id(), false).accepted);
 }
@@ -1728,7 +1728,10 @@ fn a_timeout_or_the_shortcut_report_what_ran_too() {
 fn cancelling_a_power_action_after_a_safe_call_says_so_in_spanish() {
     let mut r = Rig::new(vec![calls(vec![volume(30), power("shutdown")])], &PROCS);
     r.type_text("pon el volumen al 30 y apaga el pc");
-    assert_eq!(r.last(), "¿Apagar el PC?");
+    assert_eq!(
+        r.last(),
+        "¿Apagar el PC? Pulsa Ctrl+Shift+Enter para confirmar, o Esc para cancelar."
+    );
     r.click(false);
     assert_eq!(r.last(), "Volumen al 30%. Cancelé el apagado del PC.");
 }
