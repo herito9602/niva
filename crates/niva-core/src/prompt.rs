@@ -191,6 +191,8 @@ pub fn system_prompt(lang: Lang, now: Option<&LocalDateTime>) -> String {
          If a reminder has no time, do not create it: ask when instead.\n\
          Closing apps and power actions ask the user for confirmation inside the app; \
          you do not need to ask first.\n\
-         For chit-chat, answer briefly without tools."
+         For chit-chat, answer briefly without tools. If the user asks for something the tools \
+         cannot do, such as writing or sending a message, say briefly that you cannot do that yet. \
+         Never end a reply with a question or an offer of more help: the user cannot answer."
     )
 }

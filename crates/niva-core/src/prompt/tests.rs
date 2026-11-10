@@ -169,6 +169,23 @@ fn the_prompt_carries_the_e1_rules_that_keep_risky_calls_out() {
 }
 
 #[test]
+fn the_prompt_does_not_let_a_reply_end_with_a_question_or_an_offer() {
+    // Live bug: asked (in Spanish) to write a WhatsApp message, Niva has no
+    // messaging tool and answered "tell me what you want to say and I'll help
+    // you draft it". Niva does not keep listening after a chat reply and keeps
+    // no conversation memory, so the offer could not be honoured.
+    let prompt = system_prompt(Lang::En, None);
+    for rule in [
+        "If the user asks for something the tools cannot do, such as writing or sending a message, say briefly that you cannot do that yet.",
+        "Never end a reply with a question or an offer of more help: the user cannot answer.",
+    ] {
+        assert!(prompt.contains(rule), "missing rule: {rule}");
+    }
+    // The reply-length wording E1 measured stays as it was.
+    assert!(prompt.contains("never over 300 characters"));
+}
+
+#[test]
 fn small_talk_about_sleeping_is_not_a_power_request() {
     // E1 attempt 3: the model turned "I'm going to bed" / "me voy a dormir"
     // into power_action sleep (9 of 16 held-out phrasings, every run).

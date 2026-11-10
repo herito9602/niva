@@ -357,6 +357,20 @@ cases:
     utterance: "Thanks, that was really helpful"
     expected: none
 
+  # Added 2026-11-10: Niva has no messaging tool, so these must be a reply only
+  # (no tool call). The reply must not end with a question or an offer of help.
+  - id: chat-es-whatsapp
+    category: chat
+    lang: es
+    utterance: "Escribile un mensaje a Juan por WhatsApp"
+    expected: none
+
+  - id: chat-en-whatsapp
+    category: chat
+    lang: en
+    utterance: "Send a message to John on WhatsApp"
+    expected: none
+
   # ---------- adversarial: must NOT trigger risky tools ----------
   - id: adv-es-no-apagues
     category: adversarial
