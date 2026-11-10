@@ -109,7 +109,7 @@ Rollback boundary: revert the PR. Nothing else depends on it until S2 merges. Af
 
 Gate G1: S1 is merged. This slice removes the buttons from the UI, so the chord must already exist on the base branch.
 
-Goal: the island webview becomes a 118x30 notch with 7 bars animated by one rAF loop, simulated bars only (no real levels yet). Works against the existing view payload: ignores `caption`, `prompt`, labels and `countdown.text`; treats a missing `speaking` as false.
+Goal: the island webview becomes a 118x30 notch with a mirrored spike waveform (reworked from 7 bars, 2.11) animated by one rAF loop, simulated voice level only (no real levels yet). Works against the existing view payload: ignores `caption`, `prompt`, labels and `countdown.text`; treats a missing `speaking` as false.
 
 - [x] 2.1 Create `app/src/notch/motion.ts`: `NOTCH_W = 118`, `NOTCH_H = 30`, `NOTCH_OUT_MS = 200`, `HIDE_DELAY_MS = 240`, reduced-motion fade 120 ms. RED in `app/src/notch/motion.test.ts`: `notch_is_118_by_30`, `hide_delay_within_exit_plus_100` (`OUT <= HIDE <= OUT + 100`), `reduced_motion_fade_below_hide_delay`.
 - [x] 2.2 Create `app/src/notch/looks.ts`: look table (color, motion kind, reduced-motion silhouette) and `viewToLook(view, speaking)`. RED in `looks.test.ts`:
@@ -135,6 +135,8 @@ Goal: the island webview becomes a 118x30 notch with 7 bars animated by one rAF 
 - [x] 2.9 Modify `app/src-tauri/tauri.conf.json` to 200x70 (transparent, `focusable: false`, no decorations, no shadow, always on top). Modify `click_through.rs`: call `set_ignore_cursor_events(true)` on prepare and on every show; keep prepare/show only. Rewrite `app/src-tauri/src/island_contract_tests.rs` first (RED): `island_window_is_200x70_transparent_non_focusable`, `window_ignores_cursor_on_prepare_and_every_show`, `hide_delay_parsed_from_motion_ts_within_exit_plus_100`, `arm_ms_is_500`. GREEN: config and click-through change.
 - [x] 2.10 Spike (no production code): find how to detect exclusive fullscreen with the same detector that gates reminders (`visibility.rs`), and whether the notch can be drawn over it (design L16, `[verify]`). Deliverable: a short written finding in apply-progress, with a yes/no on detection feasibility. If not feasible, task 3.10 is marked deferred. **Finding (apply, no live test):** detection is feasible: yes. `visibility.rs` is only the show/hide guard, and no fullscreen detector exists in the host yet (`ReminderDue.silent` is `false` in every production call site, so task 3.7 must also produce it). `SHQueryUserNotificationState` (shell32; `windows-sys` 0.61 already builds with `Win32_UI_Shell`) reports `QUNS_RUNNING_D3D_FULL_SCREEN` (3) for exclusive D3D fullscreen and `QUNS_BUSY` (2) for other fullscreen apps, `QUNS_PRESENTATION_MODE` (4) for presentations. Drawing the notch over true exclusive fullscreen is not expected to work (the game owns the swap chain), so the chime-on-listen path of 3.10 is needed; whether a given game is truly exclusive or composited (fullscreen optimizations) can only be told by trying it, which stays a hand-test item. 3.10 is NOT deferred. Note the unused listening cue in `docs/BACKLOG.md` (mic pickup of the cue).
 
+- [x] 2.11 Visual rework (owner decision 2026-11-10, after seeing the 7-bar notch live): replace the bars with the mirrored solid spike waveform; color alone tells states apart (the non-color motion/silhouette cue is removed). Planning artifacts updated (proposal, design L1/L2/"Notch looks", `specs/notch`). RED first in `wave.test.ts` (new): seeded rng targets, 70 ms re-target, level smoothing 0.4/0.1, `halfHeights` clamp, mirrored `outline`, `targetLevel` (real level, 150 ms fallback, breathing 0.05, reduced = 0), onset lag at most 50 ms, `drawWave` (miter 3, opaque color, DPR scale), `fitCanvas`. Rewritten tests: `loop.test.ts` (`startWaveLoop`, `keepsRunning`, lifecycle tests kept), `looks.test.ts` (no motion/silhouette; only listening/speaking have a source), `Notch.test.ts` (one canvas, no bars). GREEN: new `wave.ts`; `Notch.tsx` renders one canvas; `loop.ts`, `looks.ts`, `levelStore.ts` (`BAND_COUNT`), `notch.css` updated; `bars.ts` and `bars.test.ts` deleted. Level bound note: the 50/100 ms bound is measured on the onset; the owner's release constant (0.1) decays slower by design.
+
 Verification:
 - `npm test` and `npm run build` (from `app`)
 - `cargo test` (from `app/src-tauri`) and `cargo test -p niva-core`
@@ -143,10 +145,10 @@ Verification:
 Live hand-test (owner):
 1. Press Ctrl+Shift+Space: a small black notch drops in at the top center with a springy bounce and the blue listening look. It is 118x30; the window around it is clear.
 2. Click on the notch and the area around it: the click reaches the app below.
-3. Run the debug state switcher through all seven states: color and motion match the table; hide with the system reduced-motion setting on: each state is a distinct static silhouette.
+3. Run the debug state switcher through all seven states: the waveform color matches the table; listening and speaking spike with the (simulated) voice, the others are a calm, barely breathing line. With the system reduced-motion setting on: a static line (static shape scaled by the level when listening/speaking).
 4. Issue a restart/shutdown request: amber pulse only, no text, no buttons. Confirm with the chord (S1). Reply text is not shown anywhere.
-5. Grayscale check (screenshot to grayscale): states tell apart by bar shape.
-6. Bars are simulated here (real levels arrive in S5).
+5. Color-only states are the owner's explicit choice (no grayscale check).
+6. The voice level is simulated here (real levels arrive in S5).
 
 Rollback boundary: revert PR 2 restores the old island UI and window size. S1 must stay (the old UI still works with S1 present). S3 depends on S2's `viewStore` shape; revert S3 first.
 
@@ -255,7 +257,7 @@ Rollback boundary: revert PR 5 only. The notch keeps working on simulated bars (
 | notch | Acting and countdown reuse looks | 2.2, 3.11 |
 | notch | Speaking overrides the phase look | 2.2, 3.1, 3.2, 3.11 |
 | notch | Grayscale | 2.2 |
-| notch | Reduced motion | 2.2, 2.3 |
+| notch | Reduced motion | 2.11 (was 2.2, 2.3) |
 | notch | Listening follows the microphone | 2.3, 5.3, 5.8, 5.9 |
 | notch | Speaking follows the voice | 2.3, 5.5, 5.8, 5.9 |
 | notch | Levels do not drive other states | 2.3, 5.8 |
