@@ -3,7 +3,7 @@ import type { ViewPayload } from "../events";
 import type { SlidePhase } from "../state/viewStore";
 import { levelStore as sharedLevels, type LevelStore } from "./levelStore";
 import { holdLook, viewToLook, type Look } from "./looks";
-import { readReducedMotion, startWaveLoop, watchReducedMotion } from "./loop";
+import { readReducedMotion, redrawWave, startWaveLoop, watchDisplayMetrics, watchReducedMotion } from "./loop";
 import { NOTCH_H, NOTCH_W } from "./motion";
 import { fitCanvas, type WaveState } from "./wave";
 import "./notch.css";
@@ -63,6 +63,22 @@ export function Notch({ view, phase, levels = sharedLevels }: NotchProps) {
       },
     });
   }, [active, reduced, look.name, levels]);
+
+  // A stopped loop (static line) does not follow the DPR or a resize by itself:
+  // redraw once on each change so the backing store stays sharp.
+  useEffect(() => {
+    const canvas = canvasEl.current;
+    const ctx = canvas?.getContext("2d");
+    if (!active || !canvas || !ctx) return;
+    return watchDisplayMetrics(window, () =>
+      redrawWave({
+        ctx,
+        size: () => fitCanvas(canvas, NOTCH_W, NOTCH_H, window.devicePixelRatio),
+        getLook: () => lookRef.current,
+        memory: waveMemory.current,
+      }),
+    );
+  }, [active]);
 
   return (
     <div className="stage">

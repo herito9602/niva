@@ -51,7 +51,7 @@ Exploration's recommendation: `Notch` component driven by refs + rAF; host sink 
 As in design.md:
 
 1. Confirm keys (Esc + chord, D1), own safety PR, buttons still present
-2. Notch UI with simulated bars + window shrink
+2. Notch UI with simulated waveform + window shrink
 3. View-model and core trim
 4. Host cleanup (buttons, hit-test, cursor, capability), own PR
 5. Sidecar `level`
@@ -72,7 +72,7 @@ Revert in reverse slice order. Restart/shutdown buttons and `confirm_buttons.rs`
 ## Success Criteria
 
 - [ ] Notch is 118x30 px; window ~200x70, non-focusable, transparent
-- [ ] Bars track level: mean lag 50 ms or less and no sample above 100 ms (mic and TTS, built-in or wired output; Bluetooth excluded)
+- [ ] The waveform tracks level on the onset (rise) only: mean lag 50 ms or less and no sample above 100 ms (mic and TTS, built-in or wired output; Bluetooth excluded). The decay is intentionally slower and unbounded
 - [ ] Reduced motion shows a static waveform (no random re-targeting)
 - [ ] Tests: Esc and Ctrl+Shift+Enter registered only while pending, unregistered on confirm, reject, timeout and quit
 - [ ] No regression in E1 eval or end-of-speech latency (< 2.6 s)

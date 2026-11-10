@@ -26,7 +26,7 @@ While the sidecar is listening or speaking, it MUST send a `level` message to th
 #### Scenario: Level while speaking
 - GIVEN a reply is being spoken
 - WHEN audio is written to the output device
-- THEN `level` messages arrive at 20 to 40 per second with the voice bands, aligned to the audible sound as `notch` requires (mean lag 50 ms or less, no sample above 100 ms, on built-in or wired output)
+- THEN `level` messages arrive at 20 to 40 per second with the voice bands, aligned to the audible sound as `notch` requires (onset mean lag 50 ms or less, no sample above 100 ms, on built-in or wired output)
 
 #### Scenario: Idle sends nothing
 - GIVEN the sidecar is ready and not listening or speaking

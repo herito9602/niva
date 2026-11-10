@@ -94,3 +94,50 @@ export function watchReducedMotion(win: WindowLike | undefined, onChange: (reduc
   mq.addEventListener("change", handler);
   return () => mq.removeEventListener("change", handler);
 }
+
+export interface DisplayWindowLike {
+  devicePixelRatio: number;
+  addEventListener: (type: "resize", cb: () => void) => void;
+  removeEventListener: (type: "resize", cb: () => void) => void;
+  matchMedia?: (query: string) => Pick<MediaQueryLike, "addEventListener" | "removeEventListener">;
+}
+
+/**
+ * Calls `onChange` when the window is resized or the device pixel ratio changes
+ * (for example when the window moves to another monitor). The DPR has no event
+ * of its own: a `(resolution: Ndppx)` query fires once when the ratio leaves N,
+ * so it is re-armed for the new ratio each time. Returns the unsubscribe.
+ */
+export function watchDisplayMetrics(win: DisplayWindowLike | undefined, onChange: () => void): () => void {
+  if (!win) return () => {};
+  win.addEventListener("resize", onChange);
+  let disarm = () => {};
+  let closed = false;
+  const arm = () => {
+    const mq = win.matchMedia?.(`(resolution: ${win.devicePixelRatio}dppx)`);
+    if (!mq) return;
+    const handler = () => {
+      mq.removeEventListener("change", handler);
+      if (closed) return;
+      onChange();
+      arm();
+    };
+    mq.addEventListener("change", handler);
+    disarm = () => mq.removeEventListener("change", handler);
+  };
+  arm();
+  return () => {
+    closed = true;
+    win.removeEventListener("resize", onChange);
+    disarm();
+  };
+}
+
+/**
+ * Draws the remembered wave once, re-fitting the canvas first. For when the
+ * loop is stopped (static line) and the canvas size changed under it.
+ */
+export function redrawWave(o: Pick<WaveLoopOptions, "ctx" | "size" | "getLook" | "memory">): void {
+  const { w, h } = o.size();
+  drawWave(o.ctx, o.memory.wave ?? createWave(), o.getLook().color, w, h);
+}

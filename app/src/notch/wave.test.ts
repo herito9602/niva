@@ -204,13 +204,17 @@ describe("targetLevel", () => {
 });
 
 describe("level lag", () => {
-  /** Frames after the step until the smoothed level covered half of it. */
-  function halfLag(rising: boolean): number {
+  /**
+   * Time after the step until the smoothed level covered half of it. The
+   * smoothing constants are per frame, exactly as in the owner-approved
+   * prototype, so motion scales with the refresh rate by design.
+   */
+  function halfLag(rising: boolean, hz = 60): number {
     const rng = seededRng(3);
-    const dt = 1000 / 60;
+    const dt = 1000 / hz;
     let s: WaveState = { ...createWave(), lvl: rising ? 0 : 1 };
     const goal = rising ? 1 : 0;
-    for (let k = 1; k < 200; k++) {
+    for (let k = 1; k < 400; k++) {
       s = stepWave(s, k * dt, goal, rng, false);
       if (rising ? s.lvl >= 0.5 : s.lvl <= 0.5) return k * dt;
     }
@@ -218,8 +222,14 @@ describe("level lag", () => {
   }
 
   it("the onset (rise) lag is at most 50 ms on a 60 Hz clock", () => {
-    // Bound of design L14: mean <= 50 ms, max <= 100 ms. It applies to the onset.
+    // Bound of design L14: mean <= 50 ms, max <= 100 ms. It applies to the onset only.
     expect(halfLag(true)).toBeLessThanOrEqual(50);
+  });
+
+  it("the onset bound holds at 60 Hz and only gets shorter at higher refresh rates", () => {
+    const lags = [60, 90, 120, 144, 240].map((hz) => halfLag(true, hz));
+    expect(lags[0]).toBeLessThanOrEqual(50);
+    for (let i = 1; i < lags.length; i++) expect(lags[i]).toBeLessThanOrEqual(lags[i - 1]);
   });
 
   it("the decay is deliberately slower than the onset and still under 120 ms", () => {

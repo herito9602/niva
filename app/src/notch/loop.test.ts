@@ -7,7 +7,9 @@ import {
   readReducedMotion,
   REDUCED_QUERY,
   startFrameLoop,
+  redrawWave,
   startWaveLoop,
+  watchDisplayMetrics,
   watchReducedMotion,
   type FrameEnv,
   type MediaQueryLike,
@@ -266,5 +268,82 @@ describe("reduced motion preference", () => {
     expect(m.listeners.size).toBe(0);
     m.fire();
     expect(seen).toEqual([false, true]);
+  });
+});
+
+describe("display metrics (resize and DPR) while the loop is stopped", () => {
+  function fakeWindow(dpr: number) {
+    const resize = new Set<() => void>();
+    const media = new Map<string, { cbs: Set<() => void> }>();
+    const win = {
+      devicePixelRatio: dpr,
+      addEventListener: vi.fn((_t: "resize", cb: () => void) => void resize.add(cb)),
+      removeEventListener: vi.fn((_t: "resize", cb: () => void) => void resize.delete(cb)),
+      matchMedia: vi.fn((q: string) => {
+        const entry = media.get(q) ?? { cbs: new Set<() => void>() };
+        media.set(q, entry);
+        return {
+          matches: true,
+          addEventListener: (_t: "change", cb: () => void) => void entry.cbs.add(cb),
+          removeEventListener: (_t: "change", cb: () => void) => void entry.cbs.delete(cb),
+        };
+      }),
+    };
+    return { win, resize, media };
+  }
+
+  it("redraws once on a window resize and stops listening on cleanup", () => {
+    const f = fakeWindow(1);
+    const onChange = vi.fn();
+    const off = watchDisplayMetrics(f.win, onChange);
+    f.resize.forEach((cb) => cb());
+    expect(onChange).toHaveBeenCalledTimes(1);
+    off();
+    expect(f.resize.size).toBe(0);
+    expect(f.media.get("(resolution: 1dppx)")?.cbs.size).toBe(0);
+  });
+
+  it("follows a DPR change through the resolution query and re-arms it for the new ratio", () => {
+    const f = fakeWindow(1);
+    const onChange = vi.fn();
+    const off = watchDisplayMetrics(f.win, onChange);
+    expect(f.media.get("(resolution: 1dppx)")?.cbs.size).toBe(1);
+    f.win.devicePixelRatio = 2;
+    f.media.get("(resolution: 1dppx)")!.cbs.forEach((cb) => cb());
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(f.media.get("(resolution: 1dppx)")?.cbs.size).toBe(0);
+    expect(f.media.get("(resolution: 2dppx)")?.cbs.size).toBe(1);
+    off();
+    expect(f.media.get("(resolution: 2dppx)")?.cbs.size).toBe(0);
+  });
+
+  it("is a no-op without a window", () => {
+    expect(watchDisplayMetrics(undefined, () => {})).toBeTypeOf("function");
+  });
+
+  it("redrawWave re-fits and draws the remembered wave without scheduling a frame", () => {
+    const c = fakeCtx();
+    const size = vi.fn(() => ({ w: 236, h: 60 }));
+    const memory = { wave: createWave() };
+    redrawWave({ ctx: c.ctx, size, getLook: () => LOOKS.confirmation, memory });
+    expect(size).toHaveBeenCalledTimes(1);
+    expect(c.fills()).toBe(1);
+    expect(c.ctx.fillStyle).toBe(LOOKS.confirmation.color);
+  });
+
+  it("the stopped static line is redrawn after a DPR change", () => {
+    const f = fakeEnv();
+    const c = fakeCtx();
+    const memory = {} as { wave?: ReturnType<typeof createWave> };
+    let dims = { w: 118, h: 30 };
+    const base = { ctx: c.ctx, size: () => dims, getLook: () => LOOKS.confirmation, memory };
+    startWaveLoop({ ...base, levels: createLevelStore(), reduced: true, rng: seededRng(1), env: f.env });
+    f.step();
+    expect(f.pendingCount()).toBe(0);
+    expect(c.fills()).toBe(1);
+    dims = { w: 236, h: 60 };
+    redrawWave(base);
+    expect(c.fills()).toBe(2);
+    expect(f.pendingCount()).toBe(0);
   });
 });

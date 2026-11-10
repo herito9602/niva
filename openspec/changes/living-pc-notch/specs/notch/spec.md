@@ -89,7 +89,7 @@ Every ~70 ms the waveform MUST pick new random targets for its points, shaped by
 #### Scenario: Reduced motion with voice
 - GIVEN the system asks for reduced motion and the notch is listening
 - WHEN the level changes
-- THEN the static shape scales with the level and does not re-target randomly
+- THEN the static shape (a flat line at level 0) scales with the level and does not re-target randomly
 
 ### Requirement: Level-driven waveform
 While listening, the spike height MUST follow the microphone level. While speaking, it MUST follow the TTS voice level. The levels come from the sidecar `level` message (see `speech-io`) and MUST reach the notch without passing through the state reducer. The shape amplitude MUST rise with the audible sound with a mean lag of 50 ms or less and no sample above 100 ms (the decay is intentionally slower and is not bounded), for both microphone and TTS, on built-in or wired output (Bluetooth is excluded because its latency is not reported).
@@ -97,7 +97,7 @@ While listening, the spike height MUST follow the microphone level. While speaki
 #### Scenario: Listening follows the microphone
 - GIVEN the notch is listening and `level` messages arrive
 - WHEN the user speaks louder
-- THEN the spikes grow accordingly with a mean lag of 50 ms or less and no sample above 100 ms
+- THEN the spikes grow accordingly with an onset (rise) mean lag of 50 ms or less and no sample above 100 ms (the decay is intentionally slower)
 - AND a fake-clock unit test of the level smoothing checks this lag in addition to the manual 240 fps measurement
 
 #### Scenario: Speaking follows the voice
