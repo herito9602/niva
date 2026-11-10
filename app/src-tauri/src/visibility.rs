@@ -10,9 +10,10 @@ use std::sync::{
 };
 
 /// How long the host waits before hiding the window after `niva://island
-/// {visible:false}`: the exit animation (`EDGE_OUT_MS` in
-/// `src/island-ui/choreography.ts`) plays first. A test reads those constants.
-pub const HIDE_DELAY_MS: u64 = 540;
+/// {visible:false}`: the exit animation (`NOTCH_OUT_MS` in
+/// `src/notch/motion.ts`) plays first, plus a little slack. The contract tests
+/// in `island_contract_tests.rs` pin `OUT <= HIDE <= OUT + 100`.
+pub const HIDE_DELAY_MS: u64 = 240;
 
 #[derive(Clone, Default)]
 pub struct HideGuard {

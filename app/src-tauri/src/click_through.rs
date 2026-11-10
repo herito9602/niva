@@ -1,16 +1,21 @@
 //! Click-through of the island window.
 //!
-//! The island window is larger than any island (room for the shadow and the
+//! The island window (200x70) is larger than the notch (118x30; room for the
 //! spring overshoot), so most of it is empty and transparent. It must never
 //! block clicks to the apps underneath.
 //!
-//! Normally the whole window ignores the mouse (`set_ignore_cursor_events(true)`,
-//! called from Rust; the webview needs no permission for it). While the island
-//! shows a confirmation it has two buttons, and only those capture the mouse.
+//! The whole window ignores the mouse (`set_ignore_cursor_events(true)`, called
+//! from Rust on prepare and on every show; the webview needs no permission for
+//! it). The notch has no buttons and its UI reports no rectangles, so nothing
+//! captures the mouse. The hit tester below is dead weight until the host
+//! cleanup slice removes it.
+//!
+//! (Historical, from when the island had buttons: while it showed a confirmation
+//! only the two buttons captured the mouse.
 //! The cursor poller (which already knows the cursor in window-relative logical
 //! pixels) feeds every sample, with the buttons' rectangles, to a [`HitTester`],
 //! which toggles the flag only when the answer changes. Where the rectangles
-//! come from is `confirm_buttons.rs` (the island reports them).
+//! come from is `confirm_buttons.rs` (the island reports them).)
 
 use std::sync::{Arc, Mutex};
 
