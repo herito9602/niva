@@ -9,19 +9,23 @@ Replace "a robot lives in my PC" with "my PC is alive". When Niva is summoned, a
 | # | Decision |
 |---|---|
 | Look | 118x30 px notch, ~14 px bottom corners, one solid mirrored spike waveform (superseded the 7-bar prototype, see "Visual rework" below), spring drop-in. Idle hidden. |
-| States | Color only tells states apart: listening #378ADD (mic level); thinking #7F77DD; speaking #5DCAA5 (voice level); confirm #EF9F27; success #97C459, then hide; error #E24B4A, then hide; reminder #F0997B. Only listening and speaking are level-driven; every other state is a calm, barely breathing flat line. |
+| States | Color only tells states apart: listening #378ADD (calm breathing line, not level-driven); thinking #7F77DD; speaking #5DCAA5 (voice level); confirm #EF9F27; success #97C459, then hide; error #E24B4A, then hide; reminder #F0997B. Only speaking is level-driven (Niva's voice); every other state, listening included, is a calm, barely breathing flat line. |
 | Confirm | Voice yes/no as today; timeout cancels; Esc cancels (global shortcut, registered only while a confirmation is pending); Ctrl+Shift+Space still rejects |
 | D1 | Restart/shutdown: Ctrl+Shift+Enter within the window replaces the click (registered only while pending). Speech never confirms them. |
 | D2 | Acting = thinking wave; Countdown = amber pulse; speaking overrides the phase look while TTS plays |
 | D3 | Hide = settle only, no reading hold; settle time 1.5 s (down from 3 s) |
 | D4 | Voice down: error color + host chime only |
 | D6 | Reminder: audio only, no text anywhere (no tray item); the coral pulse ends with the speech |
-| D5 | `level` = 7 bands; UI simulation if no level for >150 ms |
+| D5 | `level` = 7 bands, Niva's TTS only; UI simulation of the voice if no level for >150 ms while speaking |
 | A11y | Reduced motion is required (static shape). The per-state non-color motion/silhouette cue is removed by owner decision (see "Visual rework"); the voice and the hidden status text remain the non-color channels |
 
 ## Visual rework (2026-11-10)
 
 After seeing the 7-bar notch live, the owner rejected the bars and chose, from chat prototypes, "mirrored spikes, solid": one solid shape mirrored around the horizontal center line whose spikes move with the level. This supersedes the 7-bar decisions above and in the first version of the design (L1, L2, the motion and silhouette columns). Only the color distinguishes states, by explicit owner choice; the requirement for a non-color motion/silhouette cue per state is removed. Voice and the hidden status text remain the non-color channels. Geometry (118x30, window 200x70), drop-in/out, click-through, levels wire (7 bands) and the 150 ms fallback are unchanged.
+
+## Level source decision (2026-11-10, after the live test)
+
+The owner, after the live test: "the wave must move with Niva's voice, not with me". So the listening look is NOT level-driven: it shows the same calm breathing line as thinking and confirmation, in the listening color #378ADD, with no microphone level and no simulated voice. Only `speaking` follows a level, and that level is Niva's TTS output. The sidecar `level` message is TTS-only: the microphone tap and `src:"mic"` are dropped. This is also simpler (no capture-side code) and more private (no microphone-derived signal ever leaves the sidecar). Supersedes the "mic level" parts of D5, the states row and the earlier notch/speech-io level requirements.
 
 ## Scope
 

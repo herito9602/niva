@@ -6,7 +6,7 @@ Sources: `proposal.md`, `design.md` (decisions L1-L18, "Key lifecycle", "Slices"
 
 | Field | Value |
 |-------|-------|
-| Estimated changed lines (production + tests, additions only; deletions in brackets) | S1 ~450, S2 ~600 [~1500 deleted], S3 ~350, S4 ~80 [~600 deleted], S5 ~650 |
+| Estimated changed lines (production + tests, additions only; deletions in brackets) | S1 ~450, S2 ~600 [~1500 deleted], S3 ~350, S4 ~80 [~600 deleted], S5 ~520 |
 | 400-line budget risk | High for S1, S2, S5; Medium for S3; Low for S4 (mostly deletions) |
 | Chained PRs recommended | Yes |
 | Suggested split | 5 PRs, one per design slice, in order S1 -> S2 -> S3 -> S4 -> S5 |
@@ -136,6 +136,7 @@ Goal: the island webview becomes a 118x30 notch with a mirrored spike waveform (
 - [x] 2.10 Spike (no production code): find how to detect exclusive fullscreen with the same detector that gates reminders (`visibility.rs`), and whether the notch can be drawn over it (design L16, `[verify]`). Deliverable: a short written finding in apply-progress, with a yes/no on detection feasibility. If not feasible, task 3.10 is marked deferred. **Finding (apply, no live test):** detection is feasible: yes. `visibility.rs` is only the show/hide guard, and no fullscreen detector exists in the host yet (`ReminderDue.silent` is `false` in every production call site, so task 3.7 must also produce it). `SHQueryUserNotificationState` (shell32; `windows-sys` 0.61 already builds with `Win32_UI_Shell`) reports `QUNS_RUNNING_D3D_FULL_SCREEN` (3) for exclusive D3D fullscreen and `QUNS_BUSY` (2) for other fullscreen apps, `QUNS_PRESENTATION_MODE` (4) for presentations. Drawing the notch over true exclusive fullscreen is not expected to work (the game owns the swap chain), so the chime-on-listen path of 3.10 is needed; whether a given game is truly exclusive or composited (fullscreen optimizations) can only be told by trying it, which stays a hand-test item. 3.10 is NOT deferred. Note the unused listening cue in `docs/BACKLOG.md` (mic pickup of the cue).
 
 - [x] 2.11 Visual rework (owner decision 2026-11-10, after seeing the 7-bar notch live): replace the bars with the mirrored solid spike waveform; color alone tells states apart (the non-color motion/silhouette cue is removed). Planning artifacts updated (proposal, design L1/L2/"Notch looks", `specs/notch`). RED first in `wave.test.ts` (new): seeded rng targets, 70 ms re-target, level smoothing 0.4/0.1, `halfHeights` clamp, mirrored `outline`, `targetLevel` (real level, 150 ms fallback, breathing 0.05, reduced = 0), onset lag at most 50 ms, `drawWave` (miter 3, opaque color, DPR scale), `fitCanvas`. Rewritten tests: `loop.test.ts` (`startWaveLoop`, `keepsRunning`, lifecycle tests kept), `looks.test.ts` (no motion/silhouette; only listening/speaking have a source), `Notch.test.ts` (one canvas, no bars). GREEN: new `wave.ts`; `Notch.tsx` renders one canvas; `loop.ts`, `looks.ts`, `levelStore.ts` (`BAND_COUNT`), `notch.css` updated; `bars.ts` and `bars.test.ts` deleted. Level bound note: the 50/100 ms bound is measured on the onset; the owner's release constant (0.1) decays slower by design. Follow-up: the canvas is re-fitted and redrawn once on a window resize or DPR change even while the loop is stopped (`watchDisplayMetrics`, `redrawWave` in `loop.ts`); the smoothing is per frame, so the onset bound is tested at 60 to 240 Hz.
+- [x] 2.12 Level source decision (owner, 2026-11-10, after the live test: "the wave must move with Niva's voice, not with me"): listening is no longer level-driven; it shows the calm breathing line (effective level ~0.05) in #378ADD, with no microphone level and no simulated voice. Only speaking is level-driven (TTS level; simulated voice after 150 ms without a level). Planning artifacts updated (proposal, design looks table and L2/L11/L12/L14, `specs/notch`, `specs/speech-io`, Slice 5 tasks: mic tap removed). RED first: `looks.test.ts` (only speaking has a source), `wave.test.ts` (`targetLevel` ignores levels for listening), `loop.test.ts` (listening stops under reduced motion, speaking reads the store), `levelStore.test.ts` (`LevelSrc` is `tts` only, `mic` rejected), `levelTest.test.ts`. GREEN: `looks.ts` (listening source null), `levelStore.ts`, `wave.ts` and `loop.ts` comments, debug level test and preview are tts-only (mic option removed).
 
 Verification:
 - `npm test` and `npm run build` (from `app`)
@@ -145,7 +146,7 @@ Verification:
 Live hand-test (owner):
 1. Press Ctrl+Shift+Space: a small black notch drops in at the top center with a springy bounce and the blue listening look. It is 118x30; the window around it is clear.
 2. Click on the notch and the area around it: the click reaches the app below.
-3. Run the debug state switcher through all seven states: the waveform color matches the table; listening and speaking spike with the (simulated) voice, the others are a calm, barely breathing line. With the system reduced-motion setting on: a static line (static shape scaled by the level when listening/speaking).
+3. Run the debug state switcher through all seven states: the waveform color matches the table; only speaking spikes with the (simulated) voice; listening and the others are a calm, barely breathing line (owner decision 2.12). With the system reduced-motion setting on: a static line (static shape scaled by the level when speaking).
 4. Issue a restart/shutdown request: amber pulse only, no text, no buttons. Confirm with the chord (S1). Reply text is not shown anywhere.
 5. Color-only states are the owner's explicit choice (no grayscale check).
 6. The voice level is simulated here (real levels arrive in S5).
@@ -219,14 +220,14 @@ Rollback boundary: revert PR 4 only (it restores the click channel in the host).
 Goal: real audio levels from the sidecar to the notch as `niva://level`, bypassing the reducer.
 
 - [ ] 5.1 Create `voice/levels.py` `bands(pcm, rate)`: Hann window, rfft, 7 log bands with edges 80/160/320/640/1280/2560/4000/8000 Hz, band RMS in dBFS mapped from [-60, -10] to 0-100. RED in `voice/tests/test_levels.py`: `test_sine_lands_in_expected_band`, `test_silence_is_all_zero`, `test_returns_seven_ints_in_0_100`, `test_dbfs_mapping_endpoints`, `test_short_frame_does_not_raise`.
-- [ ] 5.2 `voice/protocol.py`: `{"type":"level","src":"mic"|"tts","bands":[7 ints]}`. RED: `test_level_message_shape`, `test_level_message_has_no_samples_or_text`.
-- [ ] 5.3 `voice/capture.py`: one value per 32 ms frame, only while a listen is open; rate guard at most one emit per 25 ms per source. RED: `test_mic_level_only_while_listen_open`, `test_idle_sends_no_level`, `test_mic_level_rate_20_to_40_hz`, `test_rate_guard_25ms`.
+- [ ] 5.2 `voice/protocol.py`: `{"type":"level","src":"tts","bands":[7 ints]}` (TTS only, owner decision 2026-11-10). RED: `test_level_message_shape`, `test_level_message_has_no_samples_or_text`, `test_level_message_rejects_mic_src`.
+- [x] 5.3 (removed by 2.12) No microphone tap in `voice/capture.py`: no microphone level is ever sent. Kept only as a negative check in Slice 5: RED `test_capture_emits_no_level` (a listen sends no `level`).
 - [ ] 5.4 `voice/audio_io.py`: extend the `AudioOutput` protocol with `latency` and add a fake implementation for tests. RED: `test_fake_output_exposes_latency`.
 - [ ] 5.5 `voice/tts.py`: cut each written chunk into 32 ms slices; pacer thread emits each slice at `due = max(prev_due + slice_ms, write_return + latency)`; first write anchors, underrun re-anchors; flush and stop on speech end and on barge-in; `NIVA_TTS_LEVEL_OFFSET_MS` (default 0). RED with a fake clock and fake output: `test_slices_are_32ms`, `test_due_times_follow_playback_clock`, `test_first_write_anchors_clock`, `test_underrun_reanchors`, `test_pacer_flushed_on_speech_end`, `test_pacer_stops_within_one_period_on_barge_in`, `test_level_offset_env_shifts_due`, `test_tts_level_rate_20_to_40_hz`, `test_idle_sends_no_tts_level`.
-- [ ] 5.6 `app/src-tauri/src/voice_sidecar/wire.rs` and `translate.rs`: parse `level`; `Translated` gains `level: Option<Level>`. RED: `parse_valid_level_message`, `level_with_six_bands_is_dropped`, `level_with_value_101_is_dropped`, `level_with_negative_or_non_integer_is_dropped`, `level_with_unknown_src_is_dropped`, `malformed_level_does_not_block_other_messages`.
+- [ ] 5.6 `app/src-tauri/src/voice_sidecar/wire.rs` and `translate.rs`: parse `level`; `Translated` gains `level: Option<Level>`. RED: `parse_valid_level_message`, `level_with_six_bands_is_dropped`, `level_with_value_101_is_dropped`, `level_with_negative_or_non_integer_is_dropped`, `level_with_unknown_src_is_dropped` (including `mic`), `malformed_level_does_not_block_other_messages`.
 - [ ] 5.7 `voice_sidecar.rs`: `LevelSink` emits `niva://level` to `island` only; not logged, not through the dispatcher. RED: `level_creates_no_reducer_event`, `level_flood_30hz_does_not_reach_dispatcher`, `level_is_not_logged`, `level_emitted_to_island_window_only`.
-- [ ] 5.8 Frontend: subscribe to `niva://level` into `levelStore`; Notch uses mic bands while listening and tts bands while speaking. RED: `level_event_updates_store`, `wrong_source_ignored_for_state`, `missing_level_stream_leaves_other_view_updates_untouched` (vitest with a mocked event listener).
-- [ ] 5.9 Manual measurement of the L14 bound (no code): debug "level test" clicks every 500 ms, filmed at 240 fps, mic and TTS, built-in or wired output; measure the onset (rise) only: mean <= 50 ms, no sample > 100 ms, decay intentionally slower and unbounded; result logged in apply-progress. Bluetooth excluded; use `NIVA_TTS_LEVEL_OFFSET_MS` if needed. Docs: add the env variable to `voice/README.md`.
+- [ ] 5.8 Frontend: subscribe to `niva://level` into `levelStore`; Notch uses the tts bands while speaking only. RED: `level_event_updates_store`, `mic_source_ignored`, `listening_ignores_levels`, `missing_level_stream_leaves_other_view_updates_untouched` (vitest with a mocked event listener).
+- [ ] 5.9 Manual measurement of the L14 bound (no code): debug "level test" clicks every 500 ms, filmed at 240 fps, TTS only, built-in or wired output; measure the onset (rise) only: mean <= 50 ms, no sample > 100 ms, decay intentionally slower and unbounded; result logged in apply-progress. Bluetooth excluded; use `NIVA_TTS_LEVEL_OFFSET_MS` if needed. Docs: add the env variable to `voice/README.md`.
 
 Verification:
 - `voice\.venv\Scripts\python.exe -m pytest -q` (from `voice`)
@@ -234,11 +235,11 @@ Verification:
 - `npm test`, `npm run build` (from `app`)
 
 Live hand-test (owner):
-1. Say a sentence after Ctrl+Shift+Space: the blue waveform follows your voice, no visible delay.
+1. Say a sentence after Ctrl+Shift+Space: the blue line stays calm and does not react to your voice.
 2. Ask a question: the green waveform follows Niva's voice in step with what you hear (wired or built-in speakers).
 3. Interrupt Niva mid-sentence (barge-in): the spikes start falling within about a frame (the decay is intentionally slower).
-4. Thinking and confirmation states do not react to sound.
-5. Kill the sidecar mid-listen: the waveform goes on from the simulation after about 150 ms and the next state works.
+4. Listening, thinking and confirmation states do not react to sound.
+5. Kill the sidecar mid-speech: the waveform goes on from the simulation after about 150 ms and the next state works.
 6. Film the debug "level test" at 240 fps, measuring the onset (rise) only: mean lag at most 50 ms, no sample above 100 ms. The decay is intentionally slower and not bounded.
 
 Rollback boundary: revert PR 5 only. The notch keeps working on the simulated waveform (the S2 behavior); no other slice depends on it.
@@ -258,8 +259,8 @@ Rollback boundary: revert PR 5 only. The notch keeps working on the simulated wa
 | notch | Speaking overrides the phase look | 2.2, 3.1, 3.2, 3.11 |
 | notch | Grayscale | 2.2 |
 | notch | Reduced motion | 2.11 (was 2.2, 2.3) |
-| notch | Listening follows the microphone | 2.3, 5.3, 5.8, 5.9 |
-| notch | Speaking follows the voice | 2.3, 5.5, 5.8, 5.9 |
+| notch | Listening is calm | 2.12, 5.8 |
+| notch | Speaking follows the voice | 2.11, 5.5, 5.8, 5.9 |
 | notch | Levels do not drive other states | 2.3, 5.8 |
 | notch | Levels stop | 2.3 |
 | notch | Levels resume | 2.3 |

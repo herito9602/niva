@@ -74,7 +74,7 @@ The `acting` phase MUST use the thinking color. The `countdown` phase MUST use t
 - THEN the hidden status region announces the state name and never reply text
 
 ### Requirement: Waveform motion and reduced motion
-Every ~70 ms the waveform MUST pick new random targets for its points, shaped by a bell-curve envelope centered on the notch (`env(u) = exp(-((u-0.5)/0.22)^2)`), and every frame each point MUST move 45% of the way to its target. The spike height MUST scale with the smoothed level (`amp = 1 + level*24`). States without audio (every state except listening and speaking) MUST use level 0 plus a tiny breathing level (about 0.05), so the line stays near flat but alive. Under the operating system's reduced-motion setting there MUST be no random re-targeting: the notch MUST draw a static shape scaled by the smoothed level (a static flat line at level 0), while state changes still transition with a short fade.
+Every ~70 ms the waveform MUST pick new random targets for its points, shaped by a bell-curve envelope centered on the notch (`env(u) = exp(-((u-0.5)/0.22)^2)`), and every frame each point MUST move 45% of the way to its target. The spike height MUST scale with the smoothed level (`amp = 1 + level*24`). States without audio (every state except speaking, listening included) MUST use level 0 plus a tiny breathing level (about 0.05), so the line stays near flat but alive. Under the operating system's reduced-motion setting there MUST be no random re-targeting: the notch MUST draw a static shape scaled by the smoothed level (a static flat line at level 0), while state changes still transition with a short fade.
 
 #### Scenario: Breathing
 - GIVEN the state is thinking
@@ -87,34 +87,34 @@ Every ~70 ms the waveform MUST pick new random targets for its points, shaped by
 - THEN a static flat line is drawn in the state color and no loop keeps running
 
 #### Scenario: Reduced motion with voice
-- GIVEN the system asks for reduced motion and the notch is listening
+- GIVEN the system asks for reduced motion and the notch is speaking
 - WHEN the level changes
 - THEN the static shape (a flat line at level 0) scales with the level and does not re-target randomly
 
 ### Requirement: Level-driven waveform
-While listening, the spike height MUST follow the microphone level. While speaking, it MUST follow the TTS voice level. The levels come from the sidecar `level` message (see `speech-io`) and MUST reach the notch without passing through the state reducer. The shape amplitude MUST rise with the audible sound with a mean lag of 50 ms or less and no sample above 100 ms (the decay is intentionally slower and is not bounded), for both microphone and TTS, on built-in or wired output (Bluetooth is excluded because its latency is not reported).
+Only while speaking MUST the spike height follow a level, the TTS voice level (the wave moves with Niva's voice, not with the user: owner decision 2026-11-10). While listening the waveform MUST NOT be level-driven: it shows the same calm breathing line as thinking, in the listening color, with no microphone level and no simulated voice. The level comes from the sidecar `level` message (see `speech-io`) and MUST reach the notch without passing through the state reducer. The shape amplitude MUST rise with the audible sound with a mean lag of 50 ms or less and no sample above 100 ms (the decay is intentionally slower and is not bounded), for the TTS level, on built-in or wired output (Bluetooth is excluded because its latency is not reported).
 
-#### Scenario: Listening follows the microphone
-- GIVEN the notch is listening and `level` messages arrive
-- WHEN the user speaks louder
-- THEN the spikes grow accordingly with an onset (rise) mean lag of 50 ms or less and no sample above 100 ms (the decay is intentionally slower)
-- AND a fake-clock unit test of the level smoothing checks this lag in addition to the manual 240 fps measurement
+#### Scenario: Listening is calm
+- GIVEN the notch is listening
+- WHEN the user speaks, or any `level` message arrives
+- THEN the waveform keeps the calm breathing line in the listening color and does not follow any level or simulated voice
 
 #### Scenario: Speaking follows the voice
 - GIVEN Niva is speaking and `level` messages arrive
 - WHEN the voice gets louder
-- THEN the spikes grow in step with the audible voice (same lag bound, on built-in or wired output)
+- THEN the spikes grow in step with the audible voice (onset mean lag 50 ms or less and no sample above 100 ms, the decay is intentionally slower; on built-in or wired output)
+- AND a fake-clock unit test of the level smoothing checks this lag in addition to the manual 240 fps measurement
 
 #### Scenario: Levels do not drive other states
-- GIVEN the phase is thinking or confirmation-needed
+- GIVEN the phase is listening, thinking or confirmation-needed
 - WHEN `level` messages arrive
 - THEN the waveform keeps its breathing line
 
 ### Requirement: Simulation fallback
-If the notch is in listening or speaking and receives no `level` message for more than 150 ms, it MUST drive the waveform level from a UI-only simulated voice envelope, and MUST return to real levels as soon as `level` messages arrive again. Under reduced motion the simulation MUST NOT animate.
+If the notch is speaking and receives no `level` message for more than 150 ms, it MUST drive the waveform level from a UI-only simulated voice envelope, and MUST return to real levels as soon as `level` messages arrive again. Under reduced motion the simulation MUST NOT animate.
 
 #### Scenario: Levels stop
-- GIVEN the notch is listening with real levels
+- GIVEN the notch is speaking with real levels
 - WHEN 150 ms pass without a `level` message
 - THEN the waveform continues to move from the simulation
 
