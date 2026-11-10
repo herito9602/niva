@@ -89,7 +89,7 @@ export default function DebugWindow() {
 
   // While the level test runs the preview shows the look that level drives.
   const previewView: ViewPayload | null = levelSrc
-    ? { state: "listening", speaking: levelSrc === "tts" }
+    ? { state: "listening", speaking: true }
     : view;
   const previewLook = viewToLook(previewView);
 
@@ -103,8 +103,8 @@ export default function DebugWindow() {
           <Notch view={previewView} phase={previewLook ? "in" : "hidden"} />
         </div>
         <div className="row">
-          <span className="extra">Level test (a click every 500 ms, for filming at 240 fps):</span>
-          {([null, "mic", "tts"] as const).map((src) => (
+          <span className="extra">Level test, Niva's voice only (a click every 500 ms, for filming at 240 fps):</span>
+          {([null, "tts"] as const).map((src) => (
             <button key={src ?? "off"} aria-pressed={levelSrc === src} onClick={() => setLevelSrc(src)}>
               {src ?? "off"}
             </button>

@@ -13,12 +13,12 @@ describe("debug level test", () => {
   it("level_test_injects_a_click_every_500ms", () => {
     expect(CLICK_PERIOD_MS).toBe(500);
     const store = createLevelStore();
-    const stop = startLevelTest(store, "mic", () => Date.now());
+    const stop = startLevelTest(store, "tts", () => Date.now());
     const loud: number[] = [];
     const start = Date.now();
     for (let t = 0; t < 1900; t += 10) {
       vi.advanceTimersByTime(10);
-      const sample = store.latest("mic");
+      const sample = store.latest("tts");
       if (sample && sample.bands[0] === 100) loud.push(Date.now() - start);
     }
     stop();
@@ -41,11 +41,11 @@ describe("debug level test", () => {
     stop();
   });
 
-  it("feeds only the chosen source and stops when asked", () => {
+  it("feeds only the tts source (never a mic level) and stops when asked", () => {
     const store = createLevelStore();
     const stop = startLevelTest(store, "tts", () => Date.now());
     vi.advanceTimersByTime(100);
-    expect(store.latest("mic")).toBeNull();
+    expect(store.latest("tts")).not.toBeNull();
     const last = store.latest("tts");
     stop();
     vi.advanceTimersByTime(500);

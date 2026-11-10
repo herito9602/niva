@@ -28,14 +28,13 @@ describe("look table", () => {
     }
   });
 
-  it("only_listening_and_speaking_are_level_driven", () => {
+  it("only_speaking_is_level_driven_and_listening_is_calm", () => {
     const driven = Object.values(LOOKS)
       .filter((l) => l.source !== null)
       .map((l) => [l.name, l.source]);
-    expect(driven).toEqual([
-      ["listening", "mic"],
-      ["speaking", "tts"],
-    ]);
+    expect(driven).toEqual([["speaking", "tts"]]);
+    expect(LOOKS.listening.source).toBeNull();
+    expect(LOOKS.listening.color).toBe("#378ADD");
   });
 
   it("a look is only a color, a source and a state name: no motion or silhouette", () => {

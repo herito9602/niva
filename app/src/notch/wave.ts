@@ -92,9 +92,9 @@ export function voiceEnvelope(nowMs: number): number {
 }
 
 /**
- * The level the shape should reach (0..1). Listening and speaking follow a fresh
- * real level of their stream (mean of the bands), else the simulated voice. Every
- * other look has no audio and breathes. Under reduced motion nothing is simulated
+ * The level the shape should reach (0..1). Speaking follows a fresh real level
+ * of Niva's voice (mean of the bands), else the simulated voice. Every other look,
+ * listening included, has no audio and breathes. Under reduced motion nothing is simulated
  * and nothing breathes, but a real level still counts: it is information.
  */
 export function targetLevel(look: Look, sample: LevelSample | null, nowMs: number, reduced: boolean): number {

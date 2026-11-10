@@ -8,7 +8,7 @@ export const CLICK_PERIOD_MS = 500;
 export const CLICK_LEN_MS = 100;
 export const PUSH_EVERY_MS = 25;
 
-/** Starts the click train for one source. Returns the stop function. */
+/** Starts the click train for Niva's voice (tts); there is no microphone source. Returns the stop function. */
 export function startLevelTest(
   store: Pick<LevelStore, "push">,
   src: LevelSrc,

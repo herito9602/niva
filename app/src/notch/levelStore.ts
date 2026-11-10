@@ -7,7 +7,8 @@ import type { Look } from "./looks";
 /** The wire carries this many bands per sample. */
 export const BAND_COUNT = 7;
 
-export type LevelSrc = "mic" | "tts";
+/** Only Niva's own voice: no microphone level is ever sent or stored. */
+export type LevelSrc = "tts";
 
 export interface LevelSample {
   src: LevelSrc;
@@ -29,10 +30,10 @@ export interface LevelStore {
 const isBand = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 100;
 
 export function createLevelStore(): LevelStore {
-  const samples: Record<LevelSrc, LevelSample | null> = { mic: null, tts: null };
+  const samples: Record<LevelSrc, LevelSample | null> = { tts: null };
   return {
     push(src, bands, at) {
-      if (src !== "mic" && src !== "tts") return false;
+      if (src !== "tts") return false;
       if (bands.length !== BAND_COUNT || !bands.every(isBand)) return false;
       samples[src] = { src, bands: [...bands], at };
       return true;

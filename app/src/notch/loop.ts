@@ -36,8 +36,8 @@ export function startFrameLoop(step: (now: number) => boolean, env: FrameEnv): (
 /**
  * Whether the loop must keep running after this frame. A static line (reduced
  * motion, look without audio) needs no loop once the level is at rest. The level
- * looks (listening, speaking) keep running under reduced motion on purpose: they
- * show the real voice level, which is information rather than decoration.
+ * look (speaking) keeps running under reduced motion on purpose: it
+ * shows the real voice level, which is information rather than decoration.
  */
 export function keepsRunning(reduced: boolean, look: Look, next: WaveState): boolean {
   return !(reduced && look.source === null && atRest(next));

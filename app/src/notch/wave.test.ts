@@ -26,7 +26,7 @@ import {
   type WaveState,
 } from "./wave";
 
-const sample = (src: "mic" | "tts", v: number, at: number): LevelSample => ({ src, bands: Array(7).fill(v), at });
+const sample = (src: "mic" | "tts", v: number, at: number): LevelSample => ({ src: src as "tts", bands: Array(7).fill(v), at });
 const u = (i: number) => i / (WAVE_POINTS - 1);
 
 describe("wave constants and envelope", () => {
@@ -166,20 +166,21 @@ describe("halfHeights and outline", () => {
 });
 
 describe("targetLevel", () => {
-  it("listening follows a fresh mic level and speaking a fresh tts level", () => {
-    expect(targetLevel(LOOKS.listening, sample("mic", 60, 900), 1000, false)).toBeCloseTo(0.6, 12);
+  it("speaking follows a fresh tts level; listening ignores any level and breathes", () => {
+    expect(targetLevel(LOOKS.listening, sample("mic", 60, 900), 1000, false)).toBe(BREATH_LEVEL);
+    expect(targetLevel(LOOKS.listening, sample("tts", 60, 900), 1000, false)).toBe(BREATH_LEVEL);
     expect(targetLevel(LOOKS.speaking, sample("tts", 25, 900), 1000, false)).toBeCloseTo(0.25, 12);
   });
 
   it("a level exactly at the stale limit is still real; a silent real level is 0", () => {
-    expect(targetLevel(LOOKS.listening, sample("mic", 0, 850), 1000, false)).toBe(0);
+    expect(targetLevel(LOOKS.speaking, sample("tts", 0, 850), 1000, false)).toBe(0);
   });
 
   it("falls back to the simulated voice when the level is stale, missing or of the wrong source", () => {
     const sims = [1000, 1210, 1430, 1650, 1870, 2090].flatMap((t) => [
-      targetLevel(LOOKS.listening, null, t, false),
-      targetLevel(LOOKS.listening, sample("mic", 0, 100), t, false),
-      targetLevel(LOOKS.listening, sample("tts", 100, t), t, false),
+      targetLevel(LOOKS.speaking, null, t, false),
+      targetLevel(LOOKS.speaking, sample("tts", 0, 100), t, false),
+      targetLevel(LOOKS.speaking, sample("mic", 100, t), t, false),
     ]);
     expect(Math.max(...sims)).toBeGreaterThan(0.2);
     for (const v of sims) {
@@ -191,15 +192,16 @@ describe("targetLevel", () => {
   });
 
   it("the other looks ignore levels and breathe at about 0.05", () => {
-    for (const look of [LOOKS.thinking, LOOKS.confirmation, LOOKS.success, LOOKS.error, LOOKS.reminder]) {
+    for (const look of [LOOKS.listening, LOOKS.thinking, LOOKS.confirmation, LOOKS.success, LOOKS.error, LOOKS.reminder]) {
       expect(targetLevel(look, sample("mic", 100, 999), 1000, false)).toBe(BREATH_LEVEL);
     }
   });
 
   it("under reduced motion the simulation and the breathing are off, real levels still count", () => {
+    expect(targetLevel(LOOKS.speaking, null, 1000, true)).toBe(0);
     expect(targetLevel(LOOKS.listening, null, 1000, true)).toBe(0);
     expect(targetLevel(LOOKS.thinking, null, 1000, true)).toBe(0);
-    expect(targetLevel(LOOKS.listening, sample("mic", 50, 990), 1000, true)).toBeCloseTo(0.5, 12);
+    expect(targetLevel(LOOKS.speaking, sample("tts", 50, 990), 1000, true)).toBeCloseTo(0.5, 12);
   });
 });
 

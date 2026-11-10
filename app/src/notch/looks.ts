@@ -1,5 +1,6 @@
 // What the notch shows for each state: a color, and which audio stream (if any)
-// drives the waveform. Color alone tells the states apart (owner decision). No
+// drives the waveform. Only speaking has one (Niva's own voice); listening is a
+// calm line, because the wave follows Niva's voice, not the user's. Color alone tells the states apart (owner decision). No
 // text lives here except the state name that a screen reader announces.
 
 import type { ViewPayload } from "../events";
@@ -18,13 +19,13 @@ export interface Look {
   /** Fill color of the waveform: the only thing that tells the states apart. */
   color: string;
   /** Which sidecar stream drives the spike height; null means no audio (flat, breathing line). */
-  source: "mic" | "tts" | null;
+  source: "tts" | null;
   /** The state name announced by the status region. Never reply text. */
   label: string;
 }
 
 export const LOOKS: Record<LookName, Look> = {
-  listening: { name: "listening", color: "#378ADD", source: "mic", label: "Listening" },
+  listening: { name: "listening", color: "#378ADD", source: null, label: "Listening" },
   thinking: { name: "thinking", color: "#7F77DD", source: null, label: "Thinking" },
   speaking: { name: "speaking", color: "#5DCAA5", source: "tts", label: "Speaking" },
   confirmation: { name: "confirmation", color: "#EF9F27", source: null, label: "Confirmation needed" },

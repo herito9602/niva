@@ -169,8 +169,8 @@ describe("startWaveLoop", () => {
 
   it("reads the level of the look from the store", () => {
     const f = fakeEnv();
-    const opts = baseOpts(f, fakeCtx(), false, LOOKS.listening);
-    opts.levels.push("mic", Array(7).fill(100), 0);
+    const opts = baseOpts(f, fakeCtx(), false, LOOKS.speaking);
+    opts.levels.push("tts", Array(7).fill(100), 0);
     startWaveLoop(opts);
     f.step(16);
     // The clock is 16 and the sample is fresh: the smoothed level moved 40% toward 1.
@@ -196,8 +196,18 @@ describe("startWaveLoop", () => {
     expect(f.pendingCount()).toBe(1);
   });
 
-  it("level looks keep running under reduced motion by design", () => {
-    for (const look of [LOOKS.listening, LOOKS.speaking]) {
+  it("listening is calm: it ignores levels and stops like the other non-level looks under reduced motion", () => {
+    const f = fakeEnv();
+    const opts = baseOpts(f, fakeCtx(), true, LOOKS.listening);
+    opts.levels.push("tts", Array(7).fill(100), 0);
+    startWaveLoop(opts);
+    f.step();
+    expect(opts.memory.wave?.lvl).toBe(0);
+    expect(f.pendingCount()).toBe(0);
+  });
+
+  it("the speaking look keeps running under reduced motion by design", () => {
+    for (const look of [LOOKS.speaking]) {
       const f = fakeEnv();
       startWaveLoop(baseOpts(f, fakeCtx(), true, look));
       for (let i = 0; i < 20; i++) f.step();
@@ -212,7 +222,8 @@ describe("keepsRunning", () => {
   it("stops only for reduced motion + non-level look + level at rest", () => {
     expect(keepsRunning(true, LOOKS.thinking, settled(0))).toBe(false);
     expect(keepsRunning(false, LOOKS.thinking, settled(0))).toBe(true);
-    expect(keepsRunning(true, LOOKS.listening, settled(0))).toBe(true);
+    expect(keepsRunning(true, LOOKS.speaking, settled(0))).toBe(true);
+    expect(keepsRunning(true, LOOKS.listening, settled(0))).toBe(false);
     // The level is still decaying from the previous look: keep going until it rests.
     expect(keepsRunning(true, LOOKS.thinking, settled(0.5))).toBe(true);
   });
