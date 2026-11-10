@@ -1,10 +1,18 @@
 // Frontend mirror of what the Rust core publishes. The reducer lives in
 // `niva-core`; this store only keeps the latest payload of each host event, and
-// paces one display transition (see `ACTING_MIN_MS`).
+// paces one display transition (see `ACTING_MIN_MS`). The notch draws no text:
+// `caption`, labels and the countdown text in the payload are never read.
 
 import { CURSOR_EVENT, ISLAND_EVENT, VIEW_EVENT } from "../events";
 import type { CursorPayload, IslandPayload, ViewPayload } from "../events";
-import { phaseForIsland, type SlidePhase } from "../island";
+
+/** Whether the island is sliding in, sliding out or away. */
+export type SlidePhase = "hidden" | "in" | "out";
+
+export const phaseForIsland = (visible: boolean): SlidePhase => (visible ? "in" : "out");
+
+/** True while Niva's voice is audible. A payload without the flag means false. */
+export const isSpeaking = (view: ViewPayload | null): boolean => view?.speaking === true;
 
 export interface ViewState {
   view: ViewPayload | null;
@@ -22,7 +30,7 @@ export interface ViewStore {
 
 /**
  * Least time "acting" stays on screen. Most actions finish in milliseconds, so
- * without this the mascot would never be seen working. Display only: the action
+ * without this the working look would never be seen. Display only: the action
  * has already run, and the reducer's phase is unchanged. A quick result waits
  * for this; anything else (a reminder, a confirmation, a cancel) shows at once.
  */

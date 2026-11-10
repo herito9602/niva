@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CURSOR_EVENT, ISLAND_EVENT, VIEW_EVENT, type ViewPayload } from "../events";
-import { ACTING_MIN_MS, bindHostEvents, createViewStore, type Listen } from "./viewStore";
+import { LOOKS, viewToLook } from "../notch/looks";
+import { ACTING_MIN_MS, bindHostEvents, createViewStore, isSpeaking, type Listen } from "./viewStore";
 
 type Handler = (event: { payload: unknown }) => void;
 
@@ -66,6 +67,31 @@ describe("createViewStore", () => {
     store.setIsland(true);
     expect(store.getState()).not.toBe(before);
     expect(before.phase).toBe("hidden");
+  });
+});
+
+describe("the payload the notch reads", () => {
+  it("existing_payload_with_caption_is_accepted_and_text_ignored", () => {
+    const store = createViewStore();
+    const withText: ViewPayload = {
+      state: "success",
+      caption: "Opening Notepad",
+      confirm: { id: 4, prompt: "Close it?", confirmLabel: "Yes", cancelLabel: "No" },
+      countdown: { text: "Sleeping in {n}", seconds: 10, endsAt: 0 },
+    };
+    store.setView(withText);
+    expect(store.getState().view).toBe(withText);
+    // The look is the same as for the bare state: no field of text changes it.
+    expect(viewToLook(store.getState().view)).toBe(viewToLook({ state: "success" }));
+    expect(viewToLook(store.getState().view)).toBe(LOOKS.success);
+  });
+
+  it("missing_speaking_defaults_false", () => {
+    expect(isSpeaking({ state: "success" })).toBe(false);
+    expect(isSpeaking(null)).toBe(false);
+    expect(isSpeaking({ state: "success", speaking: false })).toBe(false);
+    expect(isSpeaking({ state: "success", speaking: true })).toBe(true);
+    expect(viewToLook({ state: "success" })).toBe(LOOKS.success);
   });
 });
 

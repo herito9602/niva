@@ -2,17 +2,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { VIEW_EVENT, type ViewPayload } from "../events";
-import { countdownLeft } from "../island";
+import { Notch } from "../notch/Notch";
+import { levelStore, type LevelSrc } from "../notch/levelStore";
+import { viewToLook } from "../notch/looks";
 import { useNow } from "../state/useNow";
 import { ALL_STATES, EVENT_BUTTONS, STATE_SCRIPTS, answerEvent, rawEvent, type DebugEvent } from "./events";
 import {
   DEV_LOG_EVENT,
   MAX_DEBUG_TEXT,
   appendLog,
+  countdownLeft,
   describeView,
   prepareText,
   type DevLogPayload,
 } from "./log";
+import { startLevelTest } from "./levelTest";
 import "./debug.css";
 
 // Debug builds only: the host creates this window and registers `debug_dispatch`.
@@ -30,6 +34,7 @@ export default function DebugWindow() {
   const [hold, setHold] = useState(true);
   const [text, setText] = useState("");
   const [log, setLog] = useState<string[]>([]);
+  const [levelSrc, setLevelSrc] = useState<LevelSrc | null>(null);
   const lastView = useRef<ViewPayload | null>(null);
   const now = useNow(Boolean(view?.countdown));
 
@@ -48,6 +53,12 @@ export default function DebugWindow() {
       for (const sub of subs) sub.then((un) => un());
     };
   }, []);
+
+  // The level test feeds this window's own level store, which the preview notch reads.
+  useEffect(() => {
+    if (!levelSrc) return;
+    return startLevelTest(levelStore, levelSrc);
+  }, [levelSrc]);
 
   // Hold the stubbed audio by default so a state stays up long enough to look at.
   useEffect(() => {
@@ -76,9 +87,30 @@ export default function DebugWindow() {
     await dispatch({ type: "voice_ready", ready });
   }, [voiceReady]);
 
+  // While the level test runs the preview shows the look that level drives.
+  const previewView: ViewPayload | null = levelSrc
+    ? { state: "listening", speaking: levelSrc === "tts" }
+    : view;
+  const previewLook = viewToLook(previewView);
+
   return (
     <main className="debug">
       <h1>Niva debug</h1>
+
+      <section>
+        <h2>Notch preview</h2>
+        <div className="notch-preview">
+          <Notch view={previewView} phase={previewLook ? "in" : "hidden"} />
+        </div>
+        <div className="row">
+          <span className="extra">Level test (a click every 500 ms, for filming at 240 fps):</span>
+          {([null, "mic", "tts"] as const).map((src) => (
+            <button key={src ?? "off"} aria-pressed={levelSrc === src} onClick={() => setLevelSrc(src)}>
+              {src ?? "off"}
+            </button>
+          ))}
+        </div>
+      </section>
 
       <section className="current">
         <span className="state" data-state={view?.state ?? "idle"}>

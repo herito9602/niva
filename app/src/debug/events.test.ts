@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { createViewStore } from "../state/viewStore";
+import { viewToLook } from "../notch/looks";
 import { ALL_STATES, EVENT_BUTTONS, STATE_SCRIPTS, answerEvent, rawEvent } from "./events";
 
 // The 25 message types of the Rust `DebugEvent` that map to reducer events
@@ -130,6 +132,31 @@ describe("sleep countdown buttons", () => {
     expect(labels).toContainEqual({ type: "watchdog", kind: "countdown" });
     for (const type of ["countdown_ready", "countdown_cancel", "countdown_fault"]) {
       expect(labels).toContainEqual({ type });
+    }
+  });
+});
+
+describe("the state switcher drives the notch", () => {
+  // The debug window's switcher resets the reducer and replays a script; the host
+  // then publishes the view of that state. Each state must end in its notch look.
+  const LOOK_OF: Record<(typeof ALL_STATES)[number], string | null> = {
+    idle: null,
+    listening: "listening",
+    thinking: "thinking",
+    acting: "thinking",
+    "confirmation-needed": "confirmation",
+    success: "success",
+    error: "error",
+    "reminder-alert": "reminder",
+  };
+
+  it("debug_state_switch_sets_view_for_each_state", () => {
+    for (const state of ALL_STATES) {
+      const store = createViewStore();
+      store.setView({ state });
+      expect(store.getState().view?.state).toBe(state);
+      expect(viewToLook(store.getState().view)?.name ?? null, state).toBe(LOOK_OF[state]);
+      expect(STATE_SCRIPTS[state].length, state).toBeGreaterThan(0);
     }
   });
 });

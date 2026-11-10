@@ -88,3 +88,19 @@ describe("look table", () => {
     for (const l of Object.values(LOOKS)) expect(l.label).toMatch(/^[A-Za-z ]+$/);
   });
 });
+
+describe("notch assets", () => {
+  it("notch_has_no_image_assets", () => {
+    // The notch is drawn shapes only. Walk app/src and app/public for image files.
+    const images = {
+      ...import.meta.glob("/src/**/*.{png,jpg,jpeg,svg,webp,gif}"),
+      ...import.meta.glob("/public/**/*.{png,jpg,jpeg,svg,webp,gif}"),
+    };
+    expect(Object.keys(images)).toEqual([]);
+  });
+
+  it("the old mascot and island modules are gone", () => {
+    const old = import.meta.glob(["/src/mascot/**", "/src/island-ui/**", "/src/island.ts", "/src/island.test.ts"]);
+    expect(Object.keys(old)).toEqual([]);
+  });
+});
