@@ -1,5 +1,5 @@
 // Debug "level test": feeds the notch's level store with a click every 500 ms
-// (full bars for a moment, then silence) so the bar lag can be filmed at 240 fps.
+// (full level for a moment, then silence) so the waveform lag can be filmed at 240 fps.
 // The level stays fresh between clicks, so the UI's simulation never takes over.
 
 import type { LevelSrc, LevelStore } from "../notch/levelStore";

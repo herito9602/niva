@@ -28,22 +28,19 @@ describe("look table", () => {
     }
   });
 
-  it("reduced_motion_silhouettes_pairwise_distinct", () => {
-    const looks = Object.values(LOOKS);
-    expect(looks).toHaveLength(7);
-    const keys = looks.map((l) => {
-      expect(l.silhouette).toHaveLength(7);
-      return l.silhouette.join(",");
-    });
-    expect(new Set(keys).size).toBe(7);
+  it("only_listening_and_speaking_are_level_driven", () => {
+    const driven = Object.values(LOOKS)
+      .filter((l) => l.source !== null)
+      .map((l) => [l.name, l.source]);
+    expect(driven).toEqual([
+      ["listening", "mic"],
+      ["speaking", "tts"],
+    ]);
   });
 
-  it("silhouettes are normalized to 0..1", () => {
+  it("a look is only a color, a source and a state name: no motion or silhouette", () => {
     for (const look of Object.values(LOOKS)) {
-      for (const h of look.silhouette) {
-        expect(h).toBeGreaterThanOrEqual(0);
-        expect(h).toBeLessThanOrEqual(1);
-      }
+      expect(Object.keys(look).sort()).toEqual(["color", "label", "name", "source"]);
     }
   });
 

@@ -21,9 +21,10 @@ const reply: ViewPayload = {
 };
 
 describe("Notch markup", () => {
-  it("renders_seven_bars_in_118x30_shell", () => {
+  it("renders_one_waveform_canvas_in_118x30_shell", () => {
     const html = render({ state: "listening" });
-    expect(html.match(/class="bar"/g)).toHaveLength(7);
+    expect(html.match(/<canvas /g)).toHaveLength(1);
+    expect(html).not.toContain('class="bar"');
     expect(html).toContain(`width:${NOTCH_W}px`);
     expect(html).toContain(`height:${NOTCH_H}px`);
     expect(NOTCH_W).toBe(118);
@@ -42,15 +43,16 @@ describe("Notch markup", () => {
 
   it("no_buttons_and_no_text_in_markup", () => {
     const html = render({ state: "confirmation-needed", caption: "Shut down?", confirm: reply.confirm });
-    expect(html).not.toMatch(/<(button|input|a|img|svg|canvas|p|h1|h2)\b/);
+    expect(html).not.toMatch(/<(button|input|a|img|svg|p|h1|h2)\b/);
     // The only text node is the visually hidden state name.
     const text = html.replace(/<[^>]*>/g, "");
     expect(text).toBe("Confirmation needed");
   });
 
-  it("takes the color from the look through one custom property", () => {
-    expect(render({ state: "thinking" })).toContain("--bar:#7F77DD");
-    expect(render({ state: "error" })).toContain("--bar:#E24B4A");
+  it("marks the look on the shell and leaves the color to the canvas", () => {
+    expect(render({ state: "thinking" })).toContain('data-look="thinking"');
+    expect(render({ state: "error" })).toContain('data-look="error"');
+    expect(render({ state: "error" })).not.toContain("--bar");
   });
 
   it("shows the exit and the hidden phases through a class", () => {
@@ -81,12 +83,11 @@ describe("Notch idle fallback", () => {
     expect(holdLook(null, null)).toBe(LOOKS.listening);
   });
 
-  it("an idle view sliding out keeps the label and color of the look it already has", () => {
+  it("an idle view sliding out keeps the label of the look it already has", () => {
     const html = render({ state: "idle" }, "out");
     // Nothing was shown before, so the fallback is listening, not an empty notch.
     expect(html).toContain(`data-look="listening"`);
     expect(html).toContain(">Listening<");
-    expect(html).toContain(`--bar:${LOOKS.listening.color}`);
   });
 });
 

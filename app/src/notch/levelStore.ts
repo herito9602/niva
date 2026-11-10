@@ -2,14 +2,16 @@
 // and only the notch's animation loop reads them. A level never goes through the
 // view store or the host reducer.
 
-import { BAR_COUNT } from "./bars";
 import type { Look } from "./looks";
+
+/** The wire carries this many bands per sample. */
+export const BAND_COUNT = 7;
 
 export type LevelSrc = "mic" | "tts";
 
 export interface LevelSample {
   src: LevelSrc;
-  /** BAR_COUNT integers, 0..100. */
+  /** BAND_COUNT integers, 0..100. */
   bands: number[];
   /** Clock reading (ms, the animation loop's clock) when it arrived. */
   at: number;
@@ -31,7 +33,7 @@ export function createLevelStore(): LevelStore {
   return {
     push(src, bands, at) {
       if (src !== "mic" && src !== "tts") return false;
-      if (bands.length !== BAR_COUNT || !bands.every(isBand)) return false;
+      if (bands.length !== BAND_COUNT || !bands.every(isBand)) return false;
       samples[src] = { src, bands: [...bands], at };
       return true;
     },

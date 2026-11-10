@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ViewPayload } from "../events";
 import type { SlidePhase } from "../state/viewStore";
-import { BAR_COUNT, type Smoothed } from "./bars";
 import { levelStore as sharedLevels, type LevelStore } from "./levelStore";
 import { holdLook, viewToLook, type Look } from "./looks";
-import { readReducedMotion, startBarLoop, watchReducedMotion } from "./loop";
+import { readReducedMotion, startWaveLoop, watchReducedMotion } from "./loop";
 import { NOTCH_H, NOTCH_W } from "./motion";
+import { fitCanvas, type WaveState } from "./wave";
 import "./notch.css";
 
 function useReducedMotion(): boolean {
@@ -22,10 +22,10 @@ export interface NotchProps {
 }
 
 /**
- * The notch: a black shape hanging from the top edge with seven bars. One rAF
- * loop writes `transform` and `opacity` of the bars through refs, so no React
- * render happens per frame. The only text is a visually hidden status region
- * with the state name; reply text never reaches this component.
+ * The notch: a black shape hanging from the top edge with one mirrored spike
+ * waveform on a canvas. One rAF loop draws it, so no React render happens per
+ * frame. The only text is a visually hidden status region with the state name;
+ * reply text never reaches this component.
  */
 export function Notch({ view, phase, levels = sharedLevels }: NotchProps) {
   const current = viewToLook(view);
@@ -35,27 +35,27 @@ export function Notch({ view, phase, levels = sharedLevels }: NotchProps) {
   if (current) lastLook.current = current;
 
   const reduced = useReducedMotion();
-  const barsEl = useRef<HTMLDivElement>(null);
+  const canvasEl = useRef<HTMLCanvasElement>(null);
   const lookRef = useRef(look);
-  const startedAt = useRef(0);
-  const smoothedMemory = useRef<{ smoothed?: Smoothed }>({});
+  const waveMemory = useRef<{ wave?: WaveState }>({});
   const active = phase !== "hidden";
 
   useEffect(() => {
     lookRef.current = look;
-    startedAt.current = performance.now();
   }, [look]);
 
   useEffect(() => {
-    const root = barsEl.current;
-    if (!active || !root) return;
-    return startBarLoop({
-      bars: Array.from(root.children) as HTMLElement[],
+    const canvas = canvasEl.current;
+    const ctx = canvas?.getContext("2d");
+    if (!active || !canvas || !ctx) return;
+    return startWaveLoop({
+      ctx,
+      size: () => fitCanvas(canvas, NOTCH_W, NOTCH_H, window.devicePixelRatio),
       getLook: () => lookRef.current,
-      getStartedAt: () => startedAt.current,
       levels,
       reduced,
-      memory: smoothedMemory.current,
+      rng: Math.random,
+      memory: waveMemory.current,
       env: {
         request: (cb) => requestAnimationFrame(cb),
         cancel: (h) => cancelAnimationFrame(h),
@@ -66,16 +66,8 @@ export function Notch({ view, phase, levels = sharedLevels }: NotchProps) {
 
   return (
     <div className="stage">
-      <div
-        className={`notch ${phase}`}
-        data-look={look.name}
-        style={{ width: NOTCH_W, height: NOTCH_H, "--bar": look.color } as CSSProperties}
-      >
-        <div className="bars" ref={barsEl}>
-          {Array.from({ length: BAR_COUNT }, (_, i) => (
-            <span className="bar" key={i} />
-          ))}
-        </div>
+      <div className={`notch ${phase}`} data-look={look.name} style={{ width: NOTCH_W, height: NOTCH_H }}>
+        <canvas className="wave" ref={canvasEl} aria-hidden="true" />
         <span className="sr-only" role="status">
           {active ? look.label : ""}
         </span>

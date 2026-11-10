@@ -1,17 +1,12 @@
 // The notch's animation loop, free of React so it can be tested with a fake
-// requestAnimationFrame. Frames only write to the bar elements' style: nothing
-// here can trigger a React render.
+// requestAnimationFrame. Frames only draw on the canvas: nothing here can
+// trigger a React render.
 
-import { frame, type Smoothed } from "./bars";
 import type { LevelStore } from "./levelStore";
 import type { Look } from "./looks";
+import { atRest, createWave, drawWave, stepWave, targetLevel, type Ctx2D, type Rng, type WaveState } from "./wave";
 
-/** A bar at level 0 is a dot this fraction of the full bar; exactly 0 is a gap. */
-const MIN_SCALE = 0.25;
-const GAP_BELOW = 0.01;
 export const REDUCED_QUERY = "(prefers-reduced-motion: reduce)";
-
-export const barScale = (v: number) => (v < GAP_BELOW ? 0 : MIN_SCALE + (1 - MIN_SCALE) * v);
 
 export interface FrameEnv {
   request: (cb: () => void) => number;
@@ -38,52 +33,39 @@ export function startFrameLoop(step: (now: number) => boolean, env: FrameEnv): (
   };
 }
 
-/** The smoothed bars have reached the silhouette (within a hair). */
-export function settled(s: Smoothed, look: Look): boolean {
-  return s.bars.every((v, i) => Math.abs(v - look.silhouette[i]) < 0.002);
-}
-
 /**
- * Whether the loop must keep running after this frame. A static silhouette
- * (reduced motion, non-level look) needs no loop once reached. The level looks
- * (listening, speaking) keep running under reduced motion on purpose: they show
- * the real voice level, which is information rather than decoration.
+ * Whether the loop must keep running after this frame. A static line (reduced
+ * motion, look without audio) needs no loop once the level is at rest. The level
+ * looks (listening, speaking) keep running under reduced motion on purpose: they
+ * show the real voice level, which is information rather than decoration.
  */
-export function keepsRunning(reduced: boolean, look: Look, next: Smoothed): boolean {
-  return !(reduced && look.motion !== "levels" && settled(next, look));
+export function keepsRunning(reduced: boolean, look: Look, next: WaveState): boolean {
+  return !(reduced && look.source === null && atRest(next));
 }
 
-export interface BarElement {
-  style: { transform: string; opacity: string };
-}
-
-export interface BarLoopOptions {
-  bars: readonly BarElement[];
+export interface WaveLoopOptions {
+  ctx: Ctx2D;
+  /** Canvas size in device pixels, read every frame (it follows the DPR). */
+  size: () => { w: number; h: number };
   getLook: () => Look;
-  getStartedAt: () => number;
   levels: LevelStore;
   reduced: boolean;
-  /** Smoothing memory that survives loop restarts. */
-  memory: { smoothed?: Smoothed };
+  /** Randomness of the spikes; `Math.random` in production, seeded in tests. */
+  rng: Rng;
+  /** Wave state that survives loop restarts. */
+  memory: { wave?: WaveState };
   env: FrameEnv;
 }
 
-/** Starts the bar loop and returns its stop function. */
-export function startBarLoop(o: BarLoopOptions): () => void {
+/** Starts the waveform loop and returns its stop function. */
+export function startWaveLoop(o: WaveLoopOptions): () => void {
   return startFrameLoop((now) => {
     const look = o.getLook();
-    const next = frame(now, look, o.levels.forLook(look), {
-      prev: o.memory.smoothed,
-      reduced: o.reduced,
-      startedAt: o.getStartedAt(),
-    });
-    o.memory.smoothed = next;
-    next.bars.forEach((v, i) => {
-      const el = o.bars[i];
-      if (!el) return;
-      el.style.transform = `scaleY(${barScale(v).toFixed(3)})`;
-      el.style.opacity = (0.55 + 0.45 * v).toFixed(3);
-    });
+    const level = targetLevel(look, o.levels.forLook(look), now, o.reduced);
+    const next = stepWave(o.memory.wave ?? createWave(), now, level, o.rng, o.reduced);
+    o.memory.wave = next;
+    const { w, h } = o.size();
+    drawWave(o.ctx, next, look.color, w, h);
     return keepsRunning(o.reduced, look, next);
   }, o.env);
 }

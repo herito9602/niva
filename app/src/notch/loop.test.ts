@@ -6,15 +6,14 @@ import {
   keepsRunning,
   readReducedMotion,
   REDUCED_QUERY,
-  startBarLoop,
   startFrameLoop,
+  startWaveLoop,
   watchReducedMotion,
-  type BarElement,
   type FrameEnv,
   type MediaQueryLike,
 } from "./loop";
 import { createLevelStore } from "./levelStore";
-import { frame } from "./bars";
+import { createWave, seededRng, stepWave, type Ctx2D } from "./wave";
 
 /** A manual rAF: callbacks queue up and run only when the test says so. */
 function fakeEnv() {
@@ -38,8 +37,23 @@ function fakeEnv() {
   return { env, request, cancel, step, pendingCount: () => pending.size };
 }
 
-const makeBars = (): BarElement[] =>
-  Array.from({ length: 7 }, () => ({ style: { transform: "", opacity: "" } }));
+/** A canvas context that records its calls. */
+function fakeCtx() {
+  const calls: string[] = [];
+  const ctx: Ctx2D = {
+    fillStyle: "",
+    lineJoin: "round",
+    miterLimit: 10,
+    setTransform: () => void calls.push("setTransform"),
+    clearRect: () => void calls.push("clearRect"),
+    beginPath: () => void calls.push("beginPath"),
+    moveTo: () => void calls.push("moveTo"),
+    lineTo: () => void calls.push("lineTo"),
+    closePath: () => void calls.push("closePath"),
+    fill: () => void calls.push("fill"),
+  };
+  return { ctx, calls, fills: () => calls.filter((c) => c === "fill").length };
+}
 
 describe("startFrameLoop", () => {
   it("runs one step per frame while the step asks to continue", () => {
@@ -100,73 +114,82 @@ describe("startFrameLoop", () => {
   });
 });
 
-describe("startBarLoop", () => {
-  const baseOpts = (f: ReturnType<typeof fakeEnv>, bars: BarElement[], reduced = false, look = LOOKS.thinking) => ({
-    bars,
+describe("startWaveLoop", () => {
+  const baseOpts = (f: ReturnType<typeof fakeEnv>, c: ReturnType<typeof fakeCtx>, reduced = false, look = LOOKS.thinking) => ({
+    ctx: c.ctx,
+    size: () => ({ w: 118, h: 30 }),
     getLook: () => look,
-    getStartedAt: () => 0,
     levels: createLevelStore(),
     reduced,
-    memory: {},
+    rng: seededRng(5),
+    memory: {} as { wave?: ReturnType<typeof createWave> },
     env: f.env,
   });
 
-  it("writes transform and opacity to the bar elements every frame", () => {
+  it("draws the waveform in the look color on every frame", () => {
     const f = fakeEnv();
-    const bars = makeBars();
-    startBarLoop(baseOpts(f, bars));
+    const c = fakeCtx();
+    startWaveLoop(baseOpts(f, c, false, LOOKS.error));
     f.step(100);
-    for (const b of bars) {
-      expect(b.style.transform).toMatch(/^scaleY\(\d\.\d{3}\)$/);
-      expect(b.style.opacity).toMatch(/^\d\.\d{3}$/);
-    }
-    const before = bars.map((b) => b.style.transform).join();
     f.step(100);
-    expect(bars.map((b) => b.style.transform).join()).not.toBe(before);
+    f.step(100);
+    expect(c.fills()).toBe(3);
+    expect(c.ctx.fillStyle).toBe(LOOKS.error.color);
   });
 
-  it("is free of React: frames can only touch element styles", () => {
+  it("is free of React: frames can only touch the canvas", () => {
     const src: string = readFileSync(new URL("./loop.ts", import.meta.url), "utf8");
     expect(src).not.toMatch(/from\s+["']react/);
     expect(src).not.toMatch(/useState|setState|useReducer/);
   });
 
-  it("keeps the smoothing memory across restarts", () => {
+  it("keeps the wave memory across restarts", () => {
     const f = fakeEnv();
-    const opts = baseOpts(f, makeBars());
-    const stop = startBarLoop(opts);
+    const opts = baseOpts(f, fakeCtx());
+    const stop = startWaveLoop(opts);
     f.step();
-    const at = opts.memory as { smoothed?: { at: number } };
-    expect(at.smoothed?.at).toBeGreaterThan(0);
+    expect(opts.memory.wave?.cur).toHaveLength(30);
+    expect(opts.memory.wave?.lvl).toBeGreaterThan(0);
     stop();
-    expect(at.smoothed).toBeDefined();
+    expect(opts.memory.wave).toBeDefined();
   });
 
-  it("under reduced motion a non-level look reaches its silhouette and the loop stops", () => {
+  it("uses the injected rng, so a seeded run is reproducible", () => {
+    const run = () => {
+      const f = fakeEnv();
+      const opts = baseOpts(f, fakeCtx());
+      startWaveLoop(opts);
+      for (let i = 0; i < 10; i++) f.step();
+      return opts.memory.wave;
+    };
+    expect(run()).toEqual(run());
+  });
+
+  it("reads the level of the look from the store", () => {
     const f = fakeEnv();
-    const bars = makeBars();
-    startBarLoop(baseOpts(f, bars, true, LOOKS.confirmation));
-    // First frame is already the silhouette (no previous output to smooth from).
+    const opts = baseOpts(f, fakeCtx(), false, LOOKS.listening);
+    opts.levels.push("mic", Array(7).fill(100), 0);
+    startWaveLoop(opts);
+    f.step(16);
+    // The clock is 16 and the sample is fresh: the smoothed level moved 40% toward 1.
+    expect(opts.memory.wave?.lvl).toBeCloseTo(0.4, 9);
+  });
+
+  it("under reduced motion a non-level look draws one flat line and the loop stops", () => {
+    const f = fakeEnv();
+    const c = fakeCtx();
+    const opts = baseOpts(f, c, true, LOOKS.confirmation);
+    startWaveLoop(opts);
     f.step();
+    expect(c.fills()).toBe(1);
     expect(f.pendingCount()).toBe(0);
     expect(f.request).toHaveBeenCalledTimes(1);
-    const sil = LOOKS.confirmation.silhouette;
-    expect(bars[2].style.opacity).toBe((0.55 + 0.45 * sil[2]).toFixed(3));
-    expect(bars[0].style.transform).toBe(`scaleY(${(0.25 + 0.75 * sil[0]).toFixed(3)})`);
-  });
-
-  it("an error look gap (silhouette 0) is written as scaleY(0) under reduced motion", () => {
-    const f = fakeEnv();
-    const bars = makeBars();
-    startBarLoop(baseOpts(f, bars, true, LOOKS.error));
-    f.step();
-    expect(bars[3].style.transform).toBe("scaleY(0.000)");
-    expect(f.pendingCount()).toBe(0);
+    expect(opts.memory.wave?.lvl).toBe(0);
   });
 
   it("without reduced motion a non-level look keeps looping", () => {
     const f = fakeEnv();
-    startBarLoop(baseOpts(f, makeBars(), false, LOOKS.confirmation));
+    startWaveLoop(baseOpts(f, fakeCtx(), false, LOOKS.confirmation));
     for (let i = 0; i < 5; i++) f.step();
     expect(f.pendingCount()).toBe(1);
   });
@@ -174,8 +197,7 @@ describe("startBarLoop", () => {
   it("level looks keep running under reduced motion by design", () => {
     for (const look of [LOOKS.listening, LOOKS.speaking]) {
       const f = fakeEnv();
-      startBarLoop(baseOpts(f, makeBars(), true, look));
-      // Even once the bars sit on the silhouette (no live level), the loop lives on.
+      startWaveLoop(baseOpts(f, fakeCtx(), true, look));
       for (let i = 0; i < 20; i++) f.step();
       expect(f.pendingCount()).toBe(1);
     }
@@ -183,14 +205,25 @@ describe("startBarLoop", () => {
 });
 
 describe("keepsRunning", () => {
-  const onSilhouette = (look: typeof LOOKS.thinking) => frame(0, look, null, { reduced: true });
+  const settled = (lvl: number) => ({ ...createWave(), lvl });
 
-  it("stops only for reduced motion + non-level look + settled", () => {
-    expect(keepsRunning(true, LOOKS.thinking, onSilhouette(LOOKS.thinking))).toBe(false);
-    expect(keepsRunning(false, LOOKS.thinking, onSilhouette(LOOKS.thinking))).toBe(true);
-    expect(keepsRunning(true, LOOKS.listening, onSilhouette(LOOKS.listening))).toBe(true);
-    // Not yet at the silhouette: keep going until it arrives.
-    expect(keepsRunning(true, LOOKS.thinking, onSilhouette(LOOKS.success))).toBe(true);
+  it("stops only for reduced motion + non-level look + level at rest", () => {
+    expect(keepsRunning(true, LOOKS.thinking, settled(0))).toBe(false);
+    expect(keepsRunning(false, LOOKS.thinking, settled(0))).toBe(true);
+    expect(keepsRunning(true, LOOKS.listening, settled(0))).toBe(true);
+    // The level is still decaying from the previous look: keep going until it rests.
+    expect(keepsRunning(true, LOOKS.thinking, settled(0.5))).toBe(true);
+  });
+
+  it("settles after a decay from a loud look", () => {
+    const rng = seededRng(1);
+    let s = { ...createWave(), lvl: 1 };
+    let frames = 0;
+    while (keepsRunning(true, LOOKS.thinking, s) && frames < 500) {
+      s = stepWave(s, frames * 16, 0, rng, true);
+      frames++;
+    }
+    expect(frames).toBeLessThan(500);
   });
 });
 

@@ -1,6 +1,6 @@
 /* The window is 200x70 and ignores the mouse everywhere (the host sets it). The
    notch hangs from its top edge, centered; the room on the sides and below is for
-   the spring overshoot and the reminder's outward pulse. */
+   the spring overshoot. */
 .stage {
   /* Mirrored in motion.ts (checked by a test). The host hides the window only
      after --out-ms has passed (HIDE_DELAY_MS). */
@@ -17,9 +17,6 @@
   top: 0;
   left: calc(50% - 59px); /* half of NOTCH_W */
   box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  padding: 0 10px;
   background: #000;
   border-radius: 0 0 14px 14px;
   will-change: transform;
@@ -30,18 +27,14 @@
 @keyframes notch-in { from { transform: translateY(-100%); } to { transform: translateY(0); } }
 @keyframes notch-out { from { transform: translateY(0); } to { transform: translateY(-100%); } }
 
-/* Seven bars, evenly spaced, centered vertically. The loop in Notch.tsx writes
-   transform and opacity; the color is the custom property set once per state. */
-.bars { flex: 1; display: flex; align-items: center; justify-content: space-between; height: 100%; }
-.bar {
-  flex: none;
-  width: 5px;
-  height: 20px;
-  border-radius: 3px;
-  background: var(--bar);
-  transform: scaleY(0.25);
-  transform-origin: center;
-  transition: background-color 120ms ease;
+/* One canvas fills the notch. The loop in Notch.tsx draws the waveform and its
+   fill is the state color; CSS only sizes the canvas. */
+.wave {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
 }
 
 /* Reduced motion: show and hide are a short fade, no slide and no overshoot. */
@@ -49,7 +42,6 @@
   .notch.hidden { transform: none; }
   .notch.in { animation: fade-in var(--fade-ms) ease-out both; }
   .notch.out { animation: fade-out var(--fade-ms) ease-in forwards; }
-  .bar { transition: none; }
 }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
