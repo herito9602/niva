@@ -13,8 +13,8 @@
 //!   `DryRunPc` keeps a fake process list (with `explorer.exe`, which is
 //!   protected) that follows the open and close calls.
 //!
-//! SECURITY (design "Safety Gate", Channel::Click): the debug window can click
-//! Confirm, and that click is a `Channel::Click` answer. That is acceptable
+//! SECURITY (design "Safety Gate", Channel::Physical): the debug window can click
+//! Confirm, and that click is a `Channel::Physical` answer. That is acceptable
 //! ONLY because every `PcActions` a debug build can run is [`DryRunPc`]
 //! ([`assistant`] is the only constructor). `lib.rs` pins its signature with a
 //! const, which is only a tripwire; the test
@@ -905,7 +905,7 @@ mod tests {
 
     #[test]
     fn the_assistant_of_a_debug_build_only_ever_acts_on_the_dry_run_pc() {
-        // The debug window's click-to-confirm is a Channel::Click answer, which
+        // The debug window's click-to-confirm is a Channel::Physical answer, which
         // is safe only because of this (see the SECURITY note at the top).
         use niva_core::assistant::ConfirmInput;
         use niva_core::state_machine::RequestInput;

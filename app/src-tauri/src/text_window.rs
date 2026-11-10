@@ -115,7 +115,7 @@ mod tests {
             "yes",
             "{\"type\":\"accept\",\"id\":1}",
             "Event::Accept { id: 1 }",
-            "Channel::Click",
+            "Channel::Physical",
             "debug_dispatch",
             "sí, confirmo",
             "\u{0}\u{7}",

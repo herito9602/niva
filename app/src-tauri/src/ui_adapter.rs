@@ -76,6 +76,9 @@ pub struct ConfirmView {
     /// (after `speak_done`).
     #[serde(rename = "expiresAt", skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// The confirmation is answered by the Ctrl+Shift+Enter chord (restart and
+    /// shutdown; `State::confirm_click_only`). Speech cannot confirm it.
+    pub chord: bool,
 }
 
 /// The sleep countdown the island shows. It counts down from `ends_at` in the
@@ -257,6 +260,7 @@ impl ViewModel {
                     confirm_label,
                     cancel_label,
                     expires_at: self.expires_at,
+                    chord: state.confirm_click_only,
                 })
             }
             _ => None,
@@ -649,6 +653,35 @@ mod tests {
         }
     }
 
+    fn confirm_view_for(prompt: &str, click_only: bool) -> ConfirmView {
+        let mut sim = Sim::ready();
+        sim.thinking();
+        let req = sim.req();
+        let events = sim.send(Event::ToolCalls {
+            req,
+            verdict: ToolVerdict::Confirm {
+                prompt: prompt.into(),
+                click_only,
+                cancel_text: None,
+            },
+        });
+        view_of(&events).confirm.clone().expect("confirm")
+    }
+
+    #[test]
+    fn view_confirm_chord_true_for_power_confirmation() {
+        let confirm = confirm_view_for("Restart the PC?", true);
+        assert!(confirm.chord);
+        assert_eq!(serde_json::to_value(&confirm).unwrap()["chord"], true);
+    }
+
+    #[test]
+    fn view_confirm_chord_false_for_close() {
+        let confirm = confirm_view_for("Close Notepad?", false);
+        assert!(!confirm.chord);
+        assert_eq!(serde_json::to_value(&confirm).unwrap()["chord"], false);
+    }
+
     #[test]
     fn the_confirmation_deadline_appears_when_the_confirm_timer_starts() {
         let mut sim = Sim::ready();
@@ -737,6 +770,7 @@ mod tests {
                     "confirmLabel": "Confirm",
                     "cancelLabel": "Cancel",
                     "expiresAt": 10_500,
+                    "chord": false,
                 },
             })
         );
@@ -751,6 +785,7 @@ mod tests {
                     "prompt": "Close Notepad?",
                     "confirmLabel": "Confirm",
                     "cancelLabel": "Cancel",
+                    "chord": false,
                 },
             })
         );

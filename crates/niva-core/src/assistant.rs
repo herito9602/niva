@@ -67,7 +67,7 @@ pub enum ConfirmInput {
 pub fn click_answer(id: ConfirmationId, accepted: bool) -> ConfirmationAnswer {
     ConfirmationAnswer {
         confirmation_id: id,
-        channel: Channel::Click,
+        channel: Channel::Physical,
         accepted,
     }
 }
