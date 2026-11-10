@@ -126,11 +126,11 @@ Without `--dev-host` it waits for protocol lines on stdin; type, for example,
 `{"type":"listen","id":2,"mode":"command"}` (Ctrl+C or `{"type":"shutdown"}` to stop).
 `--no-edge` speaks with Piper only (nothing leaves the machine).
 
-Voices: edge-tts speaks `es-US-PalomaNeural` (Spanish) and `en-US-AriaNeural` (English); the
-Piper fallback keeps `es_AR-daniela-high` and `en_US-lessac-medium`. Every reply, from either
-engine, goes through a streaming robot effect (`voice_fx.py`: pitch up 1.2x, a 280 Hz robot
-buzz mixed with the voice, light ring modulation and comb filter). It is chunk-by-chunk, adds
-about 20 ms and makes speech 20 % faster. `--no-robot-voice` plays the plain voices.
+Voices: edge-tts speaks `es-CU-BelkysNeural` (Spanish) and `en-US-AriaNeural` (English); the
+Piper fallback keeps `es_AR-daniela-high` and `en_US-lessac-medium`. `--robot-voice` sends every
+reply, from either engine, through a streaming robot effect (`voice_fx.py`: pitch up 1.2x, a
+280 Hz robot buzz mixed with the voice, light ring modulation and comb filter). It is
+chunk-by-chunk, adds about 20 ms and makes speech 20 % faster. It is off by default.
 
 ### Latency switches (task 3.5, branch `perf/3f-voice-latency`)
 

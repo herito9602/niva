@@ -12,7 +12,7 @@ from tts import EdgeTtsEngine, PcmChunk, Speaker
 from tts_cache import CACHE_FORMAT_VERSION, TtsCache, default_cache_dir
 
 AUDIO = bytes(range(256)) * 4  # 1 KiB stand-in for an MP3 clip
-VOICE = "es-US-PalomaNeural"
+VOICE = "es-CU-BelkysNeural"
 
 # ------------------------------------------------------------------ the store
 

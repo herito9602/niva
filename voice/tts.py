@@ -34,7 +34,7 @@ from voice_fx import RobotVoice, float_to_pcm16, pcm16_to_float
 
 log = logging.getLogger("niva.voice.tts")
 
-EDGE_VOICES = {"es": "es-US-PalomaNeural", "en": "en-US-AriaNeural"}
+EDGE_VOICES = {"es": "es-CU-BelkysNeural", "en": "en-US-AriaNeural"}
 PIPER_VOICE_FILES = {"es": "es_AR-daniela-high.onnx", "en": "en_US-lessac-medium.onnx"}
 EDGE_SAMPLE_RATE = 24_000
 # An output device that has not opened after this long is a device failure, not a wait.
