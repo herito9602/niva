@@ -100,6 +100,14 @@ class Tunables:
     # utterance path of edge-tts itself (`--no-persistent-edge`).
     persistent_edge_ws: bool = True
     edge_ws_stale_s: float = 30.0
+    # Cache the raw edge-tts MP3 of short replies on disk and play repeats from
+    # there (template replies repeat a lot; a hit skips the network: ~140 ms mean,
+    # measured 2026-11-09). Niva's own replies only, never the user's speech; see
+    # tts_cache.py. False disables it (`--no-tts-cache`).
+    tts_cache: bool = True
+    # Replies longer than this are never cached (search summaries, long answers).
+    tts_cache_max_chars: int = 120
+    tts_cache_max_mb: int = 50
 
     @property
     def pre_speech_frames(self) -> int:

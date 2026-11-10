@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import IO, Any
 
 import protocol
@@ -235,6 +236,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--no-persistent-edge", action="store_true", help="open a new edge-tts connection for every reply"
     )
+    p.add_argument("--no-tts-cache", action="store_true", help="do not cache short synthesized replies on disk")
+    p.add_argument(
+        "--tts-cache-dir",
+        default=None,
+        help="folder for the reply cache (default: NIVA_TTS_CACHE_DIR, else %%LOCALAPPDATA%%\\Niva\\tts-cache)",
+    )
     p.add_argument("--mic-device", default=None, help="sounddevice input device index or name")
     p.add_argument(
         "--dev-host", action="store_true", help="act as a tiny host: listen after wake, speak the transcript"
@@ -261,6 +268,8 @@ def tunables_from(args: argparse.Namespace) -> Tunables:
         overrides["single_pass_stt"] = False
     if args.no_persistent_edge:
         overrides["persistent_edge_ws"] = False
+    if args.no_tts_cache:
+        overrides["tts_cache"] = False
     return dataclasses.replace(Tunables(), **overrides)
 
 
@@ -335,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
             from edge_ws import EdgeWsClient
 
             edge_client = EdgeWsClient(stale_after_s=tunables.edge_ws_stale_s)
-        engines.append(EdgeTtsEngine(tunables, client=edge_client))
+        engines.append(EdgeTtsEngine(tunables, client=edge_client, cache=_reply_cache(args, tunables)))
     if args.piper_dir:
         piper = PiperEngine(args.piper_dir)
         if piper.available():
@@ -364,6 +373,20 @@ def main(argv: list[str] | None = None) -> int:
         if edge_client is not None:
             edge_client.close()
         log.info("discard counts: %s", dict(discards.counts))
+
+
+def _reply_cache(args: argparse.Namespace, tunables: Tunables) -> Any:
+    """The on-disk cache of short synthesized replies, or None when it is off or has no folder."""
+    if not tunables.tts_cache:
+        return None
+    from tts_cache import TtsCache, default_cache_dir
+
+    directory = Path(args.tts_cache_dir) if args.tts_cache_dir else default_cache_dir()
+    if directory is None:
+        log.warning("no folder for the reply cache (LOCALAPPDATA is not set); caching is off")
+        return None
+    log.info("reply cache: %s", directory)
+    return TtsCache(directory, tunables.tts_cache_max_mb * 1024 * 1024, tunables.tts_cache_max_chars)
 
 
 def _preload(piper: Any) -> None:

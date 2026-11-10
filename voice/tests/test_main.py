@@ -409,6 +409,7 @@ def test_a_different_mic_failure_is_reported_even_after_one_was(failures):
         ("--no-preopen-output", "preopen_output"),
         ("--no-single-pass-stt", "single_pass_stt"),
         ("--no-persistent-edge", "persistent_edge_ws"),
+        ("--no-tts-cache", "tts_cache"),
     ],
 )
 def test_each_latency_optimization_is_on_by_default_and_has_its_own_switch(flag, field):
@@ -417,7 +418,7 @@ def test_each_latency_optimization_is_on_by_default_and_has_its_own_switch(flag,
     assert getattr(tunables_from(parse_args([])), field) is True
     off = tunables_from(parse_args([flag]))
     assert getattr(off, field) is False
-    switches = ("preopen_output", "single_pass_stt", "persistent_edge_ws")
+    switches = ("preopen_output", "single_pass_stt", "persistent_edge_ws", "tts_cache")
     assert all(getattr(off, other) is True for other in switches if other != field), "one switch, one optimization"
 
 
@@ -488,17 +489,39 @@ def wired(monkeypatch, tmp_path):
     return types.SimpleNamespace(main=main.main, sidecar=FakeSidecar, tmp_path=tmp_path)
 
 
-def test_by_default_the_edge_engine_gets_a_persistent_client(wired):
+def test_by_default_the_edge_engine_gets_a_persistent_client_and_a_cache_in_local_app_data(wired):
     assert wired.main([]) == 0
     (engine,) = _RecordingEdgeEngine.instances
     (client,) = _FakeEdgeClient.instances
     assert engine.kwargs["client"] is client and client.kwargs == {"stale_after_s": Tunables().edge_ws_stale_s}
+    assert engine.kwargs["cache"].directory == wired.tmp_path / "appdata" / "Niva" / "tts-cache"
 
 
 def test_no_persistent_edge_gives_the_engine_no_client(wired):
     assert wired.main(["--no-persistent-edge"]) == 0
     (engine,) = _RecordingEdgeEngine.instances
     assert engine.kwargs["client"] is None and _FakeEdgeClient.instances == []
+    assert engine.kwargs["cache"] is not None, "the cache is its own switch"
+
+
+def test_no_tts_cache_gives_the_engine_no_cache(wired):
+    assert wired.main(["--no-tts-cache"]) == 0
+    (engine,) = _RecordingEdgeEngine.instances
+    assert engine.kwargs["cache"] is None and engine.kwargs["client"] is _FakeEdgeClient.instances[0]
+
+
+def test_the_cache_folder_comes_from_the_flag_then_the_environment_then_local_app_data(wired, monkeypatch):
+    flag_dir, env_dir = wired.tmp_path / "from-flag", wired.tmp_path / "from-env"
+    monkeypatch.setenv("NIVA_TTS_CACHE_DIR", str(env_dir))
+    wired.main(["--tts-cache-dir", str(flag_dir)])
+    wired.main([])
+    assert [e.kwargs["cache"].directory for e in _RecordingEdgeEngine.instances] == [flag_dir, env_dir]
+
+
+def test_without_local_app_data_or_a_folder_the_cache_is_off(wired, monkeypatch):
+    monkeypatch.delenv("LOCALAPPDATA")
+    assert wired.main([]) == 0
+    assert _RecordingEdgeEngine.instances[0].kwargs["cache"] is None
 
 
 class _SlowPiper:

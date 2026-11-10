@@ -29,6 +29,7 @@ from audio_io import AudioOutput, OutputError
 from config import Tunables
 from edge_ws import EdgeWsClient, EdgeWsTimeout, UnsupportedText
 from protocol import ErrorCode
+from tts_cache import TtsCache
 from voice_fx import RobotVoice, float_to_pcm16, pcm16_to_float
 
 log = logging.getLogger("niva.voice.tts")
@@ -231,11 +232,14 @@ class EdgeTtsEngine:
         mp3_stream: Mp3Stream = edge_mp3_stream,
         idle_timeout_s: float = 10.0,
         client: EdgeWsClient | None = None,
+        cache: TtsCache | None = None,
     ):
         self._first = tunables.tts_first_chunk_s
         self._idle = idle_timeout_s
         self._mp3_stream = mp3_stream
         self._client = client  # the persistent connection; None = a new connection per reply
+        self._cache = cache  # raw MP3 of short replies; None = always synthesize
+        self._writers: list[threading.Thread] = []  # cache writes in flight (they run off the speaker thread)
 
     def prepare(self) -> None:
         """A reply is likely soon: have the connection ready."""
@@ -244,7 +248,47 @@ class EdgeTtsEngine:
 
     def chunks(self, text: str, lang: str, cancel: threading.Event) -> Iterator[PcmChunk]:
         voice = EDGE_VOICES[lang]
-        yield from decode_mp3_stream(self.mp3_chunks(text, voice, cancel))
+        cache, key = self._cache, None
+        if cache is not None and cache.cacheable(text):
+            key = cache.key(self.name, voice, text)
+            cached = cache.get(key)
+            if cached is not None:
+                produced = False
+                try:
+                    for pcm in decode_mp3_stream([cached]):  # the same MP3 the network would deliver
+                        produced = True
+                        yield pcm
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    if produced:
+                        raise
+                    log.warning("cached reply did not decode (%s); synthesizing it again", exc)
+                    cache.delete(key)
+        if cache is None or key is None:
+            yield from decode_mp3_stream(self.mp3_chunks(text, voice, cancel))
+            return
+        received: list[bytes] = []
+
+        def tap() -> Iterator[bytes]:
+            for piece in self.mp3_chunks(text, voice, cancel):
+                received.append(piece)
+                yield piece
+
+        yield from decode_mp3_stream(tap())
+        # Reached only when the synthesis ran to its end: a stop closes this generator before here.
+        if not cancel.is_set():
+            # Off the speaker's thread: this code runs before the effect's tail is flushed, and a
+            # disk write plus an eviction scan must not delay the last milliseconds of the reply.
+            writer = threading.Thread(
+                target=cache.put, args=(key, b"".join(received)), name="tts-cache-put", daemon=True
+            )
+            self._writers = [w for w in self._writers if w.is_alive()] + [writer]
+            writer.start()
+
+    def wait_for_cache(self, timeout_s: float = 5.0) -> None:
+        """Block until the cache writes started so far are done (shutdown and tests)."""
+        for writer in list(self._writers):
+            writer.join(timeout_s)
 
     def mp3_chunks(self, text: str, voice: str, cancel: threading.Event) -> Iterator[bytes]:
         """MP3 chunks from the network: the persistent connection first, then the one-off
