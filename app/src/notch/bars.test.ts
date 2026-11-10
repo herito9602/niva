@@ -20,7 +20,8 @@ function run(from: number, to: number, levelAt: (t: number) => LevelSample | nul
 
 /** Time after `stepAt` at which bar 3 has covered half of its way to the new level. */
 function halfwayLag(ticks: { t: number; bars: number[] }[], stepAt: number, rising: boolean): number {
-  const settled = ticks.filter((k) => k.t < stepAt).at(-1)!.bars[3];
+  const before = ticks.filter((k) => k.t < stepAt);
+  const settled = before[before.length - 1].bars[3];
   const target = rising ? 1 : 0;
   const mid = (settled + target) / 2;
   const after = ticks.filter((k) => k.t >= stepAt);
