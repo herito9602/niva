@@ -14,7 +14,7 @@ Migration: the notch derives its look from the assistant phase (plus the speakin
 
 ### Requirement: Original, asset-free character
 Reason: there is no character any more.
-Migration: `notch`, "Notch geometry and bars", keeps the no-image-assets rule (scenario "Asset audit").
+Migration: `notch`, "Notch geometry and waveform", keeps the no-image-assets rule (scenario "Asset audit").
 
 ### Requirement: Hands and per-state gestures (owner request, 2026-11-03)
 Reason: hands, laptop, pans and other gestures belong to the removed robot.

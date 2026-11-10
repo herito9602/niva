@@ -74,7 +74,7 @@ The system MUST hide the notch when an interaction ends and show it again on the
 
 ### Requirement: Island fits its message (owner request 2026-11-03)
 Reason: no text is shown; the notch has a fixed size.
-Migration: `notch`, "Notch geometry and bars", and "No reply text and no buttons". Long replies are spoken in full; barge-in still stops them.
+Migration: `notch`, "Notch geometry and waveform", and "No reply text and no buttons". Long replies are spoken in full; barge-in still stops them.
 
 ### Requirement: Edge extension animation (owner request 2026-11-03; chosen by the owner on 2026-11-03 among three prototypes)
 Reason: the growing edge shape with concave fillets belongs to the text island.

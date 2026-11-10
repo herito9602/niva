@@ -16,20 +16,20 @@ The system MUST NOT run any action when transcription is empty.
 ## ADDED Requirements
 
 ### Requirement: Audio level message
-While the sidecar is listening or speaking, it MUST send a `level` message to the host at about 30 Hz (a tolerance of 20 to 40 Hz). The message MUST carry 7 integer bands of 0 to 100 and MUST NOT carry audio samples, transcript text or any other audio content. While listening, the bands MUST come from the microphone frames. While speaking, they MUST come from the TTS audio as it is written to the output device. The sidecar MUST NOT send `level` when it is neither listening nor speaking, and MUST stop within one period of the listen or speech ending.
+Only while Niva is speaking, the sidecar MUST send a `level` message to the host at about 30 Hz (a tolerance of 20 to 40 Hz). The message MUST carry 7 integer bands of 0 to 100 and MUST NOT carry audio samples, transcript text or any other audio content. The bands MUST come from the TTS audio as it is written to the output device. No microphone level MUST ever leave the sidecar (owner decision 2026-11-10: the wave moves with Niva's voice, not with the user; this is also more private), and the message MUST NOT carry a microphone source. The sidecar MUST NOT send `level` when Niva is not speaking, and MUST stop within one period of the speech ending.
 
-#### Scenario: Level while listening
+#### Scenario: No level while listening
 - GIVEN a listen is open
 - WHEN the user speaks for one second
-- THEN `level` messages arrive at 20 to 40 per second, each with 7 values in 0..100
+- THEN no `level` message is sent and no microphone-derived value leaves the sidecar
 
 #### Scenario: Level while speaking
 - GIVEN a reply is being spoken
 - WHEN audio is written to the output device
-- THEN `level` messages arrive at 20 to 40 per second with the voice bands, aligned to the audible sound as `notch` requires (mean lag 50 ms or less, no sample above 100 ms, on built-in or wired output)
+- THEN `level` messages arrive at 20 to 40 per second with the voice bands, aligned to the audible sound as `notch` requires (onset mean lag 50 ms or less, no sample above 100 ms, on built-in or wired output)
 
 #### Scenario: Idle sends nothing
-- GIVEN the sidecar is ready and not listening or speaking
+- GIVEN the sidecar is ready and Niva is not speaking
 - WHEN time passes
 - THEN no `level` message is sent
 

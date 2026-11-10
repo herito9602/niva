@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ViewPayload } from "../events";
-import { MAX_DEBUG_TEXT, appendLog, describeView, prepareText } from "./log";
+import { MAX_DEBUG_TEXT, appendLog, countdownLeft, describeView, prepareText } from "./log";
 
 const view = (over: Partial<ViewPayload>): ViewPayload => ({ state: "idle", ...over });
 
@@ -69,5 +69,16 @@ describe("describeView", () => {
     const b = view({ state: "idle" });
     expect(describeView(a, b)).toBeNull();
     expect(describeView(b, a)).toBe("success: Done.");
+  });
+});
+
+describe("countdownLeft", () => {
+  it("counts whole seconds up to the deadline and never goes below zero", () => {
+    expect(countdownLeft(20_000, 10_000)).toBe(10);
+    expect(countdownLeft(20_000, 10_001)).toBe(10);
+    expect(countdownLeft(20_000, 11_000)).toBe(9);
+    expect(countdownLeft(20_000, 19_001)).toBe(1);
+    expect(countdownLeft(20_000, 20_000)).toBe(0);
+    expect(countdownLeft(20_000, 25_000)).toBe(0);
   });
 });

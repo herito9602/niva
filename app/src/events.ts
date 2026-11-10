@@ -27,10 +27,15 @@ export interface ConfirmView {
   confirmLabel: string;
   cancelLabel: string;
   expiresAt?: number;
+  /** True when only the Ctrl+Shift+Enter chord can confirm (restart, shutdown). */
+  chord?: boolean;
 }
 
 export interface ViewPayload {
   state: StateName;
+  /** True while Niva's voice is audible. A payload without it means false. */
+  speaking?: boolean;
+  /** Reply text: kept in the payload until the view trim, never drawn by the notch. */
   caption?: string;
   confirm?: ConfirmView;
   reminder?: { id: number; text: string };

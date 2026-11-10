@@ -1,16 +1,17 @@
-//! The island's size and its exit animation are decided in the frontend
-//! (`src/island-ui/layout.ts`, `choreography.ts`); the host owns the window
-//! size and the hide delay. These tests read those TS constants and the window
-//! config so the two sides cannot drift apart silently.
+//! The notch's size and its exit animation are decided in the frontend
+//! (`src/notch/motion.ts`, `src/notch/notch.css`); the host owns the window
+//! size and the hide delay. These tests read those sources and the window config
+//! so the two sides cannot drift apart silently.
+
+use std::sync::Mutex;
 
 use serde_json::Value;
 
-use crate::confirm_buttons::{ARM_MS, MAX_AREA_HEIGHT, MAX_AREA_WIDTH, MAX_AREAS};
+use crate::click_through::{IslandWindow, prepare_island, show_island_window};
 use crate::visibility::HIDE_DELAY_MS;
 
-const LAYOUT_TS: &str = include_str!("../../src/island-ui/layout.ts");
-const CHOREOGRAPHY_TS: &str = include_str!("../../src/island-ui/choreography.ts");
-const CONFIRM_TS: &str = include_str!("../../src/island-ui/confirmCommands.ts");
+const MOTION_TS: &str = include_str!("../../src/notch/motion.ts");
+const NOTCH_CSS: &str = include_str!("../../src/notch/notch.css");
 const TAURI_CONF: &str = include_str!("../tauri.conf.json");
 
 /// Value of `export const NAME = <number>;` in a TS source.
@@ -27,6 +28,22 @@ fn ts_const(source: &str, name: &str) -> f64 {
         .unwrap_or_else(|_| panic!("{name} is not a plain numeric literal"))
 }
 
+/// Value of a `--name: <n>ms;` custom property in the notch stylesheet.
+fn css_ms(name: &str) -> f64 {
+    let prefix = format!("--{name}:");
+    let line = NOTCH_CSS
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("`{prefix} <n>ms;` not found in notch.css"));
+    line[prefix.len()..]
+        .trim()
+        .trim_end_matches(';')
+        .trim_end_matches("ms")
+        .parse()
+        .unwrap_or_else(|_| panic!("{name} is not a plain millisecond value"))
+}
+
 fn island_window() -> Value {
     let conf: Value = serde_json::from_str(TAURI_CONF).expect("valid tauri.conf.json");
     let windows = conf["app"]["windows"].as_array().expect("windows");
@@ -38,145 +55,109 @@ fn island_window() -> Value {
     windows[0].clone()
 }
 
-/// How long the exit animation lasts, as declared in `choreography.ts`.
-fn out_ms() -> f64 {
-    ts_const(CHOREOGRAPHY_TS, "EDGE_OUT_MS")
-}
-
 #[test]
 fn the_ts_constants_are_readable() {
-    assert_eq!(ts_const(LAYOUT_TS, "MAX_ISLAND_WIDTH"), 560.0);
-    assert!(out_ms() > 0.0);
+    assert_eq!(ts_const(MOTION_TS, "NOTCH_W"), 118.0);
+    assert_eq!(ts_const(MOTION_TS, "NOTCH_H"), 30.0);
+    assert!(ts_const(MOTION_TS, "NOTCH_OUT_MS") > 0.0);
 }
 
 #[test]
-fn the_window_fits_the_largest_island_with_overshoot_and_shadow() {
+fn island_window_is_200x70_transparent_non_focusable() {
     let window = island_window();
-    let width = window["width"].as_f64().expect("width");
-    let height = window["height"].as_f64().expect("height");
-
-    let need_w =
-        ts_const(LAYOUT_TS, "MAX_ISLAND_WIDTH") + 2.0 * ts_const(LAYOUT_TS, "SHADOW_ROOM_X");
-    // The island hangs from the very top of the window: no gap above it.
-    let need_h = ts_const(LAYOUT_TS, "MAX_ISLAND_HEIGHT")
-        + ts_const(LAYOUT_TS, "SPRING_OVERSHOOT")
-        + ts_const(LAYOUT_TS, "SHADOW_ROOM_Y");
-    assert!(
-        width >= need_w,
-        "window {width} wide, island needs {need_w}"
-    );
-    assert!(
-        height >= need_h,
-        "window {height} tall, island needs {need_h}"
-    );
-}
-
-#[test]
-fn the_window_is_not_wastefully_large() {
-    // A big transparent window is click-through, but it still covers the top
-    // of the screen for the compositor: keep it close to the budget.
-    let window = island_window();
-    assert!(window["width"].as_f64().unwrap() <= ts_const(LAYOUT_TS, "MAX_ISLAND_WIDTH") + 160.0);
-    assert!(window["height"].as_f64().unwrap() <= 240.0);
-}
-
-#[test]
-fn the_window_never_takes_focus_and_stays_transparent() {
-    let window = island_window();
+    assert_eq!(window["label"], "island");
+    assert_eq!(window["width"].as_f64(), Some(200.0));
+    assert_eq!(window["height"].as_f64(), Some(70.0));
     assert_eq!(window["transparent"], true);
     assert_eq!(window["focusable"], false);
+    assert_eq!(window["focus"], false);
     assert_eq!(window["decorations"], false);
+    assert_eq!(window["shadow"], false);
+    assert_eq!(window["alwaysOnTop"], true);
+    assert_eq!(window["skipTaskbar"], true);
 }
 
 #[test]
-fn the_host_hides_the_window_only_after_the_exit_animation() {
-    let delay = HIDE_DELAY_MS as f64;
-    let out = out_ms();
-    assert!(delay >= out, "hide delay {delay} cuts the {out} ms exit");
+fn the_window_fits_the_notch_with_room_for_overshoot_and_pulse() {
+    let window = island_window();
+    let (w, h) = (
+        window["width"].as_f64().unwrap(),
+        window["height"].as_f64().unwrap(),
+    );
+    let (nw, nh) = (
+        ts_const(MOTION_TS, "NOTCH_W"),
+        ts_const(MOTION_TS, "NOTCH_H"),
+    );
+    assert!(w >= nw + 2.0 * 40.0, "{w} leaves no side room for the notch");
+    assert!(h >= nh + 40.0, "{h} leaves no room below for the overshoot");
+    // The stylesheet centers the notch with half of its width.
     assert!(
-        delay <= out + 250.0,
-        "hide delay {delay} lags the {out} ms exit"
+        NOTCH_CSS.contains(&format!("left: calc(50% - {}px)", nw / 2.0)),
+        "notch.css does not center a {nw} px notch"
     );
 }
 
-/// Value of `export const NAME = "<text>";` in a TS source.
-fn ts_str(source: &str, name: &str) -> String {
-    let prefix = format!("export const {name} = \"");
-    let line = source
-        .lines()
-        .find(|l| l.starts_with(&prefix))
-        .unwrap_or_else(|| panic!("`export const {name} = \"...\";` not found"));
-    line[prefix.len()..]
-        .trim_end_matches(';')
-        .trim_end_matches('"')
-        .to_owned()
+/// A window that records what it was told, in order.
+#[derive(Default)]
+struct RecordingWindow {
+    calls: Mutex<Vec<String>>,
 }
 
-/// A confirmation with the buttons, at six lines of text, is the tallest island
-/// there is: its budget is in `MAX_ISLAND_HEIGHT`, which the window test above
-/// then checks against `tauri.conf.json`.
-#[test]
-fn the_height_budget_has_room_for_six_lines_and_the_buttons() {
-    let text = ts_const(LAYOUT_TS, "LINE_HEIGHT") * ts_const(LAYOUT_TS, "MAX_LINES");
-    let buttons = ts_const(LAYOUT_TS, "ACTIONS_GAP") + ts_const(LAYOUT_TS, "BUTTON_HEIGHT");
-    let chrome = 2.0 * ts_const(LAYOUT_TS, "TEXT_PAD_Y") + 2.0 * ts_const(LAYOUT_TS, "BORDER");
-    let need = text + buttons + chrome;
-    let budget = ts_const(LAYOUT_TS, "MAX_ISLAND_HEIGHT");
-    assert!(
-        budget >= need,
-        "budget {budget}, six lines and buttons need {need}"
-    );
-    assert!(
-        budget <= need + 1.0,
-        "budget {budget} is wasteful, need {need}"
-    );
-}
-
-/// The widest island is the widest text column plus its chrome; the buttons'
-/// row must fit in the narrowest column the layout gives a confirmation.
-#[test]
-fn the_buttons_row_fits_the_minimum_confirmation_column() {
-    let row = 2.0 * ts_const(LAYOUT_TS, "BUTTON_WIDTH") + ts_const(LAYOUT_TS, "BUTTON_GAP");
-    assert_eq!(ts_const(LAYOUT_TS, "ACTIONS_WIDTH"), row);
-}
-
-/// The frontend dims the buttons for the same half second the host ignores
-/// Confirm (`confirm_buttons.rs`).
-#[test]
-fn the_dim_period_is_the_hosts_guard_period() {
-    assert_eq!(ts_const(CONFIRM_TS, "CONFIRM_ARM_MS"), ARM_MS as f64);
-}
-
-/// The command names the island calls are the Rust function names (Tauri names
-/// a command after its function).
-#[test]
-fn the_island_calls_the_commands_the_host_defines() {
-    let host = include_str!("confirm_buttons.rs");
-    for (constant, name) in [
-        ("ANSWER_COMMAND", "answer_confirmation"),
-        ("REPORT_COMMAND", "report_confirm_buttons"),
-    ] {
-        assert_eq!(ts_str(CONFIRM_TS, constant), name);
-        assert!(
-            host.contains(&format!("pub fn {name}(")),
-            "no command {name} in confirm_buttons.rs"
-        );
+impl IslandWindow for RecordingWindow {
+    fn position_top_center(&self) {
+        self.calls.lock().unwrap().push("position".into());
+    }
+    fn set_ignore_cursor_events(&self, ignore: bool) -> Result<(), String> {
+        self.calls.lock().unwrap().push(format!("ignore {ignore}"));
+        Ok(())
+    }
+    fn show(&self) {
+        self.calls.lock().unwrap().push("show".into());
     }
 }
 
-/// A page may report at most two rectangles, none bigger than a button with some
-/// room: the host's caps are derived from the button size in `layout.ts`, so a
-/// page cannot make the window capture the mouse over more than its buttons.
 #[test]
-fn the_reported_rectangle_caps_fit_a_button_and_not_much_more() {
-    let (w, h) = (
-        ts_const(LAYOUT_TS, "BUTTON_WIDTH"),
-        ts_const(LAYOUT_TS, "BUTTON_HEIGHT"),
-    );
-    assert!((w..=2.0 * w).contains(&MAX_AREA_WIDTH), "{MAX_AREA_WIDTH}");
+fn window_ignores_cursor_on_prepare_and_every_show() {
+    let win = RecordingWindow::default();
+    prepare_island(&win);
+    assert_eq!(*win.calls.lock().unwrap(), vec!["position", "ignore true"]);
+
+    let win = RecordingWindow::default();
+    for _ in 0..3 {
+        show_island_window(&win);
+    }
+    let calls = win.calls.lock().unwrap().clone();
+    // Each show: placed, click-through, and only then visible.
+    assert_eq!(calls.len(), 9);
+    for show in calls.chunks(3) {
+        assert_eq!(show, ["position", "ignore true", "show"]);
+    }
+}
+
+#[test]
+fn hide_delay_parsed_from_motion_ts_within_exit_plus_100() {
+    let out = ts_const(MOTION_TS, "NOTCH_OUT_MS");
+    let delay = HIDE_DELAY_MS as f64;
+    assert!(delay >= out, "hide delay {delay} cuts the {out} ms exit");
     assert!(
-        (h..=2.0 * h).contains(&MAX_AREA_HEIGHT),
-        "{MAX_AREA_HEIGHT}"
+        delay <= out + 100.0,
+        "hide delay {delay} lags the {out} ms exit"
     );
-    assert_eq!(MAX_AREAS, 2);
+    // The frontend declares the same delay.
+    assert_eq!(ts_const(MOTION_TS, "HIDE_DELAY_MS"), delay);
+}
+
+#[test]
+fn the_stylesheet_plays_the_exit_and_the_fade_the_host_waits_for() {
+    assert_eq!(css_ms("out-ms"), ts_const(MOTION_TS, "NOTCH_OUT_MS"));
+    assert_eq!(css_ms("in-ms"), ts_const(MOTION_TS, "NOTCH_IN_MS"));
+    let fade = css_ms("fade-ms");
+    assert_eq!(fade, ts_const(MOTION_TS, "REDUCED_FADE_MS"));
+    assert!(fade < HIDE_DELAY_MS as f64, "the fade outlasts the hide");
+}
+
+#[test]
+fn arm_ms_is_500() {
+    assert_eq!(crate::confirm_keys::ARM_MS, 500);
+    assert_eq!(crate::confirm_buttons::ARM_MS, 500);
 }

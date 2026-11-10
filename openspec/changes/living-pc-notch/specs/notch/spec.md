@@ -2,23 +2,27 @@
 
 ## Purpose
 
-A small black notch at the top center of the screen whose equalizer bars move with the sound and change color by assistant state. It replaces the `mascot` capability (niva-mvp). Niva answers by voice only: the notch shows no reply text and no buttons.
+A small black notch at the top center of the screen whose mirrored spike waveform moves with the sound and changes color by assistant state. It replaces the `mascot` capability (niva-mvp). Niva answers by voice only: the notch shows no reply text and no buttons.
 
 ## ADDED Requirements
 
-### Requirement: Notch geometry and bars
-The notch MUST be a black shape of 118x30 px, flush with the top edge of the screen, with rounded bottom corners of about 14 px and 7 rounded vertical bars. The notch MUST be built from drawn shapes only (no image assets).
+### Requirement: Notch geometry and waveform
+The notch MUST be a black shape of 118x30 px, flush with the top edge of the screen, with rounded bottom corners of about 14 px. Inside it MUST draw one solid shape, mirrored around the horizontal center line, spanning 7% to 93% of the notch width with flat tails to about 2.8% and 97.2% on the center line, whose top edge is a polyline of 30 points with sharp (mitered) corners. The notch MUST be built from drawn shapes only (no image assets).
 
 #### Scenario: Notch dimensions
 - GIVEN the notch is shown in any state
 - WHEN its rendered size is measured
-- THEN it is 118x30 px with 7 bars, and its top edge is at y = 0 of the window
+- THEN it is 118x30 px with one waveform canvas, and its top edge is at y = 0 of the window
+
+#### Scenario: Silence
+- GIVEN the level is 0
+- WHEN the waveform is drawn
+- THEN it is an almost flat thin line on the center line (half-height about 0.6 of 30 drawing units)
 
 #### Scenario: Asset audit
 - GIVEN the built app
 - WHEN its bundled resources are inspected
 - THEN no raster or vector character images are present for the notch
-- AND the distinct-silhouette test in `looks.ts` passes (see "Non-color cue and reduced motion")
 
 ### Requirement: Idle is hidden
 In the idle phase the notch MUST NOT be visible. It MUST appear on activation and MUST hide again when the interaction ends.
@@ -33,82 +37,91 @@ In the idle phase the notch MUST NOT be visible. It MUST appear on activation an
 - WHEN the user activates Niva by shortcut or wake word
 - THEN the notch drops in from the top center with a spring motion and shows the listening look
 
-### Requirement: Palette and motion per state
-The notch MUST show exactly one look per state, with a color and a motion that tells the state apart without color:
+### Requirement: Color per state
+The notch MUST show exactly one color per state, and the color alone tells the states apart (owner decision 2026-11-10: the per-state motion/silhouette non-color cue is removed; the voice and the hidden status text remain the non-color channels):
 
-| State | Color | Motion (non-color cue) |
-|-------|-------|------------------------|
-| listening | #378ADD | bars follow the microphone level |
-| thinking | #7F77DD | a wave travels across the bars |
-| speaking | #5DCAA5 | bars follow the voice level |
-| confirmation-needed | #EF9F27 | slow pulse |
-| success | #97C459 | bounce, then hide |
-| error | #E24B4A | low jitter, then hide |
-| reminder-alert | #F0997B | outward pulse |
+| State | Color |
+|-------|-------|
+| listening | #378ADD |
+| thinking | #7F77DD |
+| speaking | #5DCAA5 |
+| confirmation-needed | #EF9F27 |
+| success | #97C459 |
+| error | #E24B4A |
+| reminder-alert | #F0997B |
 
-The `acting` phase MUST use the thinking look. The `countdown` phase MUST use the confirmation-needed look (amber pulse). While text-to-speech audio plays, the speaking look MUST override the look of the current phase.
+The `acting` phase MUST use the thinking color. The `countdown` phase MUST use the confirmation-needed color. While text-to-speech audio plays, the speaking look MUST override the look of the current phase. The shape fill MUST be the state color, opaque. A visually hidden `role="status"` region MUST announce the state name.
 
-#### Scenario: Each state has its look
+#### Scenario: Each state has its color
 - GIVEN a debug build with the state switcher
 - WHEN a tester selects each state in the table
-- THEN the notch shows the color and motion listed for it
+- THEN the waveform is filled with the color listed for it
 
-#### Scenario: Acting and countdown reuse looks
+#### Scenario: Acting and countdown reuse colors
 - GIVEN the phase is acting, or a sleep countdown is running
 - WHEN the notch is observed
-- THEN it shows the thinking wave for acting and the amber pulse for the countdown
+- THEN it shows the thinking color for acting and the amber color for the countdown
 
 #### Scenario: Speaking overrides the phase look
 - GIVEN the phase is success and TTS is playing
 - WHEN the notch is observed
-- THEN it shows the speaking look and bars driven by the voice level
+- THEN it shows the speaking color and a waveform driven by the voice level
 - AND when the speech ends it shows the look of the phase
 
-### Requirement: Non-color cue and reduced motion
-Each state MUST be distinguishable without color. Under the operating system's reduced-motion setting, looping motion (wave, pulse, bounce, jitter, simulated bars) MUST become a static per-state bar silhouette that is different for every state, while state changes still transition with a short fade.
+#### Scenario: Status announcement
+- GIVEN a screen reader is running
+- WHEN the state changes
+- THEN the hidden status region announces the state name and never reply text
 
-#### Scenario: Grayscale
-- GIVEN the notch rendered in grayscale
-- WHEN each of the seven states is shown
-- THEN every state can be told apart from the others by bar motion or silhouette
-- AND a vitest in `looks.ts` asserts that all seven reduced-motion silhouettes are pairwise distinct
+### Requirement: Waveform motion and reduced motion
+Every ~70 ms the waveform MUST pick new random targets for its points, shaped by a bell-curve envelope centered on the notch (`env(u) = exp(-((u-0.5)/0.22)^2)`), and every frame each point MUST move 45% of the way to its target. The spike height MUST scale with the smoothed level (`amp = 1 + level*24`). States without audio (every state except speaking, listening included) MUST use level 0 plus a tiny breathing level (about 0.05), so the line stays near flat but alive. Under the operating system's reduced-motion setting there MUST be no random re-targeting: the notch MUST draw a static shape scaled by the smoothed level (a static flat line at level 0), while state changes still transition with a short fade.
+
+#### Scenario: Breathing
+- GIVEN the state is thinking
+- WHEN the notch is observed
+- THEN the waveform is a near-flat line with tiny spikes in the thinking color
 
 #### Scenario: Reduced motion
 - GIVEN the system asks for reduced motion
-- WHEN each state is shown
-- THEN no looping motion plays, each state shows its own static silhouette, and the colors still apply
+- WHEN a state without audio is shown
+- THEN a static flat line is drawn in the state color and no loop keeps running
 
-### Requirement: Level-driven bars
-While listening, the bar heights MUST follow the microphone level. While speaking, they MUST follow the TTS voice level. The levels come from the sidecar `level` message (see `speech-io`) and MUST reach the notch without passing through the state reducer. Bars MUST track the audible sound with a mean lag of 50 ms or less and no sample above 100 ms, for both microphone and TTS, on built-in or wired output (Bluetooth is excluded because its latency is not reported).
+#### Scenario: Reduced motion with voice
+- GIVEN the system asks for reduced motion and the notch is speaking
+- WHEN the level changes
+- THEN the static shape (a flat line at level 0) scales with the level and does not re-target randomly
 
-#### Scenario: Listening follows the microphone
-- GIVEN the notch is listening and `level` messages arrive
-- WHEN the user speaks louder
-- THEN the bars rise accordingly with a mean lag of 50 ms or less and no sample above 100 ms
-- AND a fake-clock unit test of the bar smoothing checks this lag in addition to the manual 240 fps measurement
+### Requirement: Level-driven waveform
+Only while speaking MUST the spike height follow a level, the TTS voice level (the wave moves with Niva's voice, not with the user: owner decision 2026-11-10). While listening the waveform MUST NOT be level-driven: it shows the same calm breathing line as thinking, in the listening color, with no microphone level and no simulated voice. The level comes from the sidecar `level` message (see `speech-io`) and MUST reach the notch without passing through the state reducer. The shape amplitude MUST rise with the audible sound with a mean lag of 50 ms or less and no sample above 100 ms (the decay is intentionally slower and is not bounded), for the TTS level, on built-in or wired output (Bluetooth is excluded because its latency is not reported).
+
+#### Scenario: Listening is calm
+- GIVEN the notch is listening
+- WHEN the user speaks, or any `level` message arrives
+- THEN the waveform keeps the calm breathing line in the listening color and does not follow any level or simulated voice
 
 #### Scenario: Speaking follows the voice
 - GIVEN Niva is speaking and `level` messages arrive
 - WHEN the voice gets louder
-- THEN the bars rise in step with the audible voice (same lag bound, on built-in or wired output)
+- THEN the spikes grow in step with the audible voice (onset mean lag 50 ms or less and no sample above 100 ms, the decay is intentionally slower; on built-in or wired output)
+- AND a fake-clock unit test of the level smoothing checks this lag in addition to the manual 240 fps measurement
 
 #### Scenario: Levels do not drive other states
-- GIVEN the phase is thinking or confirmation-needed
+- GIVEN the phase is listening, thinking or confirmation-needed
 - WHEN `level` messages arrive
-- THEN the bars keep the motion of that state
+- THEN the waveform keeps its breathing line
 
 ### Requirement: Simulation fallback
-If the notch is in listening or speaking and receives no `level` message for more than 150 ms, it MUST drive the bars from a UI-only simulation, and MUST return to real levels as soon as `level` messages arrive again. Under reduced motion the simulation MUST NOT animate.
+If the notch is speaking and receives no `level` message for more than 150 ms, it MUST drive the waveform level from a UI-only simulated voice envelope, and MUST return to real levels as soon as `level` messages arrive again. Under reduced motion the simulation MUST NOT animate.
 
 #### Scenario: Levels stop
-- GIVEN the notch is listening with real levels
+- GIVEN the notch is speaking with real levels
 - WHEN 150 ms pass without a `level` message
-- THEN the bars continue to move from the simulation
+- THEN the waveform continues to move from the simulation
 
 #### Scenario: Levels resume
-- GIVEN the bars run on the simulation
+- GIVEN the waveform runs on the simulation
 - WHEN a `level` message arrives
-- THEN the bars follow the real level again
+- THEN the waveform follows the real level again
 
 ### Requirement: Success and error auto-hide
 After the success or the error look, the notch MUST settle and hide on its own, with no reading hold. The hide MUST NOT start before the speech of the reply has ended, and MUST wait for the settle time (1.5 s, down from 3 s) after it. A new activation MUST cancel a pending hide.
@@ -116,7 +129,7 @@ After the success or the error look, the notch MUST settle and hide on its own, 
 #### Scenario: Success hides
 - GIVEN an action finished and Niva has spoken the reply
 - WHEN the settle time (1.5 s, down from 3 s) elapses
-- THEN the notch shows the success bounce and then hides
+- THEN the notch shows the success color and then hides
 
 #### Scenario: Error hides
 - GIVEN a command failed
@@ -134,12 +147,12 @@ The notch MUST NOT show reply text, labels, countdown numbers, confirmation prom
 #### Scenario: A reply
 - GIVEN Niva replies "Opening Notepad"
 - WHEN the notch is observed
-- THEN it shows only bars and color, and the reply is heard
+- THEN it shows only the waveform and its color, and the reply is heard
 
 #### Scenario: A confirmation
 - GIVEN a confirmation is pending
 - WHEN the notch is observed
-- THEN it shows the amber pulse and no prompt text and no Cancel or Confirm button
+- THEN it shows the amber waveform and no prompt text and no Cancel or Confirm button
 
 ### Requirement: Always click-through
 The notch window MUST ignore the mouse everywhere, in every state, and MUST NOT take focus.
@@ -158,12 +171,12 @@ When voice is unavailable (microphone error or sidecar down), the notch MUST sho
 - THEN the notch shows the error look, the host plays a chime (`audio_cue`, no sidecar involved), and the notch hides after the settle time (1.5 s)
 
 ### Requirement: Reminder look
-When a reminder is alerting, the notch MUST show the reminder-alert look (#F0997B outward pulse) and no text. Under reduced motion it MUST show the static reminder silhouette.
+When a reminder is alerting, the notch MUST show the reminder-alert look (#F0997B waveform) and no text. Under reduced motion it MUST show the static line.
 
 #### Scenario: Reminder alert
 - GIVEN a reminder falls due
 - WHEN the alert starts
-- THEN the notch shows the coral outward pulse and no text
+- THEN the notch shows the coral waveform and no text
 
 ## Notes
-- Design fixes the static silhouettes ("Notch looks") and confirms the level bound (L14).
+- Design fixes the waveform rendering (L1, L2, "Notch looks") and confirms the level bound (L14). Visual reworked on 2026-11-10 by owner decision (supersedes the 7-bar version).
