@@ -1,10 +1,11 @@
 // @ts-expect-error node builtin, no @types/node in this project (same as vite.config.ts)
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { ViewPayload } from "../events";
 import { Notch } from "./Notch";
+import { holdLook, LOOKS } from "./looks";
 import { NOTCH_H, NOTCH_IN_MS, NOTCH_OUT_MS, NOTCH_W, REDUCED_FADE_MS } from "./motion";
 
 const css: string = readFileSync(new URL("./notch.css", import.meta.url), "utf8");
@@ -70,5 +71,39 @@ describe("Notch markup", () => {
     expect(css).toContain("cubic-bezier(0.34, 1.56, 0.64, 1)");
     expect(css).toContain("left: calc(50% - 59px)");
     expect(NOTCH_W / 2).toBe(59);
+  });
+});
+
+describe("Notch idle fallback", () => {
+  it("holds the previous look while it slides out", () => {
+    expect(holdLook(null, LOOKS.error)).toBe(LOOKS.error);
+    expect(holdLook(LOOKS.thinking, LOOKS.error)).toBe(LOOKS.thinking);
+    expect(holdLook(null, null)).toBe(LOOKS.listening);
+  });
+
+  it("an idle view sliding out keeps the label and color of the look it already has", () => {
+    const html = render({ state: "idle" }, "out");
+    // Nothing was shown before, so the fallback is listening, not an empty notch.
+    expect(html).toContain(`data-look="listening"`);
+    expect(html).toContain(">Listening<");
+    expect(html).toContain(`--bar:${LOOKS.listening.color}`);
+  });
+});
+
+describe("Notch never confirms by itself", () => {
+  const walk = (dir: URL): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e: { name: string; isDirectory(): boolean }) =>
+      e.isDirectory() ? walk(new URL(`${e.name}/`, dir)) : [new URL(e.name, dir).href],
+    );
+
+  it("no UI source invokes report_confirm_buttons or answer_confirmation", () => {
+    const files = walk(new URL("../", import.meta.url)).filter(
+      (f) => /\.(ts|tsx)$/.test(f) && !/\.test\.(ts|tsx)$/.test(f),
+    );
+    expect(files.length).toBeGreaterThan(10);
+    for (const f of files) {
+      const text: string = readFileSync(new URL(f), "utf8");
+      expect(text, f).not.toMatch(/report_confirm_buttons|answer_confirmation/);
+    }
   });
 });

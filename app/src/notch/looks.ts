@@ -127,3 +127,11 @@ export function viewToLook(
   if (!phase) return null;
   return speaking ? LOOKS.speaking : phase;
 }
+
+/**
+ * The look to draw: the current one, else the last one shown (the view is
+ * already idle while the notch slides out), else listening.
+ */
+export function holdLook(current: Look | null, last: Look | null): Look {
+  return current ?? last ?? LOOKS.listening;
+}

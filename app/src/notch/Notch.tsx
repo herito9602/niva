@@ -1,30 +1,17 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { ViewPayload } from "../events";
 import type { SlidePhase } from "../state/viewStore";
-import { BAR_COUNT, frame, type Smoothed } from "./bars";
+import { BAR_COUNT, type Smoothed } from "./bars";
 import { levelStore as sharedLevels, type LevelStore } from "./levelStore";
-import { LOOKS, viewToLook, type Look } from "./looks";
+import { holdLook, viewToLook, type Look } from "./looks";
+import { readReducedMotion, startBarLoop, watchReducedMotion } from "./loop";
 import { NOTCH_H, NOTCH_W } from "./motion";
 import "./notch.css";
 
-/** A bar at level 0 is a dot this fraction of the full bar; exactly 0 is a gap. */
-const MIN_SCALE = 0.25;
-const GAP_BELOW = 0.01;
-const REDUCED_QUERY = "(prefers-reduced-motion: reduce)";
-
-const barScale = (v: number) => (v < GAP_BELOW ? 0 : MIN_SCALE + (1 - MIN_SCALE) * v);
-
 function useReducedMotion(): boolean {
-  const query = () => (typeof window !== "undefined" && window.matchMedia ? window.matchMedia(REDUCED_QUERY) : null);
-  const [reduced, setReduced] = useState(() => query()?.matches ?? false);
-  useEffect(() => {
-    const mq = query();
-    if (!mq) return;
-    const onChange = () => setReduced(mq.matches);
-    onChange();
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
+  const win = typeof window !== "undefined" ? window : undefined;
+  const [reduced, setReduced] = useState(() => readReducedMotion(win));
+  useEffect(() => watchReducedMotion(win, setReduced), [win]);
   return reduced;
 }
 
@@ -43,15 +30,15 @@ export interface NotchProps {
 export function Notch({ view, phase, levels = sharedLevels }: NotchProps) {
   const current = viewToLook(view);
   const lastLook = useRef<Look | null>(null);
-  if (current) lastLook.current = current;
   // While it slides out the view is already idle: keep the last look on screen.
-  const look = current ?? lastLook.current ?? LOOKS.listening;
+  const look = holdLook(current, lastLook.current);
+  if (current) lastLook.current = current;
 
   const reduced = useReducedMotion();
   const barsEl = useRef<HTMLDivElement>(null);
   const lookRef = useRef(look);
   const startedAt = useRef(0);
-  const smoothed = useRef<Smoothed | undefined>(undefined);
+  const smoothedMemory = useRef<{ smoothed?: Smoothed }>({});
   const active = phase !== "hidden";
 
   useEffect(() => {
@@ -62,28 +49,19 @@ export function Notch({ view, phase, levels = sharedLevels }: NotchProps) {
   useEffect(() => {
     const root = barsEl.current;
     if (!active || !root) return;
-    const bars = Array.from(root.children) as HTMLElement[];
-    let raf = 0;
-    const tick = () => {
-      const now = performance.now();
-      const l = lookRef.current;
-      const next = frame(now, l, levels.forLook(l), {
-        prev: smoothed.current,
-        reduced,
-        startedAt: startedAt.current,
-      });
-      smoothed.current = next;
-      next.bars.forEach((v, i) => {
-        const el = bars[i];
-        if (!el) return;
-        el.style.transform = `scaleY(${barScale(v).toFixed(3)})`;
-        el.style.opacity = (0.55 + 0.45 * v).toFixed(3);
-      });
-      // A static silhouette needs no loop, only the write above.
-      if (!(reduced && l.motion !== "levels" && settled(next, l))) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return startBarLoop({
+      bars: Array.from(root.children) as HTMLElement[],
+      getLook: () => lookRef.current,
+      getStartedAt: () => startedAt.current,
+      levels,
+      reduced,
+      memory: smoothedMemory.current,
+      env: {
+        request: (cb) => requestAnimationFrame(cb),
+        cancel: (h) => cancelAnimationFrame(h),
+        now: () => performance.now(),
+      },
+    });
   }, [active, reduced, look.name, levels]);
 
   return (
@@ -104,9 +82,4 @@ export function Notch({ view, phase, levels = sharedLevels }: NotchProps) {
       </div>
     </div>
   );
-}
-
-/** The smoothed bars have reached the silhouette (within a hair). */
-function settled(s: Smoothed, look: Look): boolean {
-  return s.bars.every((v, i) => Math.abs(v - look.silhouette[i]) < 0.002);
 }
