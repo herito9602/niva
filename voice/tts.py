@@ -16,6 +16,7 @@ import logging
 import queue
 import re
 import threading
+import time
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,8 @@ log = logging.getLogger("niva.voice.tts")
 EDGE_VOICES = {"es": "es-US-PalomaNeural", "en": "en-US-AriaNeural"}
 PIPER_VOICE_FILES = {"es": "es_AR-daniela-high.onnx", "en": "en_US-lessac-medium.onnx"}
 EDGE_SAMPLE_RATE = 24_000
+# An output device that has not opened after this long is a device failure, not a wait.
+OUTPUT_OPEN_TIMEOUT_S = 10.0
 
 # ---------------------------------------------------------------- clean text
 
@@ -219,6 +222,7 @@ def decode_mp3_stream(chunks: Iterable[bytes], sample_rate: int = EDGE_SAMPLE_RA
 
 class EdgeTtsEngine:
     name = "edge-tts"
+    output_rate = EDGE_SAMPLE_RATE  # lets the speaker open the device before the first chunk
 
     def __init__(self, tunables: Tunables, mp3_stream: Mp3Stream = edge_mp3_stream, idle_timeout_s: float = 10.0):
         self._first = tunables.tts_first_chunk_s
@@ -280,12 +284,80 @@ class _Cancelled(Exception):
     pass
 
 
+class OutputPrefetch:
+    """Opens the output device on a helper thread while the reply is still being
+    synthesized (opening a stream costs ~300 ms on MME). Exactly one of two things
+    happens to it: the speaker `take`s it for the first write, or `discard` closes
+    it (stop, unused, wrong sample rate). Open failures surface from `take`, at the
+    moment the first audio would be written, like an open done at that moment."""
+
+    def __init__(self, make_output: Callable[[int], AudioOutput], sample_rate: int) -> None:
+        self.sample_rate = sample_rate
+        self._make_output = make_output
+        self._lock = threading.Lock()
+        self._opened = threading.Event()
+        self._output: AudioOutput | None = None
+        self._error: BaseException | None = None
+        self._finished = False  # taken or discarded
+        threading.Thread(target=self._open, name="output-open", daemon=True).start()
+
+    def _open(self) -> None:
+        output: AudioOutput | None = None
+        error: BaseException | None = None
+        try:
+            output = self._make_output(self.sample_rate)
+        except BaseException as exc:  # noqa: BLE001 - re-raised by `take`
+            error = exc
+        with self._lock:
+            late = self._finished  # discarded while the device was opening
+            if not late:
+                self._output, self._error = output, error
+        if late and output is not None:
+            output.abort()
+            output.close()
+        self._opened.set()
+
+    def take(self) -> AudioOutput:
+        """Wait for the device and hand it over. Raises `_Cancelled` when it was discarded
+        meanwhile (a stop), whatever opening it raised, or `OutputError` when it has not
+        opened after `OUTPUT_OPEN_TIMEOUT_S` (a hung driver: reported like a device failure)."""
+        deadline = time.monotonic() + OUTPUT_OPEN_TIMEOUT_S
+        while not self._opened.wait(0.05):
+            with self._lock:
+                if self._finished:  # discarded by a stop while the device was still opening
+                    raise _Cancelled
+                if time.monotonic() >= deadline:
+                    self._finished = True  # `_open` closes the device if it ever arrives
+                    raise OutputError(f"the audio output did not open within {OUTPUT_OPEN_TIMEOUT_S:g} s")
+        with self._lock:
+            if self._finished:
+                raise _Cancelled
+            self._finished = True
+            output, error = self._output, self._error
+            self._output = None
+        if error is not None:
+            raise error
+        assert output is not None
+        return output
+
+    def discard(self) -> None:
+        with self._lock:
+            if self._finished:
+                return
+            self._finished = True
+            output, self._output = self._output, None
+        if output is not None:  # (a device still opening is closed by `_open` when it arrives)
+            output.abort()  # never wait for a buffer: nothing was played, and a stop must not block
+            output.close()
+
+
 class _Run:
     """State of one utterance: its own cancel flag and its own output device."""
 
     def __init__(self, emit: Callable[[dict[str, Any]], None]) -> None:
         self.cancel = threading.Event()
         self.output: AudioOutput | None = None
+        self.prefetch: OutputPrefetch | None = None  # device being opened ahead of the first audio
         self.fx: RobotVoice | None = None  # robot effect state of the current engine's audio
         self.odd = b""  # a lone trailing byte of an odd-sized chunk, completed by the next one
         self.lock = threading.Lock()
@@ -302,8 +374,21 @@ class _Run:
         with self.lock:
             self.cancel.set()
             output = self.output
+            prefetch = self.prefetch
+        if prefetch is not None:
+            prefetch.discard()
         if output is not None:
             output.abort()
+
+    def start_prefetch(self, make_output: Callable[[int], AudioOutput], sample_rate: int) -> None:
+        with self.lock:
+            if not self.cancel.is_set() and self.prefetch is None:
+                self.prefetch = OutputPrefetch(make_output, sample_rate)
+
+    def take_prefetch(self) -> OutputPrefetch | None:
+        with self.lock:
+            prefetch, self.prefetch = self.prefetch, None
+        return prefetch
 
     def adopt(self, output: AudioOutput) -> None:
         with self.lock:
@@ -373,6 +458,9 @@ class Speaker:
             log.exception("speaking failed")
             run.say(protocol.error(ErrorCode.TTS_FAILED, f"speech failed: {exc}", speak_id))
         finally:
+            unused = run.take_prefetch()
+            if unused is not None:  # no audio ever needed the device that was opened ahead
+                unused.discard()
             run.close_output()  # drains: the sound has really finished after this
             if completed:
                 run.say(protocol.speak_done(speak_id))
@@ -388,6 +476,9 @@ class Speaker:
             return False
         started = False
         failures: list[str] = []
+        output_rate = getattr(self._engines[0], "output_rate", None) if self._engines else None
+        if self._t.preopen_output and output_rate:
+            run.start_prefetch(self._make_output, output_rate)  # opens while the first audio is synthesized
 
         def heard(pcm: bytes) -> None:
             """`speak_started` goes out only once audible samples really reached the device."""
@@ -471,7 +562,16 @@ class Speaker:
         try:
             if run.output is None or run.output.sample_rate != chunk.sample_rate:
                 run.close_output()
-                run.adopt(self._make_output(chunk.sample_rate))
+                run.adopt(self._open_output(run, chunk.sample_rate))
             run.output.write(chunk.data)
         except OutputError as exc:
             raise _DeviceFailure(str(exc)) from exc
+
+    def _open_output(self, run: _Run, sample_rate: int) -> AudioOutput:
+        """The device for this audio: the one opened ahead when its rate fits."""
+        prefetch = run.take_prefetch()
+        if prefetch is not None:
+            if prefetch.sample_rate == sample_rate:
+                return prefetch.take()
+            prefetch.discard()  # the engine delivers another rate than it announced
+        return self._make_output(sample_rate)

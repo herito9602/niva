@@ -401,3 +401,19 @@ def test_a_different_mic_failure_is_reported_even_after_one_was(failures):
     codes = [e["code"] for e in run.h.events if e["type"] == "error"]
     assert codes == [f.code.value for f in failures]
     run.finish()
+
+
+@pytest.mark.parametrize(
+    ("flag", "field"),
+    [
+        ("--no-preopen-output", "preopen_output"),
+    ],
+)
+def test_each_latency_optimization_is_on_by_default_and_has_its_own_switch(flag, field):
+    from main import parse_args, tunables_from
+
+    assert getattr(tunables_from(parse_args([])), field) is True
+    off = tunables_from(parse_args([flag]))
+    assert getattr(off, field) is False
+    switches = ("preopen_output",)
+    assert all(getattr(off, other) is True for other in switches if other != field), "one switch, one optimization"

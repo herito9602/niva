@@ -81,6 +81,11 @@ class Tunables:
     # synthesized reply goes through the effect in voice_fx.py. False speaks the
     # plain voices (`--no-robot-voice`).
     robot_voice: bool = True
+    # Open the output device while the reply is still being synthesized, so the
+    # first audio does not wait for the device (MME open measured at ~294 ms per
+    # utterance, 2026-11-09). False opens it at the first audio, as before
+    # (`--no-preopen-output`).
+    preopen_output: bool = True
 
     @property
     def pre_speech_frames(self) -> int:

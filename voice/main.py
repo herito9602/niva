@@ -222,6 +222,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--piper-dir", default=env("NIVA_PIPER_DIR"), help="folder with the Piper voices (fallback TTS)")
     p.add_argument("--no-edge", action="store_true", help="speak with Piper only (nothing leaves the machine)")
     p.add_argument("--no-robot-voice", action="store_true", help="speak with the plain voices, without the robot effect")
+    p.add_argument(
+        "--no-preopen-output",
+        action="store_true",
+        help="open the output device at the first audio, not in parallel with synthesis",
+    )
     p.add_argument("--mic-device", default=None, help="sounddevice input device index or name")
     p.add_argument(
         "--dev-host", action="store_true", help="act as a tiny host: listen after wake, speak the transcript"
@@ -242,6 +247,8 @@ def tunables_from(args: argparse.Namespace) -> Tunables:
     }
     if args.no_robot_voice:
         overrides["robot_voice"] = False
+    if args.no_preopen_output:
+        overrides["preopen_output"] = False
     return dataclasses.replace(Tunables(), **overrides)
 
 

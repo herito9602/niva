@@ -132,6 +132,16 @@ engine, goes through a streaming robot effect (`voice_fx.py`: pitch up 1.2x, a 2
 buzz mixed with the voice, light ring modulation and comb filter). It is chunk-by-chunk, adds
 about 20 ms and makes speech 20 % faster. `--no-robot-voice` plays the plain voices.
 
+### Latency switches (task 3.5, branch `perf/3f-voice-latency`)
+
+The optimizations below, each on by default and each with its own switch, so any one can be turned
+off if it misbehaves (add the option to `NIVA_VOICE_ARGS`). Savings are measured locally on
+2026-11-09, not yet over a full session; the real-microphone measurement is still the owner's.
+
+| Switch (off) | What it does | Measured |
+|---|---|---|
+| `--no-preopen-output` | Opens the sound device while the reply is still being synthesized, not at the first audio. | ~220 ms (MME open) |
+
 Start margin and endpointer check on the recorded phrases (no microphone):
 
 ```powershell
