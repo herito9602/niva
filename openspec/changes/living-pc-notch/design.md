@@ -1,0 +1,115 @@
+# Design: Living PC notch
+
+## Technical Approach
+
+The reducer and its phases stay. Three things change around them:
+
+- The island webview becomes a 118x30 notch with 7 DOM bars, animated by one rAF loop that reads refs, not React state.
+- Audio levels go from the sidecar to the window as `niva://level`, without passing through the reducer.
+- Confirmation loses the buttons and gains two temporary global shortcuts, owned by a host `ConfirmKeys` decorator that replaces `ConfirmGate`.
+
+The safety logic is unchanged: the chord produces the same `Event::Accept{id}` that the click did.
+
+Answers to the proposal's open questions are in "Open questions resolved".
+
+## Decisions
+
+| # | Topic | Choice | Rejected | Rationale |
+|---|---|---|---|---|
+| L1 | Bar rendering | 7 `<span>` bars; each frame writes `transform: scaleY()` and `opacity` through refs. Color comes from a CSS custom property set once per state. | Canvas 2D (DPR handling, redraws the whole notch); React state per frame (re-renders at 60 Hz) | Only compositor properties change, so there is no layout work. CSS handles the reduced-motion media query. 7 nodes cost nothing. |
+| L2 | Frame logic | Pure `bars.ts`: `frame(nowMs, look, levels) -> number[7]` in 0..1. Asymmetric smoothing: attack tau 25 ms, release tau 110 ms. Simulation runs when no level from the expected source arrived for 150 ms or more. | Smoothing in the sidecar | Pure, so vitest can test it. The UI owns the feel; the wire carries raw bands. |
+| L3 | Drop-in/out | Drop-in is `translateY(-100%)` to 0 over 320 ms with an overshoot curve `cubic-bezier(.34,1.56,.64,1)`. Drop-out is 200 ms ease-in. `NOTCH_OUT_MS = 200` in `notch/motion.ts`. `HIDE_DELAY_MS = 240` (exit plus 40 ms slack). | Keeping 540 ms | The window hides right after the exit. A contract test pins `OUT <= HIDE <= OUT + 100`. Reduced motion uses a 120 ms fade, which stays below the same delay. |
+| L4 | Window | 200x70, transparent, `focusable:false`, no decorations, no shadow, always on top. Always click-through: `set_ignore_cursor_events(true)` on prepare and on every show. | Keeping a hit-test | Nothing on the notch is clickable. The 41 px side room and 40 px bottom room fit the reminder's outward pulse and the overshoot. |
+| L5 | View payload | `{state, speaking, confirm?: {id, expiresAt?, chord}, reminder?: {count}}`. Removed: `caption`, `prompt`, labels, `countdown.text`. `Countdown` gets its own name, `"countdown"`. | Keeping `caption` for the debug window | The island must not carry reply text. In debug builds, the reply text goes to the dev log (`DEV_LOG_EVENT`): one line per `Speak`. |
+| L6 | `speaking` | New reducer field `State::audible_speak: Option<u64>`. Set on `SpeakStarted{id}` when `id == speak_id`. Cleared wherever `speak_id` clears. `speaking = audible_speak.is_some()`. | `speak_id.is_some()` (green during the ~0.9 s of synthesis); the frontend inferring it from TTS levels (fails under the simulation) | The reducer stays the single, pure source. The `SpeakStarted` row of the coverage matrix changes from ignore to a state-only update. |
+| L7 | Hide timing | Delete `reading.rs` and `ReadingHold` in `effect_runner.rs`. `TimerKind::Settle` goes from 3 s to 1.5 s (owner-accepted). `settle_delay` moves out of `reading.rs` (it is imported at `effect_runner.rs:41`) into `effect_runner.rs` before the file is deleted. The 900 ms "acting stays visible" hold is kept in `effect_runner.rs` and is not part of the deleted reading hold. | Keeping 3 s | Nobody reads any more. 1.5 s covers the success bounce (600 ms) plus a beat. |
+| L8 | Confirm channel | The chord sends `Event::Accept{id}` and Esc sends `Event::Reject{id}`. `confirmation_input` maps them to `ConfirmInput::Click`, as today. `safety::Channel::Click` (the safety gate's channel, not latency's `Channel`) becomes `Channel::Physical`: a mechanical rename, and the doc names the chord and the debug button. Only physical inputs can produce `Event::Accept` for click-only confirmations: the chord, and the debug window's button in debug builds only. Typed text and model output can never build `Accept`. | New `ConfirmInput::Key` / `Channel::Key` | The reducer and `SafetyGate` stay untouched. The guarantee is the same: an input the model and typed text cannot produce. `confirm_click_only` already makes the reducer ignore transcripts, so ambient speech never confirms a power action. |
+| L9 | Shortcut lifecycle | `confirm_keys.rs`: a `KeysUi` decorator of `UiPort` (this replaces `GateUi`) over a `ShortcutRegistry` trait. Registration follows the published view (see "Key lifecycle"). | Hooking reducer effects | The host already learns about confirmations from views. A fake registry tests every exit path. |
+| L10 | Registration failure | Esc taken: log it and carry on (voice, timeout and Ctrl+Shift+Space still cancel). Chord taken (the late registration, once the prompt has been spoken): send `Event::Reject{id}` (the user hears "Cancelled"), log it, and set the tray tooltip to "Confirm key unavailable". | Leaving a confirmation with no way to accept | Fail closed. The user hears "Cancelled" rather than wait 10 s for nothing. |
+| L11 | Level wire | `{"type":"level","src":"mic"\|"tts","bands":[7 ints 0-100]}`. `wire.rs` drops a message with any other length or any value outside 0-100 (as the speech-io spec requires). `Translated` gains `level: Option<Level>`. A `LevelSink` emits `niva://level` to `island` only. It is not logged and does not go through the dispatcher. | Through the reducer | At 30 Hz, it would flood the dispatcher and the view diffing. |
+| L12 | Bands | One pure function, `voice/levels.py` `bands(pcm, rate)`: Hann window, rfft, 7 log bands with edges 80/160/320/640/1280/2560/4000/8000 Hz, band RMS in dBFS mapped from [-60, -10] to 0-100. Mic: one value per 32 ms frame, only while a listen is open. TTS: each written chunk is cut into 32 ms slices. Rate guard: at most one emit per 25 ms per source. | Peak meter only | 7 bands give the bars shape and cost under 1 ms per frame. |
+| L13 | TTS lead | The sidecar paces its emits to the playback clock. Each slice gets `due = max(prev_due + slice_ms, write_return + latency)`, where `latency` is `stream.latency`. The first write anchors the clock and an underrun re-anchors it. A pacer thread emits each slice when it is due. The pacer is flushed and stopped on speech end and on barge-in, so levels stop within one period (about 33 ms). `NIVA_TTS_LEVEL_OFFSET_MS` (default 0) covers latency the device does not report. The `AudioOutput` protocol (`voice/audio_io.py`) is extended with `latency`, and tests get a fake implementation. | A per-device constant delay in the UI (needs calibration on every PC, drifts after an underrun) | It is self-correcting, and the host and UI need no knowledge of devices. |
+| L14 | Level bound | Revised: mean lag of 50 ms or less and no sample above 100 ms, for mic and TTS, on built-in or wired output. Bluetooth is excluded (its latency is not reported) and uses the offset. Measurement: debug "level test" clicks every 500 ms, filmed at 240 fps; a fake-clock unit proxy of the bar lag also runs in CI. | 50 ms flat | Mic: half of a 32 ms frame, plus IPC, plus half a frame of rAF is about 30 ms on average and can reach about 55 ms. A strict 50 ms cap fails by construction. |
+| L15 | Voice-down chime (D4) | When the sidecar or mic is down, the host plays the chime from `audio_cue.rs` (the existing host cue module) while the view shows `error`. No sidecar involvement. | A chime synthesized by the sidecar | The sidecar is the thing that is down. |
+| L16 | Exclusive fullscreen | When the visibility policy reports exclusive fullscreen (the same detector that gates reminders), the host calls the same `audio_cue.rs` chime on listen start instead of relying on the notch. [verify: detection of exclusive mode, slice 2 spike] | Silent listening | The user needs to know Niva is listening without a visible notch. |
+| L17 | Reminder after speech | The coral pulse does NOT resume after the reminder is spoken. The alert ends with the speech, then the normal settle applies. The 30 s alert timer still bounds a reminder that is never spoken (fullscreen). | Resuming the pulse | Owner decision: the alert is over once it has been heard. |
+| L18 | Last fullscreen reminder | No tray item for the last reminder (owner rule: no text, audio only). | A disabled tray item with the text | Deferred: speak a missed fullscreen reminder after fullscreen ends (BACKLOG). |
+
+## Notch looks
+
+| State | Color | Motion | Reduced motion (static heights, 7 bars) | Geometry cue |
+|---|---|---|---|---|
+| listening | #378ADD | mic bands | 2 4 6 8 6 4 2 | bars grow up from the bottom |
+| thinking / acting | #7F77DD | wave travelling left to right, 1.2 s | 1 2 3 4 5 6 7 | ramp |
+| speaking (overrides) | #5DCAA5 | TTS bands | 5 2 5 2 5 2 5 | bars grow from the center line |
+| confirmation / countdown | #EF9F27 | uniform pulse, 1.6 s | 1 1 8 1 8 1 1 (pause glyph) | two lit bars |
+| success | #97C459 | one bounce, then hide | 7 7 7 7 7 7 7 | full |
+| error | #E24B4A | low jitter, then hide | 2 2 2 0 2 2 2 | gap |
+| reminder | #F0997B | pulse moving outward from the center | 8 6 3 1 3 6 8 | V shape |
+
+Grayscale and reduced motion differ by shape, not by color. A visually hidden `role="status"` region announces the state name (never reply text).
+
+## Key lifecycle
+
+| Trigger (from views and island events) | Esc | Ctrl+Shift+Enter |
+|---|---|---|
+| A view with a new `confirm.id` | register | - |
+| `confirm.chord && expiresAt` present (the prompt has been spoken and the 10 s window runs) | - | register; Accept is ignored for the first 500 ms (`ARM_MS`, kept and applied to the chord); a press before registration never reaches the reducer |
+| Key pressed (`Pressed` only, so autorepeat is ignored) | Reject{id}, then unregister both | Accept{id}, then unregister both |
+| A view with no confirm or another id (confirm, reject, timeout, Ctrl+Shift+Space) | unregister | unregister |
+| `Island{visible:false}` | unregister | unregister |
+| App quit (tray Quit, `RunEvent::Exit`) | unregister | unregister |
+
+The `chord` field is `state.confirm_click_only`. Registration runs through `run_on_main_thread` [verify: required by the plugin on Windows]. The plugin handler, set once in `run()`, sends the event only through `ConfirmKeys::pressed`, which checks the id (a stale id is dropped), allows one answer and applies the arm delay.
+
+## Data flow
+
+```
+mic frame --bands--> sidecar --level{mic}--> wire -> translate -> LevelSink --niva://level--> Notch refs
+TTS slice --pacer@due--------^                                                                   ^
+reducer -> ViewModel{state,speaking,confirm} -> KeysUi(register/unregister) -> TauriUi --niva://view
+```
+
+## File changes
+
+| Area | Change |
+|---|---|
+| `app/src/notch/{Notch.tsx,bars.ts,looks.ts,motion.ts,levelStore.ts}` | Create |
+| `app/src/{mascot/**,island-ui/**,island.ts,island.test.ts}`, `app/mascot-preview.html` | Delete |
+| `app/src/{App.tsx,styles.css,state/viewStore.ts,debug/DebugWindow.tsx}` | Modify: new payload, level injection in debug |
+| `tauri.conf.json` | 200x70 |
+| `src-tauri/src/confirm_keys.rs` | Create (gate, decorator, registry trait) |
+| `src-tauri/src/{confirm_buttons.rs,cursor.rs}`, `capabilities/island-actions.json`, `permissions-release/island-actions.toml` | Delete |
+| `click_through.rs` | Keep prepare/show only |
+| `island_contract_tests.rs` | Rewrite: window size, focus, transparency, hide delay against `motion.ts`, `ARM_MS` |
+| `capabilities_tests.rs`, `check-release-binary` | No island commands |
+| `ui_adapter.rs`, `effect_runner.rs`, `lib.rs`, `visibility.rs` | Modify |
+| `voice_sidecar/{wire,translate}.rs`, `voice_sidecar.rs` | `Level` and its sink |
+| `niva-core`: `state_machine.rs` (+coverage), `safety.rs` (rename), `reading.rs` (delete), `replies` (power prompt names the chord) | Modify |
+| `voice/{levels.py (new),capture.py,tts.py,protocol.py}` | `level` |
+
+## Slices (PR order)
+
+The power actions must never be left without a confirmation path. The chord therefore lands first, while the buttons still exist.
+
+| # | PR | Prod size | Tests first |
+|---|---|---|---|
+| 1 | **Confirm keys** (safety, own PR): `confirm_keys.rs`, Esc and chord, the `Physical` rename, the power prompt template, and a `chord` field added to the existing `ConfirmView` (additive, from `confirm_click_only`). Purely additive: the buttons still work. | ~250 | Fake registry for every exit path in the lifecycle table, arm delay, id and double-answer checks, failure goes to Reject; core: a transcript never confirms `click_only` (existing tests, re-asserted) |
+| 2 | **Notch UI** with simulated bars, window shrink, frontend deletions. | ~350 (plus deletions) | vitest for `bars.ts` (smoothing, 150 ms fallback, wave phase), the `looks.ts` table (every state, reduced-motion patterns all distinct); contract test |
+| 3 | **View-model and core**: payload trim, `audible_speak`, `countdown` name, `reading.rs` removal (moving `settle_delay` to `effect_runner.rs` first), settle at 1.5 s. | ~200 | Rewrite the reducer tests for SpeakStarted; ui_adapter tests stop pinning captions |
+| 4 | **Host cleanup** (capabilities, own PR): delete the buttons, hit-test, cursor and the `island-actions` capability. | mostly deletions | capabilities_tests: the island has no commands |
+| 5 | **Level**: sidecar bands, pacer (flush on speech end and barge-in), `AudioOutput.latency` plus a fake, wire, sink, notch consumption. | ~300 | pytest for `bands` (sine to band, silence to 0), pacer due times with a fake clock and underrun; wire parse tests; manual 240 fps check |
+
+Rollback: revert in reverse order. Invariant: the buttons are removed only after the chord has shipped (slice 1 before slice 4); once the buttons are removed, the chord slice is never reverted alone.
+
+## Open questions resolved
+
+1. **Search summary length:** deferred, not part of this change. Long replies are spoken in full. The 300-character cut pairs with the conversation-memory work (BACKLOG).
+2. **Fullscreen reminder:** chime plus coral pulse, no text and no tray item (L18). Deferred: speak a missed fullscreen reminder after fullscreen ends.
+3. **Level bound:** revised, see L14.
+4. **Slice order:** the chord comes first, see "Slices".
+
+## Risks
+
+- Ctrl+Shift+Enter collides with Excel array formulas while a power confirmation is pending. Accepted by the owner as a visible risk. Mitigated: it is registered only after the prompt is spoken, there is a 500 ms arm delay, and the user started the request.
+- `stream.latency` may misreport on some drivers. The offset variable and the 240 fps check cover it.
