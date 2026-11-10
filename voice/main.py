@@ -227,6 +227,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="open the output device at the first audio, not in parallel with synthesis",
     )
+    p.add_argument(
+        "--no-single-pass-stt",
+        action="store_true",
+        help="transcribe through faster-whisper's public API (two encoder passes)",
+    )
     p.add_argument("--mic-device", default=None, help="sounddevice input device index or name")
     p.add_argument(
         "--dev-host", action="store_true", help="act as a tiny host: listen after wake, speak the transcript"
@@ -249,6 +254,8 @@ def tunables_from(args: argparse.Namespace) -> Tunables:
         overrides["robot_voice"] = False
     if args.no_preopen_output:
         overrides["preopen_output"] = False
+    if args.no_single_pass_stt:
+        overrides["single_pass_stt"] = False
     return dataclasses.replace(Tunables(), **overrides)
 
 

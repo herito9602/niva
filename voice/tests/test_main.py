@@ -407,6 +407,7 @@ def test_a_different_mic_failure_is_reported_even_after_one_was(failures):
     ("flag", "field"),
     [
         ("--no-preopen-output", "preopen_output"),
+        ("--no-single-pass-stt", "single_pass_stt"),
     ],
 )
 def test_each_latency_optimization_is_on_by_default_and_has_its_own_switch(flag, field):
@@ -415,5 +416,5 @@ def test_each_latency_optimization_is_on_by_default_and_has_its_own_switch(flag,
     assert getattr(tunables_from(parse_args([])), field) is True
     off = tunables_from(parse_args([flag]))
     assert getattr(off, field) is False
-    switches = ("preopen_output",)
+    switches = ("preopen_output", "single_pass_stt")
     assert all(getattr(off, other) is True for other in switches if other != field), "one switch, one optimization"

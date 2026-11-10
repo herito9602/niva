@@ -141,6 +141,7 @@ off if it misbehaves (add the option to `NIVA_VOICE_ARGS`). Savings are measured
 | Switch (off) | What it does | Measured |
 |---|---|---|
 | `--no-preopen-output` | Opens the sound device while the reply is still being synthesized, not at the first audio. | ~220 ms (MME open) |
+| `--no-single-pass-stt` | Runs the Whisper encoder once and uses it both to choose es/en and to decode (faster-whisper 1.2.1 internals, isolated in `stt.single_pass_decode`; falls back to the public API and logs once if they change). | ~115-190 ms |
 
 Start margin and endpointer check on the recorded phrases (no microphone):
 

@@ -86,6 +86,12 @@ class Tunables:
     # utterance, 2026-11-09). False opens it at the first audio, as before
     # (`--no-preopen-output`).
     preopen_output: bool = True
+    # Run the Whisper encoder once per utterance and use that output both to pick
+    # es/en and to decode (faster-whisper's own path encodes twice: ~188 ms
+    # saved, measured 2026-11-09). Uses faster-whisper 1.2.1 internals; if they
+    # are missing it logs once and falls back to the public path
+    # (`--no-single-pass-stt` forces that path).
+    single_pass_stt: bool = True
 
     @property
     def pre_speech_frames(self) -> int:
