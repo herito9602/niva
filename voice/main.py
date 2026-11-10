@@ -248,7 +248,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--log-file", default=None)
     p.add_argument("--verbose", action="store_true")
-    for field in ("pre_speech_ms", "wake_preroll_ms", "end_silence_ms"):
+    p.add_argument(
+        "--no-speculative-stt", action="store_true", help="transcribe only after the end of speech is confirmed"
+    )
+    for field in ("pre_speech_ms", "wake_preroll_ms", "end_silence_ms", "speculative_stt_ms"):
         p.add_argument(f"--{field.replace('_', '-')}", type=int, default=None)
     p.add_argument("--wake-threshold", type=float, default=None)
     return p.parse_args(argv)
@@ -257,7 +260,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def tunables_from(args: argparse.Namespace) -> Tunables:
     overrides = {
         name: getattr(args, name)
-        for name in ("pre_speech_ms", "wake_preroll_ms", "end_silence_ms", "wake_threshold")
+        for name in ("pre_speech_ms", "wake_preroll_ms", "end_silence_ms", "speculative_stt_ms", "wake_threshold")
         if getattr(args, name) is not None
     }
     if args.no_robot_voice:
@@ -270,6 +273,8 @@ def tunables_from(args: argparse.Namespace) -> Tunables:
         overrides["persistent_edge_ws"] = False
     if args.no_tts_cache:
         overrides["tts_cache"] = False
+    if args.no_speculative_stt:
+        overrides["speculative_stt"] = False
     return dataclasses.replace(Tunables(), **overrides)
 
 

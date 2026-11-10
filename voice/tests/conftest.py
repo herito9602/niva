@@ -102,11 +102,11 @@ class FakeSpeaker:
 
 
 class Harness:
-    def __init__(self, tunables: Tunables | None = None, **stt_args) -> None:
+    def __init__(self, tunables: Tunables | None = None, stt: FakeStt | None = None, **stt_args) -> None:
         self.events: list[dict] = []
         self.wake = FakeWake()
         self.vad = FakeVad()
-        self.stt = FakeStt(**stt_args)
+        self.stt = stt or FakeStt(**stt_args)
         self.speaker = FakeSpeaker()
         self.discards = DiscardLog()
         self.now = 1_000_000

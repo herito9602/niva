@@ -20,6 +20,7 @@ What it does, in the order audio flows (design.md, "Sidecar capture loop"):
 from __future__ import annotations
 
 import logging
+import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -77,6 +78,19 @@ class SidecarFatal(Exception):
 _Stamped = tuple[np.ndarray, int]
 
 
+class _Speculation:
+    """A transcription of the utterance so far, running on a helper thread while the
+    closing silence is still too short to count as the end of speech."""
+
+    def __init__(self, speech_len: int, audio: np.ndarray):
+        self.speech_len = speech_len  # frames of the utterance before the closing silence began
+        self.audio = audio
+        self.done = threading.Event()
+        self.result: SttResult | None = None
+        self.error: BaseException | None = None
+        self.cancelled = False  # set before the job got the GPU: it then does nothing
+
+
 @dataclass
 class _Listen:
     id: int
@@ -87,6 +101,7 @@ class _Listen:
     context: str | None = None  # confirm only: its text. Never logged.
     utterance: list[np.ndarray] = field(default_factory=list)
     in_speech: bool = False
+    spec: _Speculation | None = None
     waited_frames: int = 0  # live frames since the listen opened with no live speech yet
     speech_frames: int = 0
     # Speech found only in the replayed pre-roll (often the wake word's own tail) is
@@ -127,6 +142,8 @@ class Engine:
         self._mic_down: tuple[ErrorCode, str] | None = None
         self._awaiting_first_frame = False
         self._frame_ms: int | None = None  # capture time of the newest frame
+        self._gpu = threading.Lock()  # one Whisper call at a time, speculative or not
+        self._last_spec: _Speculation | None = None  # the newest speculative job (it may outlive its listen)
 
     # ------------------------------------------------------------ introspection
 
@@ -145,6 +162,7 @@ class Engine:
         real frame: a device that opens but delivers nothing is not ready."""
         self._ring.clear()
         self._pending = None
+        self._drop_speculation()
         self._listen = None
         self._vad.reset()
         self._wake.reset()
@@ -154,6 +172,7 @@ class Engine:
         """The stream failed. Report it once, with the id of the listen it cut short.
         The same failure again, with no audio in between, is not news."""
         listen_id = self._listen.id if self._listen else None
+        self._drop_speculation()
         self._listen = None
         self._pending = None
         self._awaiting_first_frame = False
@@ -275,6 +294,7 @@ class Engine:
         else:
             history = list(self._ring)[-t.pre_speech_frames :] if t.pre_speech_frames else []
         self._pending = None
+        self._drop_speculation()  # a replaced listen leaves no job behind
         self._vad.reset()
         self._endpointer.reset()
         self._listen = _Listen(
@@ -327,6 +347,9 @@ class Engine:
             listen.announced = True
             self._emit(protocol.speech_start(listen.id))
 
+        if signal is None and listen.in_speech and listen.live_speech:
+            self._speculate(listen)
+
         if isinstance(signal, End) and not listen.live_speech:
             # The "speech" was only the pre-roll (the wake word's tail): not a turn.
             listen.in_speech = False
@@ -357,10 +380,79 @@ class Engine:
             self._emit(protocol.no_speech(listen.id))
             self._end_listen()
 
+    def _speculate(self, listen: _Listen) -> None:
+        """Start (or drop) the speculative transcription while the end-of-speech silence runs.
+
+        The audio is exactly what `_complete` would send if the end were confirmed now
+        (speech, plus the trailing pad), so a confirmed end with the same speech can use
+        the result as is. One speculative job at a time: a new one waits for the last to
+        finish, since the GPU cannot usefully run two."""
+        t = self._t
+        if t.speculative_stt_frames == 0:
+            return
+        silence = self._endpointer.silence_frames
+        speech_len = None if silence is None else len(listen.utterance) - (silence + 1)
+        if listen.spec is not None:
+            if speech_len != listen.spec.speech_len:  # speech resumed: what was heard is no longer the end
+                log.debug("speculative STT discarded: speech resumed")
+                self._drop_speculation()
+            return
+        if silence is None or silence < t.speculative_stt_frames:
+            return
+        previous = self._last_spec
+        if previous is not None and not previous.done.is_set():
+            return
+        assert speech_len is not None
+        if speech_len < 1:
+            return
+        frames = listen.utterance[: max(1, min(len(listen.utterance), speech_len + t.trailing_pad_frames))]
+        spec = _Speculation(speech_len, np.concatenate(frames).astype(np.float32) / 32768.0)
+        listen.spec = self._last_spec = spec
+        self._speaker.prepare()  # Whisper starts now, so the reply is that much closer
+        args = (spec, listen.mode, listen.lang, listen.context)
+        threading.Thread(target=self._run_speculation, args=args, name="stt-spec", daemon=True).start()
+
+    def _run_speculation(self, spec: _Speculation, mode: str, lang: str | None, context: str | None) -> None:
+        try:
+            with self._gpu:
+                if spec.cancelled:
+                    return
+                try:
+                    spec.result = self._stt.transcribe(spec.audio, mode=mode, lang=lang, context=context)
+                except BaseException as exc:  # noqa: BLE001 - the confirmed end redoes it and classifies it
+                    spec.error = exc
+        finally:
+            spec.done.set()
+
+    def _drop_speculation(self) -> None:
+        """Forget the current listen's speculative job (a running one finishes on its own, unused)."""
+        listen = self._listen
+        if listen is not None and listen.spec is not None:
+            listen.spec.cancelled = True
+            listen.spec = None
+
     def _end_listen(self) -> None:
+        self._drop_speculation()
         self._listen = None
         self._pending = None
         self._ring.clear()  # audio already consumed must not lead the next turn
+
+    def _speculative_result(self, spec: _Speculation | None, audio: np.ndarray) -> SttResult | None:
+        """The speculative transcription when it is of exactly this audio (waiting for it if it
+        is still running); None means "transcribe now". A failed job is not trusted: the normal
+        path repeats the call and reports whatever it raises."""
+        if spec is None:
+            return None
+        if not np.array_equal(spec.audio, audio):
+            spec.cancelled = True
+            log.debug("speculative STT discarded: the audio changed before the end was confirmed")
+            return None
+        spec.done.wait()
+        if spec.result is None:
+            log.debug("speculative STT failed (%s); transcribing again", spec.error)
+            return None
+        log.debug("speculative STT used")
+        return spec.result
 
     def _complete(self, silence_frames_ago: int | None) -> None:
         listen = self._listen
@@ -368,6 +460,7 @@ class Engine:
         t = self._t
         now = self._frame_ms if self._frame_ms is not None else self._clock()
         frames = listen.utterance
+        spec, listen.spec = listen.spec, None  # taken before the listen is closed, which drops it
         if silence_frames_ago is None:
             end_ms = now
         else:
@@ -379,7 +472,10 @@ class Engine:
         audio = np.concatenate(frames).astype(np.float32) / 32768.0
         self._speaker.prepare()  # the reply is about a second away: connect the voice while Whisper runs
         try:
-            result = self._stt.transcribe(audio, mode=listen.mode, lang=listen.lang, context=listen.context)
+            result = self._speculative_result(spec, audio)
+            if result is None:
+                with self._gpu:
+                    result = self._stt.transcribe(audio, mode=listen.mode, lang=listen.lang, context=listen.context)
         except SttError as exc:
             raise SidecarFatal(exc.code, exc.msg, listen.id) from exc
         except Exception as exc:  # noqa: BLE001 - classify whatever the runtime raised

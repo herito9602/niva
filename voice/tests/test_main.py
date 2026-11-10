@@ -410,6 +410,7 @@ def test_a_different_mic_failure_is_reported_even_after_one_was(failures):
         ("--no-single-pass-stt", "single_pass_stt"),
         ("--no-persistent-edge", "persistent_edge_ws"),
         ("--no-tts-cache", "tts_cache"),
+        ("--no-speculative-stt", "speculative_stt"),
     ],
 )
 def test_each_latency_optimization_is_on_by_default_and_has_its_own_switch(flag, field):
@@ -418,8 +419,15 @@ def test_each_latency_optimization_is_on_by_default_and_has_its_own_switch(flag,
     assert getattr(tunables_from(parse_args([])), field) is True
     off = tunables_from(parse_args([flag]))
     assert getattr(off, field) is False
-    switches = ("preopen_output", "single_pass_stt", "persistent_edge_ws", "tts_cache")
+    switches = ("preopen_output", "single_pass_stt", "persistent_edge_ws", "tts_cache", "speculative_stt")
     assert all(getattr(off, other) is True for other in switches if other != field), "one switch, one optimization"
+
+
+def test_the_speculation_threshold_can_be_tuned_from_the_command_line():
+    from main import parse_args, tunables_from
+
+    assert tunables_from(parse_args(["--speculative-stt-ms", "200"])).speculative_stt_ms == 200
+    assert tunables_from(parse_args([])).speculative_stt_ms == 250
 
 
 # ------------------------------------------------------------------ main(): how the TTS pieces are wired

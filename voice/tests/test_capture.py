@@ -1,9 +1,12 @@
 """The capture loop, frame by frame, with fakes."""
 
 import logging
+import threading
+import time
 
+import numpy as np
 import pytest
-from conftest import SILENCE, SOFT, SPEECH, WAKE_END, WAKE_WORD, Harness, frame, frames, levels
+from conftest import SILENCE, SOFT, SPEECH, WAKE_END, WAKE_WORD, FakeStt, Harness, frame, frames, levels
 
 from capture import SidecarFatal
 from config import FRAME_MS, Tunables
@@ -541,3 +544,233 @@ def test_a_listen_refused_because_the_mic_is_down_prepares_nothing(h):
     h.engine.on_mic_error(ErrorCode.MIC_MISSING, "gone")
     h.engine.on_command(Listen(1, "command"))
     assert h.speaker.prepares == 0
+
+
+# ------------------------------------------------------------------ speculative Whisper
+
+SPEC_SILENCE = 9  # frames of silence (288 ms) after which the speculative job starts; the end is at 17
+
+
+class GatedStt(FakeStt):
+    """A transcriber that blocks until `gate` is set, and counts how many calls overlap."""
+
+    def __init__(self, texts=("first", "second", "third"), **kwargs):
+        super().__init__(**kwargs)
+        self.texts = list(texts)
+        self.gate = threading.Event()
+        self.gate.set()
+        self.entered = threading.Event()
+        self.active = self.max_active = 0
+        self._guard = threading.Lock()
+
+    def transcribe(self, audio, *, mode="command", lang=None, context=None):
+        with self._guard:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        self.entered.set()
+        try:
+            self.gate.wait(5)
+            result = super().transcribe(audio, mode=mode, lang=lang, context=context)
+            index = len(self.calls) - 1
+            return type(result)(self.texts[index] if index < len(self.texts) else "more", result.lang, result.lang_prob)
+        finally:
+            with self._guard:
+                self.active -= 1
+
+
+def wait_until(predicate, seconds=3.0):
+    deadline = time.time() + seconds
+    while not predicate() and time.time() < deadline:
+        time.sleep(0.005)
+    return predicate()
+
+
+class ContendedLock:
+    """Stands in for the engine's GPU lock: when someone has to wait for it, `on_contend` runs first
+    (so a test can release a blocked job exactly when the waiter is known to be waiting)."""
+
+    def __init__(self, inner, on_contend):
+        self._inner, self._on_contend = inner, on_contend
+        self.contended = False
+
+    def __enter__(self):
+        if not self._inner.acquire(blocking=False):
+            self.contended = True
+            self._on_contend()
+            self._inner.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self._inner.release()
+
+
+def spec_threads():
+    return [t for t in threading.enumerate() if t.name == "stt-spec" and t.is_alive()]
+
+
+def spec_harness(stt=None, **tunables):
+    return Harness(Tunables(**tunables), stt=stt or GatedStt()).start()
+
+
+def test_a_short_silence_starts_whisper_early_but_nothing_is_sent_before_the_end_is_confirmed():
+    h = spec_harness()
+    h.engine.on_command(Listen(1, "command"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, SPEC_SILENCE))
+    assert wait_until(lambda: len(h.stt.calls) == 1), "Whisper started during the closing silence"
+    assert h.types() == ["speech_start"], "no transcript before the VAD end"
+    h.feed(frames(SILENCE, 20))
+    assert h.types() == ["speech_start", "transcript"]
+    assert len(h.stt.calls) == 1, "the confirmed end reused the speculative result"
+    assert h.events[-1]["text"] == "first"
+
+
+def test_the_speculative_path_gives_exactly_what_the_plain_path_gives():
+    def run(**tunables):
+        h = Harness(Tunables(**tunables), text="abre spotify", lang="es", lang_prob=0.97).start()
+        h.engine.on_command(Listen(7, "command"))
+        h.feed(frames(SOFT, 3) + frames(SPEECH, 12) + frames(SILENCE, 30))
+        return h
+
+    plain, speculative = run(speculative_stt=False), run()
+    assert len(plain.stt.calls) == len(speculative.stt.calls) == 1
+    assert np.array_equal(plain.stt.heard[0], speculative.stt.heard[0]), "the same audio, trimmed the same way"
+    assert plain.events == speculative.events, "same transcript, same end_ms, same order of events"
+    assert speculative.events[-1]["end_ms"] == plain.events[-1]["end_ms"]
+
+
+def test_a_pause_that_ends_in_more_speech_discards_the_speculative_result():
+    h = spec_harness()
+    h.engine.on_command(Listen(1, "command"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, SPEC_SILENCE))
+    assert wait_until(lambda: len(h.stt.calls) == 1)
+    h.feed(frames(SPEECH, 8))  # "...abre Spotify" (pause) "y sube el volumen"
+    h.feed(frames(SILENCE, 30))
+    assert h.types() == ["speech_start", "transcript"]
+    assert len(h.stt.calls) == 2, "the stale result was thrown away and the whole utterance transcribed"
+    assert h.events[-1]["text"] == "second"
+    assert len(h.stt.heard[1]) > len(h.stt.heard[0]), "the final audio includes the speech after the pause"
+
+
+def test_a_confirmed_end_waits_for_the_running_speculative_job_instead_of_starting_another():
+    h = spec_harness()
+    h.stt.gate.clear()
+    h.engine.on_command(Listen(1, "command"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, 12))
+    assert h.stt.entered.wait(3)
+    original = h.engine._speculative_result
+    running_at_the_end = []
+
+    def end_confirmed(spec, audio):
+        running_at_the_end.append(not spec.done.is_set())  # the end waits for a job that is still running
+        threading.Thread(target=h.stt.gate.set).start()  # ...which finishes only now
+        return original(spec, audio)
+
+    h.engine._speculative_result = end_confirmed
+    h.feed(frames(SILENCE, 8))  # the end is confirmed here, while the job still runs
+    assert running_at_the_end == [True]
+    assert h.types() == ["speech_start", "transcript"] and h.events[-1]["text"] == "first"
+    assert len(h.stt.calls) == 1 and h.stt.max_active == 1
+
+
+def test_only_one_speculative_job_runs_at_a_time():
+    h = spec_harness()
+    h.stt.gate.clear()
+    h.engine.on_command(Listen(1, "command"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, SPEC_SILENCE))
+    assert h.stt.entered.wait(3)
+    first_job = h.engine._last_spec
+    h.feed(frames(SPEECH, 4) + frames(SILENCE, SPEC_SILENCE))  # a second pause while the first job still holds the GPU
+    assert h.engine._last_spec is first_job and len(spec_threads()) == 1, "no second job was started"
+    assert h.stt.active == 1 and h.stt.max_active == 1 and len(h.stt.calls) == 0
+    h.stt.gate.set()
+    assert wait_until(lambda: len(h.stt.calls) == 1)
+    h.feed(frames(SILENCE, 30))
+    assert h.types() == ["speech_start", "transcript"]
+    assert h.stt.max_active == 1, "the final transcription never overlapped the stale job"
+    assert len(h.stt.calls) == 2
+
+
+def test_the_final_transcription_never_overlaps_a_stale_running_job():
+    h = spec_harness()
+    h.stt.gate.clear()
+    h.engine.on_command(Listen(1, "command"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, SPEC_SILENCE))
+    assert h.stt.entered.wait(3)
+    h.feed(frames(SPEECH, 6))  # speech resumed: the job is stale but still running
+    lock = h.engine._gpu = ContendedLock(h.engine._gpu, h.stt.gate.set)  # frees the stale job once the end waits
+    h.feed(frames(SILENCE, 30))  # the end: must wait for the stale job to release the GPU
+    assert lock.contended, "the final transcription had to wait for the stale job"
+    assert h.types() == ["speech_start", "transcript"]
+    assert h.stt.max_active == 1 and len(h.stt.calls) == 2
+
+
+def test_the_switch_off_transcribes_only_after_the_end():
+    h = spec_harness(speculative_stt=False)
+    h.engine.on_command(Listen(1, "command"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, 14))
+    assert h.engine._last_spec is None and h.stt.calls == [] and h.types() == ["speech_start"]
+    h.feed(frames(SILENCE, 6))
+    assert len(h.stt.calls) == 1 and h.types() == ["speech_start", "transcript"]
+
+
+@pytest.mark.parametrize("ms", [0, 500, 900])
+def test_a_threshold_at_or_past_the_end_silence_means_no_speculation(ms):
+    assert Tunables(speculative_stt_ms=ms).speculative_stt_frames == 0
+
+
+def test_the_default_threshold_is_250_ms_of_a_500_ms_wait():
+    t = Tunables()
+    assert (t.speculative_stt_ms, t.end_silence_ms, t.speculative_stt_frames) == (250, 500, 8)
+
+
+def test_the_wake_word_tail_and_silence_never_start_a_speculative_job():
+    h = spec_harness()
+    h.feed(frames(SILENCE, 10) + frames(WAKE_WORD, 3) + [frame(WAKE_END)])
+    h.engine.on_command(Listen(1, "command"))
+    h.feed(frames(SPEECH, 3) + frames(SILENCE, 14))  # only the wake word's own tail, then a pause
+    assert h.engine._last_spec is None and h.stt.calls == []
+
+
+def test_a_cancelled_listen_leaves_no_transcript_and_the_next_listen_works():
+    h = spec_harness()
+    h.stt.gate.clear()
+    h.engine.on_command(Listen(1, "command"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, SPEC_SILENCE))
+    assert h.stt.entered.wait(3)
+    h.engine.on_command(CancelListen(1))
+    h.stt.gate.set()
+    h.feed(frames(SILENCE, 20))
+    assert h.types() == ["speech_start"] and not h.engine.listening
+    h.engine.on_command(Listen(2, "command"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, 30))
+    assert h.types() == ["speech_start", "speech_start", "transcript"] and h.events[-1]["id"] == 2
+
+
+def test_a_confirm_listen_speculates_with_its_language_and_question():
+    h = spec_harness()
+    h.engine.on_command(Listen(5, "confirm", "es", "¿Cierro la calculadora?"))
+    h.feed(frames(SPEECH, 8) + frames(SILENCE, 30))
+    assert h.stt.calls == [{"mode": "confirm", "lang": "es", "context": "¿Cierro la calculadora?"}]
+    assert h.types() == ["speech_start", "transcript"]
+
+
+def test_a_failed_speculative_job_is_repeated_by_the_confirmed_end_and_reported_there():
+    stt = GatedStt()
+    stt.fail = SttError(ErrorCode.CUDA_OOM, "out of memory")
+    h = spec_harness(stt=stt)
+    h.engine.on_command(Listen(9, "command"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, SPEC_SILENCE))
+    assert wait_until(lambda: len(stt.calls) == 1)
+    assert h.types() == ["speech_start"], "a speculative failure is not reported by itself"
+    with pytest.raises(SidecarFatal) as info:
+        h.feed(frames(SILENCE, 20))
+    assert info.value.code == ErrorCode.CUDA_OOM and info.value.message_id == 9
+
+
+def test_a_force_end_during_a_pause_transcribes_what_was_said():
+    h = spec_harness()
+    h.engine.on_command(Listen(3, "command"))
+    h.feed(frames(SPEECH, 10) + frames(SILENCE, SPEC_SILENCE))
+    assert wait_until(lambda: len(h.stt.calls) == 1)
+    h.engine.on_command(ForceEnd(3))
+    assert h.types() == ["speech_start", "transcript"] and h.events[-1]["id"] == 3

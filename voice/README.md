@@ -134,7 +134,7 @@ about 20 ms and makes speech 20 % faster. `--no-robot-voice` plays the plain voi
 
 ### Latency switches (task 3.5, branch `perf/3f-voice-latency`)
 
-The optimizations below, each on by default and each with its own switch, so any one can be turned
+Five optimizations, each on by default and each with its own switch, so any one can be turned
 off if it misbehaves (add the option to `NIVA_VOICE_ARGS`). Savings are measured locally on
 2026-11-09, not yet over a full session; the real-microphone measurement is still the owner's.
 
@@ -144,6 +144,7 @@ off if it misbehaves (add the option to `NIVA_VOICE_ARGS`). Savings are measured
 | `--no-single-pass-stt` | Runs the Whisper encoder once and uses it both to choose es/en and to decode (faster-whisper 1.2.1 internals, isolated in `stt.single_pass_decode`; falls back to the public API and logs once if they change). | ~115-190 ms |
 | `--no-persistent-edge` | Keeps one edge-tts websocket open (`edge_ws.py`), connects it when a listen starts and when a transcript is about to go out, replaces it after 30 s idle, retries once on a fresh connection (a reused socket gets 1.5 s to answer; healthy first frames measured 0.13 to 2.1 s), then falls back to the one-connection-per-reply path with the full 2 s first-chunk budget, then Piper (preloaded in the background at startup). | ~310 ms |
 | `--no-tts-cache` | Caches the raw MP3 of short replies (120 characters or fewer) and plays repeats without the network (`tts_cache.py`). | a hit skips the network round trip: ~140 ms mean audible saving (the first PCM chunk is ready in ~10 ms, but the sound still waits for the output device) |
+| `--no-speculative-stt` | Starts Whisper in the background after 250 ms of the 500 ms end-of-speech silence (`--speculative-stt-ms`); the result is used only if the end is confirmed with the same audio, and nothing is sent before the end. | ~270 ms (synthetic clips: 903 to 629 ms) |
 
 Connection warm-up and privacy: with the persistent connection, the sidecar opens the TTS service
 connection (a websocket to Microsoft's edge-tts endpoint) as soon as a wake word is heard or a
@@ -151,6 +152,25 @@ listen starts, so the voice is ready when the reply comes. That happens even if 
 (a wake word that leads nowhere, a cancelled listen, an empty transcript); no text is sent over it
 until Niva speaks. `--no-persistent-edge` avoids the early connection (a connection is then opened
 only when a reply is spoken), and `--no-edge` never contacts the service at all.
+
+Speculative Whisper and mid-sentence pauses: when the user pauses and then keeps talking, the job
+started during the pause is thrown away and the whole utterance is transcribed at the real end. The
+cost was measured (real Silero + Whisper `small` on CUDA, 8 utterances per cell, 2026-11-09, with
+Niva running on the same GPU, so absolute numbers are noisy). Median / p95 ms from the end of
+speech to the transcript:
+
+| Case | off | 250 ms (default) | 350 ms |
+|---|---|---|---|
+| No pause | 968 / 4174 (outlier) | 649 / 909 | 789 / 1055 |
+| 300 ms pause, then speech | 1110 / 1402 | 700 / 1036 | 835 / 1118 |
+| 450 ms pause, then speech | 1099 / 1317 | 672 / 1078 | 908 / 1174 |
+| 380 ms pause, then 0.4 s of speech | 992 / 1190 | 553 / 873 | 759 / 1054 |
+
+The abandoned job costs nothing measurable: it runs while the user is still talking, and the real
+end waits for the GPU only if that job is somehow still running (it is not, by then). A higher
+threshold only gives up savings (350 ms is ~140 ms slower than 250 ms in every case), so 250 ms
+stays the default. `--no-speculative-stt` remains the switch if the extra Whisper runs during pauses
+are unwanted (they use the GPU while the user talks).
 
 Reply cache: `%LOCALAPPDATA%\Niva\tts-cache` (`NIVA_TTS_CACHE_DIR` or `--tts-cache-dir` change
 it), at most 50 MB, oldest files evicted first. It holds Niva's own replies only, never the

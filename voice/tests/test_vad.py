@@ -41,6 +41,18 @@ def test_end_waits_500_ms_of_silence_like_the_vad_spike():
     assert index == 5 + frames_needed  # first silent frame is index 5
 
 
+def test_the_running_silence_is_visible_until_it_reaches_the_end_value():
+    endpointer = Endpointer(Tunables())
+    seen = []
+    for prob in [0.9] * 4 + [0.05] * 17:
+        signal = endpointer.push(prob)
+        seen.append((endpointer.silence_frames, signal))
+    assert [s for s, _ in seen[:4]] == [None] * 4  # speech: no silence running
+    assert [s for s, _ in seen[4:20]] == list(range(16))  # 0 at the first silent frame, 15 just before the end
+    assert isinstance(seen[20][1], End) and seen[20][0] is None, "the end resets it"
+    assert endpointer.push(0.9) is None and endpointer.silence_frames is None
+
+
 def test_a_short_pause_does_not_end_the_utterance():
     pause = int(400 / FRAME_MS)
     probs = [0.9] * 5 + [0.05] * pause + [0.9] * 5 + [0.05] * 30

@@ -108,6 +108,14 @@ class Tunables:
     # Replies longer than this are never cached (search summaries, long answers).
     tts_cache_max_chars: int = 120
     tts_cache_max_mb: int = 50
+    # Speculative Whisper: once the closing silence reaches `speculative_stt_ms`
+    # (well before `end_silence_ms` confirms the end), transcribe what was said so
+    # far in the background. If the end is confirmed with the same audio, that
+    # result is used and the wait is shortened by up to ms of Whisper time; if
+    # speech resumes first, it is thrown away. Nothing is ever sent before the
+    # VAD end is confirmed. 0 or False disables it (`--no-speculative-stt`).
+    speculative_stt: bool = True
+    speculative_stt_ms: int = 250
 
     @property
     def pre_speech_frames(self) -> int:
@@ -116,6 +124,13 @@ class Tunables:
     @property
     def wake_preroll_frames(self) -> int:
         return max(0, -(-self.wake_preroll_ms // FRAME_MS))
+
+    @property
+    def speculative_stt_frames(self) -> int:
+        """Frames of closing silence that start a speculative transcription (0 = off)."""
+        if not self.speculative_stt or not 0 < self.speculative_stt_ms < self.end_silence_ms:
+            return 0
+        return max(1, -(-self.speculative_stt_ms // FRAME_MS))
 
     @property
     def trailing_pad_frames(self) -> int:
