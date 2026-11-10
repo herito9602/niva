@@ -1386,7 +1386,10 @@ mod tests {
         async fn restart_cannot_be_confirmed_by_voice_only_by_click() {
             let mut r = dev_rig();
             r.type_text("restart the pc");
-            assert_eq!(r.caption(), "Restart the PC?");
+            assert_eq!(
+                r.caption(),
+                "Restart the PC? Press Ctrl+Shift+Enter to confirm, or Esc to cancel."
+            );
             // No confirm listen is open for a click-only prompt.
             assert_eq!(r.core.state().listen_id, None);
             r.send(Event::Transcript {
@@ -1516,7 +1519,10 @@ mod tests {
             r.click(true);
             assert_eq!(r.caption(), "Locking the PC.");
             r.type_text("shut down the pc");
-            assert_eq!(r.caption(), "Shut down the PC?");
+            assert_eq!(
+                r.caption(),
+                "Shut down the PC? Press Ctrl+Shift+Enter to confirm, or Esc to cancel."
+            );
             r.click(false);
             assert_eq!(r.caption(), "Cancelled.");
         }

@@ -389,8 +389,12 @@ fn render_en(msg: &Msg) -> String {
         Msg::ConfirmPower { action } => match action {
             PowerKind::Lock => "Lock the PC?",
             PowerKind::Sleep => "Put the PC to sleep?",
-            PowerKind::Restart => "Restart the PC?",
-            PowerKind::Shutdown => "Shut down the PC?",
+            PowerKind::Restart => {
+                "Restart the PC? Press Ctrl+Shift+Enter to confirm, or Esc to cancel."
+            }
+            PowerKind::Shutdown => {
+                "Shut down the PC? Press Ctrl+Shift+Enter to confirm, or Esc to cancel."
+            }
         }
         .into(),
         Msg::PowerDone { action } => match action {
@@ -481,8 +485,12 @@ fn render_es(msg: &Msg) -> String {
         Msg::ConfirmPower { action } => match action {
             PowerKind::Lock => "¿Bloquear el PC?",
             PowerKind::Sleep => "¿Suspender el PC?",
-            PowerKind::Restart => "¿Reiniciar el PC?",
-            PowerKind::Shutdown => "¿Apagar el PC?",
+            PowerKind::Restart => {
+                "¿Reiniciar el PC? Pulsa Ctrl+Shift+Enter para confirmar, o Esc para cancelar."
+            }
+            PowerKind::Shutdown => {
+                "¿Apagar el PC? Pulsa Ctrl+Shift+Enter para confirmar, o Esc para cancelar."
+            }
         }
         .into(),
         Msg::PowerDone { action } => match action {

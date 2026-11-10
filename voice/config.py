@@ -77,10 +77,10 @@ class Tunables:
     command_tokens_per_s: float = 10.0
     command_min_new_tokens: int = 24
     command_max_new_tokens: int = 224
-    # Niva's voice is a cute little robot (owner's choice, 2026-11-09): every
-    # synthesized reply goes through the effect in voice_fx.py. False speaks the
-    # plain voices (`--no-robot-voice`).
-    robot_voice: bool = True
+    # The robot effect in voice_fx.py (owner's choice on 2026-11-09, dropped on
+    # 2026-11-10 when the robot mascot gave way to the "living PC" notch). Off by
+    # default; `--robot-voice` turns it back on.
+    robot_voice: bool = False
     # Open the output device while the reply is still being synthesized, so the
     # first audio does not wait for the device (MME open measured at ~294 ms per
     # utterance, 2026-11-09). False opens it at the first audio, as before

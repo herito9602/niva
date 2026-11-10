@@ -41,7 +41,7 @@ fn cid(request: u64) -> ConfirmationId {
 fn click(id: u64) -> ConfirmationAnswer {
     ConfirmationAnswer {
         confirmation_id: cid(id),
-        channel: Channel::Click,
+        channel: Channel::Physical,
         accepted: true,
     }
 }
@@ -699,6 +699,53 @@ fn a_confirmed_power_action_runs_exactly_the_confirmed_kind() {
 // Model bypass and "risky never runs without Approved"
 
 #[test]
+fn physical_channel_builds_accept_for_click_only() {
+    // The chord (and the debug button) is a physical input: it confirms
+    // restart and shutdown.
+    for action in ["restart", "shutdown"] {
+        let request = risky(&power_call(action), &[], 5);
+        let answer = ConfirmationAnswer {
+            confirmation_id: cid(5),
+            channel: Channel::Physical,
+            accepted: true,
+        };
+        assert!(matches!(
+            SafetyGate::new().approve(request, answer),
+            Ok(Approval::Power(_))
+        ));
+    }
+}
+
+#[test]
+fn transcript_channel_never_builds_accept() {
+    // A spoken answer (ambient speech included) never confirms restart or
+    // shutdown, whatever the words.
+    for action in ["restart", "shutdown"] {
+        let request = risky(&power_call(action), &[], 5);
+        assert_eq!(
+            SafetyGate::new().approve(request, voice(5)),
+            Err(ApprovalError::ClickRequired)
+        );
+    }
+}
+
+#[test]
+fn model_bypass_still_needs_confirmation() {
+    // Model output can only produce a request; without an accepted answer no
+    // `Approval` exists, so the port is never reached.
+    let gate = SafetyGate::new();
+    let mut forged = power_call("shutdown");
+    forged.args.insert("confirmed".into(), ArgValue::Bool(true));
+    assert!(gate.validate(&forged, &[], 5, 0).is_err());
+    let request = risky(&power_call("shutdown"), &[], 5);
+    let denied = ConfirmationAnswer {
+        accepted: false,
+        ..click(5)
+    };
+    assert_eq!(gate.approve(request, denied), Err(ApprovalError::NotConfirmed));
+}
+
+#[test]
 fn a_model_claiming_confirmation_still_only_gets_a_pending_request() {
     // Spec "Model bypass attempt". The call carrying a "confirmed" flag is an
     // unknown argument; the plain call is only a request. Neither touches the PC.
@@ -891,7 +938,7 @@ fn two_risky_calls_of_one_response_never_share_a_confirmation_id() {
     // The answer to the first confirmation cannot approve the second call.
     let answer_to_first = ConfirmationAnswer {
         confirmation_id: first.confirmation_id(),
-        channel: Channel::Click,
+        channel: Channel::Physical,
         accepted: true,
     };
     assert_eq!(

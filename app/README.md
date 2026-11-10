@@ -20,4 +20,5 @@ command to try it by voice are in `../voice/README.md` ("Run it with the Niva ho
 ## Use
 
 - Ctrl+Shift+Space toggles the island (starts hidden). Tray icon: "Show / hide island", "Type a command", "Restart voice", "Quit"; double-click shows it. The tooltip says what the voice is doing.
+- While a confirmation is on screen, two more global shortcuts exist, and only then: Esc cancels it, and Ctrl+Shift+Enter confirms a restart or shutdown (voice never does). Ctrl+Shift+Enter works only after the prompt has been spoken, and not in the first half second after that. Ctrl+Shift+Space cancels too. If Ctrl+Shift+Enter cannot be registered, the request is cancelled and the tray tooltip says "Confirm key unavailable".
 - Click the pill to toggle the "thinking" state.

@@ -36,3 +36,8 @@ export function describeView(prev: ViewPayload | null, next: ViewPayload): strin
   }
   return null;
 }
+
+/** Whole seconds until `endsAt` (epoch ms), never below zero. */
+export function countdownLeft(endsAt: number, nowMs: number): number {
+  return Math.max(0, Math.ceil((endsAt - nowMs) / 1000));
+}

@@ -750,6 +750,7 @@ mod tests {
                 confirm_label: "Confirm",
                 cancel_label: "Cancel",
                 expires_at: None,
+                chord: false,
             }),
             reminder: None,
             countdown: None,

@@ -1,6 +1,7 @@
 pub mod adapters;
 mod click_through;
 mod confirm_buttons;
+mod confirm_keys;
 mod cursor;
 #[cfg(debug_assertions)]
 mod debug;
@@ -45,6 +46,9 @@ use crate::adapters::ollama::{OllamaProvider, keeper};
 use crate::adapters::voice_sidecar::{HostClock, ListenModes, Status, Voice};
 use crate::click_through::{HitTesting, IslandWindow, prepare_island, show_island_window};
 use crate::confirm_buttons::{ConfirmGate, GateUi};
+use crate::confirm_keys::{
+    ConfirmKeys, Key, KeyState, KeysUi, ShortcutRegistry, TooltipPort, key_of, shortcut,
+};
 use crate::cursor::CursorPoller;
 use crate::dispatcher::{Core, Input, InputTx};
 use crate::effect_runner::{EffectRunner, EventSink, Host};
@@ -205,6 +209,48 @@ fn build_requests(
 /// The id of the tray icon, so the voice status can reach its tooltip.
 const TRAY_ID: &str = "niva-tray";
 
+/// Registers the confirmation keys with the global-shortcut plugin. The plugin
+/// sends every register and unregister to the main thread itself and waits for
+/// it (checked in tauri-plugin-global-shortcut 2.4.1), so it is called from
+/// any thread as it is, with no `run_on_main_thread` of ours around it.
+struct PluginKeys(AppHandle);
+
+impl ShortcutRegistry for PluginKeys {
+    fn register(&self, key: Key) -> Result<(), String> {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        self.0
+            .global_shortcut()
+            .register(shortcut(key))
+            .map_err(|err| err.to_string())
+    }
+
+    fn unregister(&self, key: Key) {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        let _ = self.0.global_shortcut().unregister(shortcut(key));
+    }
+}
+
+/// The tray tooltip, set on the main thread like the voice status.
+struct TrayTooltip(AppHandle);
+
+impl TooltipPort for TrayTooltip {
+    fn set_tooltip(&self, text: &str) {
+        let (app, text) = (self.0.clone(), text.to_owned());
+        let _ = self.0.run_on_main_thread(move || {
+            if let Some(tray) = app.tray_by_id(TRAY_ID) {
+                let _ = tray.set_tooltip(Some(text));
+            }
+        });
+    }
+}
+
+/// Quit: let go of the confirmation keys, so the OS keeps no shortcut of ours.
+fn release_confirm_keys(app: &AppHandle) {
+    if let Some(keys) = app.try_state::<Arc<ConfirmKeys>>() {
+        keys.quit();
+    }
+}
+
 /// Starts the voice supervisor (task 3.4) in debug and release alike. It never
 /// fails the app: with no sidecar the voice stays down and the text window is
 /// the way in. Its events enter the dispatcher like any other, and its status
@@ -272,13 +318,23 @@ fn send_event(app: &AppHandle, event: Event) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
+    let toggle_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
 
     let builder = tauri::Builder::default().plugin(
         tauri_plugin_global_shortcut::Builder::new()
             .with_handler(move |app, sc, event| {
-                if sc == &shortcut && event.state() == ShortcutState::Pressed {
+                if sc == &toggle_shortcut && event.state() == ShortcutState::Pressed {
                     send_event(app, Event::Shortcut);
+                } else if let Some(key) = key_of(sc) {
+                    // The confirmation keys go only through `ConfirmKeys`, which
+                    // checks what is pending and builds the answer itself.
+                    if let Some(keys) = app.try_state::<Arc<ConfirmKeys>>() {
+                        let state = match event.state() {
+                            ShortcutState::Pressed => KeyState::Pressed,
+                            ShortcutState::Released => KeyState::Released,
+                        };
+                        keys.press(key, state);
+                    }
                 }
             })
             .build(),
@@ -353,15 +409,37 @@ pub fn run() {
             #[cfg(windows)]
             let runner =
                 runner.with_activity(Arc::new(adapters::windows_activity::WindowsActivity));
+            // The confirmation keys: Esc and Ctrl+Shift+Enter, registered only
+            // while a confirmation is on screen. Their answers re-enter through
+            // the same queue as every other event.
+            let keys = Arc::new(ConfirmKeys::new(
+                Arc::new(PluginKeys(app.handle().clone())),
+                Arc::new({
+                    let tx = tx.clone();
+                    move |event| {
+                        let _ = tx.send(Input::Event(event));
+                    }
+                }),
+                Arc::new(TrayTooltip(app.handle().clone())),
+                {
+                    let started = Instant::now();
+                    Arc::new(move || started.elapsed().as_millis() as u64)
+                },
+                Arc::new(|line| eprintln!("{line}")),
+            ));
+            app.manage(keys.clone());
             let mut core = Core::new(
                 runner,
-                // The gate sees every view before the island does.
-                Arc::new(GateUi::new(
-                    Arc::new(TauriUiAdapter::new(
-                        Arc::new(app.handle().clone()),
-                        cfg!(debug_assertions),
+                // The keys and the gate see every view before the island does.
+                Arc::new(KeysUi::new(
+                    Arc::new(GateUi::new(
+                        Arc::new(TauriUiAdapter::new(
+                            Arc::new(app.handle().clone()),
+                            cfg!(debug_assertions),
+                        )),
+                        gate.clone(),
                     )),
-                    gate.clone(),
+                    keys,
                 )),
                 Box::new(now_ms),
             );
@@ -372,7 +450,7 @@ pub fn run() {
 
             // A taken shortcut must not abort startup: the tray toggle remains.
             if let ShortcutStatus::Unavailable(reason) =
-                shortcut_status(app.global_shortcut().register(shortcut))
+                shortcut_status(app.global_shortcut().register(toggle_shortcut))
             {
                 eprintln!("[niva] global shortcut unavailable, use the tray: {reason}");
             }
@@ -406,7 +484,10 @@ pub fn run() {
                             voice.restart();
                         }
                     }
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        release_confirm_keys(app);
+                        app.exit(0);
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -430,10 +511,11 @@ pub fn run() {
             // Stop the sidecar before the process ends: it holds the microphone.
             // (If the app is killed instead, the job object around the sidecar
             // ends it; see `adapters::voice_sidecar::process`.)
-            if matches!(event, RunEvent::Exit)
-                && let Some(voice) = app.try_state::<Voice>()
-            {
-                voice.shutdown();
+            if matches!(event, RunEvent::Exit) {
+                release_confirm_keys(app);
+                if let Some(voice) = app.try_state::<Voice>() {
+                    voice.shutdown();
+                }
             }
         });
 }
