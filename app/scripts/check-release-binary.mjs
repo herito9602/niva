@@ -28,9 +28,14 @@ const needles = [
   // The dry-run search's canned results (the release searches through Tavily).
   "Canned result",
   "niva://dev-log",
-  // The debug window and its Accept path. Accept and Reject may only come from
-  // a native click or a spoken answer in a release build; the debug window's
-  // Confirm button is a Channel::Click and is safe only over the dry-run PC.
+  // The click channel is gone: the island calls no command, so neither of its
+  // former ones may be in the binary.
+  "answer_confirmation",
+  "report_confirm_buttons",
+  // The debug window and its Accept path. Accept may only come from the
+  // confirmation chord (or a spoken answer for the actions voice may answer) in
+  // a release build; the debug window's Confirm button is a Channel::Physical
+  // answer and is safe only over the dry-run PC.
   // These are the window's title and URL, its prompt text and the serde names
   // of its debug-only messages.
   "Niva debug",
@@ -48,10 +53,9 @@ if (found.length > 0) {
   console.error(`release binary ${exe} contains: ${found.join(", ")}`);
   process.exit(1);
 }
-// The commands of the release webviews must be in it: without submit_text the
-// tray entry would open a window that cannot send anything; without the island's
-// two the confirmation buttons would be dead (PR 2d-b).
-const required = ["submit_text", "answer_confirmation", "report_confirm_buttons"];
+// The text window's command must be in it: without submit_text the tray entry
+// would open a window that cannot send anything.
+const required = ["submit_text"];
 const missing = required.filter((n) => !text.includes(n));
 if (missing.length > 0) {
   console.error(`release binary ${exe} is missing: ${missing.join(", ")}`);

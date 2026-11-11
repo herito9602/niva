@@ -173,5 +173,4 @@ fn the_stylesheet_plays_the_exit_and_the_fade_the_host_waits_for() {
 #[test]
 fn arm_ms_is_500() {
     assert_eq!(crate::confirm_keys::ARM_MS, 500);
-    assert_eq!(crate::confirm_buttons::ARM_MS, 500);
 }

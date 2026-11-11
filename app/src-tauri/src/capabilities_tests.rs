@@ -59,22 +59,39 @@ fn the_text_window_capability_can_only_submit_text() {
     );
 }
 
-/// The island may call exactly two commands: the answer to a confirmation
-/// (id and accept or reject, nothing else) and the report of where its buttons
-/// are (numbers only). It gets no window, event-emit or shortcut permission;
-/// the click-through toggle stays in Rust. It is a separate capability from
-/// `default.json` so that file stays "listen only".
+/// The island webview only listens: it calls no command at all, so it holds no
+/// app permission (neither `allow-*` nor a window, emit or shortcut one). The
+/// click channel that needed two commands is gone.
 #[test]
-fn the_island_actions_capability_holds_only_the_two_narrow_commands() {
-    let actions = load(include_str!("../capabilities/island-actions.json"));
-    assert_eq!(actions["windows"], serde_json::json!([ISLAND_LABEL]));
-    assert_eq!(
-        permissions(&actions),
-        vec!["allow-answer-confirmation", "allow-report-confirm-buttons"]
-    );
+fn island_capability_grants_no_commands() {
+    let capabilities = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+    for entry in std::fs::read_dir(capabilities).expect("capabilities dir") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_some_and(|e| e == "json") {
+            let capability = load(&std::fs::read_to_string(&path).expect("readable"));
+            let on_island = capability["windows"]
+                .as_array()
+                .is_some_and(|w| w.iter().any(|l| l == ISLAND_LABEL));
+            if on_island {
+                assert!(
+                    permissions(&capability)
+                        .iter()
+                        .all(|p| p.starts_with("core:event:")),
+                    "{path:?} gives the island more than event listening"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn no_island_actions_capability_or_permission_files() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(!root.join("capabilities/island-actions.json").exists());
     assert!(
-        actions.get("remote").is_none() && actions.get("webviews").is_none(),
-        "local content of the one window only"
+        !root
+            .join("permissions-release/island-actions.toml")
+            .exists()
     );
 }
 
@@ -111,20 +128,13 @@ fn the_release_permission_files_define_only_the_window_commands() {
     }
     assert_eq!(
         files.keys().map(String::as_str).collect::<Vec<_>>(),
-        vec!["island-actions.toml", "submit-text.toml"]
+        vec!["submit-text.toml"]
     );
 
     let text = &files["submit-text.toml"];
     assert!(text.contains("identifier = \"allow-submit-text\""));
     assert!(text.contains("commands.allow = [\"submit_text\"]"));
     assert_eq!(text.matches("[[permission]]").count(), 1);
-
-    let island = &files["island-actions.toml"];
-    assert!(island.contains("identifier = \"allow-answer-confirmation\""));
-    assert!(island.contains("commands.allow = [\"answer_confirmation\"]"));
-    assert!(island.contains("identifier = \"allow-report-confirm-buttons\""));
-    assert!(island.contains("commands.allow = [\"report_confirm_buttons\"]"));
-    assert_eq!(island.matches("[[permission]]").count(), 2);
 
     for (name, file) in &files {
         assert!(
@@ -164,8 +174,8 @@ fn the_release_capability_directory_holds_no_debug_permission() {
         }
     }
     assert_eq!(
-        seen, 3,
-        "the island, the island actions and the text window capabilities are the release set"
+        seen, 2,
+        "the island and the text window capabilities are the release set"
     );
 }
 
@@ -176,13 +186,11 @@ fn the_build_script_gates_the_debug_command_and_capabilities_on_debug_assertions
     let build = include_str!("../build.rs");
     assert!(build.contains("CARGO_CFG_DEBUG_ASSERTIONS"));
     // Debug builds list every command so tauri-build generates its permission.
-    for command in [
-        "debug_dispatch",
-        "submit_text",
-        "answer_confirmation",
-        "report_confirm_buttons",
-    ] {
+    for command in ["debug_dispatch", "submit_text"] {
         assert!(build.contains(command), "{command} missing from build.rs");
+    }
+    for gone in ["answer_confirmation", "report_confirm_buttons"] {
+        assert!(!build.contains(gone), "{gone} is still in build.rs");
     }
     // Lines of the `else` (release) branch: after `} else {` up to the `    }`.
     let release_branch: Vec<&str> = build

@@ -15,7 +15,6 @@ use tauri::{AppHandle, Emitter};
 
 pub const VIEW_EVENT: &str = "niva://view";
 pub const ISLAND_EVENT: &str = "niva://island";
-pub const CURSOR_EVENT: &str = "niva://cursor";
 
 pub const ISLAND_LABEL: &str = "island";
 pub const DEBUG_LABEL: &str = "debug";
@@ -900,7 +899,6 @@ mod tests {
         assert_eq!(event_targets(VIEW_EVENT, false), vec!["island"]);
         assert_eq!(event_targets(VIEW_EVENT, true), vec!["island", "debug"]);
         assert_eq!(event_targets(ISLAND_EVENT, true), vec!["island"]);
-        assert_eq!(event_targets(CURSOR_EVENT, true), vec!["island"]);
     }
 
     #[test]

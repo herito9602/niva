@@ -2,8 +2,9 @@
 //!
 //! The model is the real Ollama (kept warm by the keeper) and the PC is the
 //! Windows adapter of every action. A risky plan (`close_app`, `power_action`)
-//! asks for a confirmation like in debug, and the island's Confirm and Cancel
-//! buttons answer it (`confirm_buttons.rs`); the safety gate (`Approved<T>`)
+//! asks for a confirmation like in debug, and the confirmation keys answer it
+//! (`confirm_keys.rs`: Esc rejects, the Ctrl+Shift+Enter chord accepts a restart
+//! or a shutdown, voice answers the rest); the safety gate (`Approved<T>`)
 //! decides what may run. When Ollama is down every command gets the "can't think
 //! right now" reply; there is no fallback model. Nothing here knows the dev LLM
 //! or the dry-run PC.
