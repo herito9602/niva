@@ -7,12 +7,12 @@ A small black notch at the top center of the screen whose mirrored spike wavefor
 ## ADDED Requirements
 
 ### Requirement: Notch geometry and waveform
-The notch MUST be a black shape of 118x30 px, flush with the top edge of the screen, with rounded bottom corners of about 14 px. Inside it MUST draw one solid shape, mirrored around the horizontal center line, spanning 7% to 93% of the notch width with flat tails to about 2.8% and 97.2% on the center line, whose top edge is a polyline of 30 points with sharp (mitered) corners. The notch MUST be built from drawn shapes only (no image assets).
+The notch MUST be a black shape of 210x36 px (owner decision 2026-11-11: wide enough to notice that the assistant peeked out when called), flush with the top edge of the screen, with rounded bottom corners of about 17 px. Inside it MUST draw one solid shape, mirrored around the horizontal center line, spanning 7% to 93% of the notch width with flat tails to about 2.8% and 97.2% on the center line, whose top edge is a polyline of 30 points with sharp (mitered) corners. The notch MUST be built from drawn shapes only (no image assets).
 
 #### Scenario: Notch dimensions
 - GIVEN the notch is shown in any state
 - WHEN its rendered size is measured
-- THEN it is 118x30 px with one waveform canvas, and its top edge is at y = 0 of the window
+- THEN it is 210x36 px with one waveform canvas, and its top edge is at y = 0 of the window
 
 #### Scenario: Silence
 - GIVEN the level is 0

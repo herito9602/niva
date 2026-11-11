@@ -2,8 +2,8 @@
 // to tie its window hide delay to the exit animation, so keep the constants plain
 // numeric literals.
 
-export const NOTCH_W = 118;
-export const NOTCH_H = 30;
+export const NOTCH_W = 210;
+export const NOTCH_H = 36;
 /** Drop-in: translateY(-100%) to 0 with an overshoot curve. */
 export const NOTCH_IN_MS = 320;
 /** Drop-out: ease-in back above the screen edge. */

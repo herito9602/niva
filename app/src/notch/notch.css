@@ -1,4 +1,4 @@
-/* The window is 200x70 and ignores the mouse everywhere (the host sets it). The
+/* The window is 290x76 and ignores the mouse everywhere (the host sets it). The
    notch hangs from its top edge, centered; the room on the sides and below is for
    the spring overshoot. */
 .stage {
@@ -15,10 +15,10 @@
 .notch {
   position: absolute;
   top: 0;
-  left: calc(50% - 59px); /* half of NOTCH_W */
+  left: calc(50% - 105px); /* half of NOTCH_W */
   box-sizing: border-box;
   background: #000;
-  border-radius: 0 0 14px 14px;
+  border-radius: 0 0 17px 17px;
   will-change: transform;
 }
 .notch.hidden { visibility: hidden; transform: translateY(-100%); }

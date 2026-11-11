@@ -1,6 +1,6 @@
 //! Click-through of the island window.
 //!
-//! The island window (200x70) is larger than the notch (118x30; room for the
+//! The island window (290x76) is larger than the notch (210x36; room for the
 //! spring overshoot), so most of it is empty and transparent. It must never
 //! block clicks to the apps underneath.
 //!

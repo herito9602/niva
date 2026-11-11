@@ -57,17 +57,17 @@ fn island_window() -> Value {
 
 #[test]
 fn the_ts_constants_are_readable() {
-    assert_eq!(ts_const(MOTION_TS, "NOTCH_W"), 118.0);
-    assert_eq!(ts_const(MOTION_TS, "NOTCH_H"), 30.0);
+    assert_eq!(ts_const(MOTION_TS, "NOTCH_W"), 210.0);
+    assert_eq!(ts_const(MOTION_TS, "NOTCH_H"), 36.0);
     assert!(ts_const(MOTION_TS, "NOTCH_OUT_MS") > 0.0);
 }
 
 #[test]
-fn island_window_is_200x70_transparent_non_focusable() {
+fn island_window_is_290x76_transparent_non_focusable() {
     let window = island_window();
     assert_eq!(window["label"], "island");
-    assert_eq!(window["width"].as_f64(), Some(200.0));
-    assert_eq!(window["height"].as_f64(), Some(70.0));
+    assert_eq!(window["width"].as_f64(), Some(290.0));
+    assert_eq!(window["height"].as_f64(), Some(76.0));
     assert_eq!(window["transparent"], true);
     assert_eq!(window["focusable"], false);
     assert_eq!(window["focus"], false);

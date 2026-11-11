@@ -8,7 +8,7 @@ Replace "a robot lives in my PC" with "my PC is alive". When Niva is summoned, a
 
 | # | Decision |
 |---|---|
-| Look | 118x30 px notch, ~14 px bottom corners, one solid mirrored spike waveform (superseded the 7-bar prototype, see "Visual rework" below), spring drop-in. Idle hidden. |
+| Look | 210x36 px notch (widened from 118x30 by owner decision 2026-11-11, see "Widened notch" below), ~17 px bottom corners, one solid mirrored spike waveform (superseded the 7-bar prototype, see "Visual rework" below), spring drop-in. Idle hidden. |
 | States | Color only tells states apart: listening #378ADD (calm breathing line, not level-driven); thinking #7F77DD; speaking #5DCAA5 (voice level); confirm #EF9F27; success #97C459, then hide; error #E24B4A, then hide; reminder #F0997B. Only speaking is level-driven (Niva's voice); every other state, listening included, is a calm, barely breathing flat line. |
 | Confirm | Voice yes/no as today; timeout cancels; Esc cancels (global shortcut, registered only while a confirmation is pending); Ctrl+Shift+Space still rejects |
 | D1 | Restart/shutdown: Ctrl+Shift+Enter within the window replaces the click (registered only while pending). Speech never confirms them. |
@@ -21,7 +21,11 @@ Replace "a robot lives in my PC" with "my PC is alive". When Niva is summoned, a
 
 ## Visual rework (2026-11-10)
 
-After seeing the 7-bar notch live, the owner rejected the bars and chose, from chat prototypes, "mirrored spikes, solid": one solid shape mirrored around the horizontal center line whose spikes move with the level. This supersedes the 7-bar decisions above and in the first version of the design (L1, L2, the motion and silhouette columns). Only the color distinguishes states, by explicit owner choice; the requirement for a non-color motion/silhouette cue per state is removed. Voice and the hidden status text remain the non-color channels. Geometry (118x30, window 200x70), drop-in/out, click-through, levels wire (7 bands) and the 150 ms fallback are unchanged.
+After seeing the 7-bar notch live, the owner rejected the bars and chose, from chat prototypes, "mirrored spikes, solid": one solid shape mirrored around the horizontal center line whose spikes move with the level. This supersedes the 7-bar decisions above and in the first version of the design (L1, L2, the motion and silhouette columns). Only the color distinguishes states, by explicit owner choice; the requirement for a non-color motion/silhouette cue per state is removed. Voice and the hidden status text remain the non-color channels. Geometry (118x30, window 200x70; widened to 210x36 and 290x76 on 2026-11-11), drop-in/out, click-through, levels wire (7 bands) and the 150 ms fallback are unchanged.
+
+## Widened notch (2026-11-11)
+
+Owner decision: make the notch wider "so it's noticeable that the assistant peeked out when called". Chosen size 210x36 CSS px (was 118x30), bottom corner radius ~0.47 x height (17 px). The waveform algorithm is unchanged (N=30, envelope, amplitudes relative to the 236x60 drawing space, which is now scaled non-uniformly to the notch). The window grows to 290x76 so the 40 px side and bottom room of design L4 still hold.
 
 ## Level source decision (2026-11-10, after the live test)
 
@@ -75,7 +79,7 @@ Revert in reverse slice order. Restart/shutdown buttons and `confirm_buttons.rs`
 
 ## Success Criteria
 
-- [ ] Notch is 118x30 px; window ~200x70, non-focusable, transparent
+- [ ] Notch is 210x36 px; window ~290x76, non-focusable, transparent
 - [ ] The waveform tracks level on the onset (rise) only: mean lag 50 ms or less and no sample above 100 ms (mic and TTS, built-in or wired output; Bluetooth excluded). The decay is intentionally slower and unbounded
 - [ ] Reduced motion shows a static waveform (no random re-targeting)
 - [ ] Tests: Esc and Ctrl+Shift+Enter registered only while pending, unregistered on confirm, reject, timeout and quit
