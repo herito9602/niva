@@ -8,8 +8,8 @@
 //!
 //! One thread owns the output device: the device handle is not `Send` on every
 //! platform and opening it can take a moment, so the port only sends commands
-//! and never blocks. The device is opened at the first cue, and re-opened at
-//! the next one if it failed (a headset plugged in later). Without any output
+//! and never blocks. The device is opened at startup in the background (so
+//! the first cue is not late), and re-opened at the next cue if that failed (a headset plugged in later). Without any output
 //! device a cue is skipped and its `done` still runs, so a reminder alert can
 //! end.
 
@@ -119,38 +119,89 @@ enum Cmd {
     Stop,
 }
 
+/// A playing cue, as far as the audio thread needs to know.
+trait Playback {
+    fn is_done(&self) -> bool;
+    fn stop(&self);
+}
+
+/// An opened output device.
+trait Output {
+    fn play(&self, samples: Vec<f32>) -> Box<dyn Playback>;
+}
+
+/// Opens the output device; the seam that lets a test count the opens.
+type Opener = Box<dyn FnMut() -> Result<Box<dyn Output>, String> + Send>;
+
+struct RodioPlayback(Player);
+
+impl Playback for RodioPlayback {
+    fn is_done(&self) -> bool {
+        self.0.empty()
+    }
+    fn stop(&self) {
+        self.0.stop();
+    }
+}
+
+struct RodioOutput(MixerDeviceSink);
+
+impl Output for RodioOutput {
+    fn play(&self, samples: Vec<f32>) -> Box<dyn Playback> {
+        let player = Player::connect_new(self.0.mixer());
+        if let (Some(channels), Some(rate)) = (NonZero::new(1), NonZero::new(SAMPLE_RATE)) {
+            player.append(SamplesBuffer::new(channels, rate, samples));
+        }
+        Box::new(RodioPlayback(player))
+    }
+}
+
+fn open_default() -> Result<Box<dyn Output>, String> {
+    let mut sink = DeviceSinkBuilder::open_default_sink().map_err(|err| err.to_string())?;
+    sink.log_on_drop(false);
+    Ok(Box::new(RodioOutput(sink)))
+}
+
 pub struct RodioCue {
     tx: Mutex<Sender<Cmd>>,
 }
 
 impl RodioCue {
     pub fn new() -> Self {
+        Self::with_opener(Box::new(open_default))
+    }
+
+    /// The audio thread opens the device right away, in the background, so the
+    /// first cue is not late; if that fails it tries again at the next cue.
+    fn with_opener(mut open: Opener) -> Self {
         let (tx, rx) = channel::<Cmd>();
         let spawned = thread::Builder::new()
             .name("niva-audio-cue".into())
             .spawn(move || {
-                let mut device: Option<MixerDeviceSink> = None;
+                let mut device: Option<Box<dyn Output>> = None;
+                let mut logged = false;
+                let mut try_open = |device: &mut Option<Box<dyn Output>>| {
+                    if device.is_some() {
+                        return;
+                    }
+                    match open() {
+                        Ok(out) => *device = Some(out),
+                        Err(err) if !logged => {
+                            logged = true;
+                            eprintln!("[niva-audio] no output device: {err}");
+                        }
+                        Err(_) => {}
+                    }
+                };
+                try_open(&mut device);
                 while let Ok(cmd) = rx.recv() {
                     let Cmd::Play(tones, done) = cmd else {
                         continue; // nothing is playing
                     };
-                    if device.is_none() {
-                        match DeviceSinkBuilder::open_default_sink() {
-                            Ok(mut sink) => {
-                                sink.log_on_drop(false);
-                                device = Some(sink);
-                            }
-                            Err(err) => eprintln!("[niva-audio] no output device: {err}"),
-                        }
-                    }
-                    if let Some(sink) = &device {
-                        let player = Player::connect_new(sink.mixer());
-                        if let (Some(channels), Some(rate)) =
-                            (NonZero::new(1), NonZero::new(SAMPLE_RATE))
-                        {
-                            player.append(SamplesBuffer::new(channels, rate, render(tones)));
-                        }
-                        while !player.empty() {
+                    try_open(&mut device);
+                    if let Some(out) = &device {
+                        let player = out.play(render(tones));
+                        while !player.is_done() {
                             match rx.recv_timeout(Duration::from_millis(20)) {
                                 Ok(Cmd::Stop) => {
                                     player.stop();
@@ -314,5 +365,60 @@ mod tests {
         assert!(done_rx.try_recv().is_ok());
         assert_eq!(cue.listening_cue_len(), Duration::from_millis(240));
         cue.stop();
+    }
+
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FakePlayback;
+    impl Playback for FakePlayback {
+        fn is_done(&self) -> bool {
+            true
+        }
+        fn stop(&self) {}
+    }
+    struct FakeOutput;
+    impl Output for FakeOutput {
+        fn play(&self, _samples: Vec<f32>) -> Box<dyn Playback> {
+            Box::new(FakePlayback)
+        }
+    }
+
+    fn wait_done(cue: &RodioCue) {
+        let (done_tx, done_rx) = channel();
+        cue.listening_cue(Box::new(move || {
+            let _ = done_tx.send(());
+        }));
+        assert!(done_rx.recv_timeout(Duration::from_secs(2)).is_ok());
+    }
+
+    #[test]
+    fn the_device_is_opened_at_startup_and_not_again_on_the_first_cue() {
+        let opens = Arc::new(AtomicUsize::new(0));
+        let counter = opens.clone();
+        let cue = RodioCue::with_opener(Box::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(FakeOutput) as Box<dyn Output>)
+        }));
+        // Before any cue is played.
+        let start = std::time::Instant::now();
+        while opens.load(Ordering::SeqCst) == 0 && start.elapsed() < Duration::from_secs(2) {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        wait_done(&cue);
+        wait_done(&cue);
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn without_an_output_device_the_cue_is_skipped_and_done_still_runs() {
+        let cue = RodioCue::with_opener(Box::new(|| Err("no device".to_string())));
+        wait_done(&cue);
+        let (done_tx, done_rx) = channel();
+        cue.chime(Box::new(move || {
+            let _ = done_tx.send(());
+        }));
+        assert!(done_rx.recv_timeout(Duration::from_secs(2)).is_ok());
     }
 }
