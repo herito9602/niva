@@ -11,6 +11,7 @@ mod dispatcher;
 mod effect_runner;
 #[cfg(feature = "eval")]
 pub mod eval;
+mod fullscreen;
 mod latency;
 #[cfg(windows)]
 pub mod release;
@@ -421,6 +422,10 @@ pub fn run() {
             #[cfg(windows)]
             let runner =
                 runner.with_activity(Arc::new(adapters::windows_activity::WindowsActivity));
+            // Over an exclusive fullscreen game the notch cannot be drawn: listening
+            // is announced by the host chime instead.
+            #[cfg(windows)]
+            let runner = runner.with_fullscreen(Arc::new(fullscreen::WindowsFullscreen));
             // Debug builds only: what Niva says goes to the debug window's log. The
             // notch draws no text, and release builds log none.
             #[cfg(debug_assertions)]

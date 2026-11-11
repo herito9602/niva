@@ -721,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn speaking_overrides_the_reminder_pulse_in_the_view() {
+    fn speaking_overrides_reminder_pulse() {
         let mut sim = Sim::new();
         let events = sim.send(Event::ReminderDue {
             count: 1,

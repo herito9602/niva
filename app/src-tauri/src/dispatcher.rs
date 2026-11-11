@@ -236,6 +236,30 @@ mod tests {
         requests: impl FnOnce(EventSink) -> Arc<dyn Requests>,
         activity: Option<Arc<dyn niva_core::ports::InputActivity>>,
     ) -> Rig {
+        rig_parts(debug_build, requests, activity, None)
+    }
+
+    /// The host's own sounds, counted: every chime the runner asks for.
+    #[derive(Default)]
+    struct CountingCue {
+        chimes: Mutex<u32>,
+    }
+
+    impl niva_core::ports::AudioCue for CountingCue {
+        fn chime(&self, done: Box<dyn FnOnce() + Send>) {
+            *self.chimes.lock().unwrap() += 1;
+            done();
+        }
+        fn listening_cue(&self) {}
+        fn stop(&self) {}
+    }
+
+    fn rig_parts(
+        debug_build: bool,
+        requests: impl FnOnce(EventSink) -> Arc<dyn Requests>,
+        activity: Option<Arc<dyn niva_core::ports::InputActivity>>,
+        cue: Option<Arc<dyn niva_core::ports::AudioCue>>,
+    ) -> Rig {
         let (tx, rx) = mpsc::unbounded_channel();
         let host = Arc::new(FakeHost::default());
         let ui = Arc::new(FakeUi::default());
@@ -251,6 +275,9 @@ mod tests {
             }));
         if let Some(activity) = activity {
             runner = runner.with_activity(activity);
+        }
+        if let Some(cue) = cue {
+            runner = runner.with_cue(cue);
         }
         let mut core = Core::new(runner, ui.clone(), Box::new(|| 1_000));
         for event in startup_events(debug_build) {
@@ -343,6 +370,60 @@ mod tests {
             Some("Voice is not ready. Type a command instead.")
         );
         assert_eq!(*r.host.calls.lock().unwrap(), vec!["show"]);
+    }
+
+    // --- voice down: error look, host chime, hide after the settle (design L15) ---
+
+    fn voice_down_rig() -> (Rig, Arc<CountingCue>) {
+        let cue = Arc::new(CountingCue::default());
+        let r = rig_parts(false, |_| Arc::new(Ignore), None, Some(cue.clone()));
+        (r, cue)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sidecar_down_activation_plays_host_chime_and_error_view() {
+        let (mut r, cue) = voice_down_rig();
+        assert!(!r.core.state().voice_available);
+        r.send(Event::Shortcut);
+        assert_eq!(r.ui.last_view().state, "error");
+        assert_eq!(*cue.chimes.lock().unwrap(), 1, "the host plays the chime");
+        assert!(!r.ui.last_view().speaking);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn mic_error_plays_chime_and_error_view() {
+        let cue = Arc::new(CountingCue::default());
+        let mut r = rig_parts(true, |_| Arc::new(Ignore), None, Some(cue.clone()));
+        r.send(Event::Shortcut);
+        assert_eq!(r.phase(), Phase::Listening);
+        assert_eq!(
+            *cue.chimes.lock().unwrap(),
+            0,
+            "listening plays nothing here"
+        );
+        r.send(Event::SidecarError {
+            code: niva_core::state_machine::SidecarErrorCode::MicBusy,
+            id: None,
+        });
+        assert_eq!(r.ui.last_view().state, "error");
+        assert_eq!(*cue.chimes.lock().unwrap(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn voice_down_view_hides_after_settle() {
+        let (mut r, _cue) = voice_down_rig();
+        r.send(Event::Shortcut);
+        assert_eq!(r.phase(), Phase::Error);
+        r.advance(ms(1499)).await;
+        assert_eq!(r.phase(), Phase::Error);
+        r.advance(ms(1)).await;
+        assert_eq!(r.phase(), Phase::Idle);
+        assert!(
+            r.ui.events
+                .lock()
+                .unwrap()
+                .ends_with(&[UiEvent::Island { visible: false }])
+        );
     }
 
     #[tokio::test(start_paused = true)]
