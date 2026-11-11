@@ -98,6 +98,7 @@ class LevelPacer:
         self._thread: threading.Thread | None = None
         self._end: float | None = None  # model time at which everything written so far has been heard
         self._carry = b""  # less than one slice, waiting for the next chunk
+        self._rate: int | None = None  # sample rate of the audio written so far
         self._last_emit: float | None = None
 
     # -- input
@@ -126,8 +127,10 @@ class LevelPacer:
         with self._cond:
             if self._stopped:
                 return
-            if self._end is None:
-                start, self._carry = write_return + latency, b""  # the first write anchors the clock
+            if self._end is None or rate != self._rate:
+                # the first write anchors the clock; so does a new sample rate (another
+                # engine or device): the carried bytes belong to the old signal
+                start, self._carry = write_return + latency, b""
             else:
                 estimate = write_return + latency - blocked
                 if estimate > self._end + TOLERANCE_S:  # the device ran dry: anchor again
@@ -145,6 +148,7 @@ class LevelPacer:
                 index += 1
             self._carry = data[index * slice_bytes :]
             self._end = start + duration
+            self._rate = rate
             self._start_thread()
             self._cond.notify_all()
 

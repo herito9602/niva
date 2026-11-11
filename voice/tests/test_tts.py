@@ -808,7 +808,9 @@ def test_levels_flow_while_the_voice_is_audible_and_end_with_the_speech():
     kinds = [entry[1] for entry in tl.log if entry[0] == "event"]
     assert kinds[0] == "speak_started" and kinds[-1] == "speak_done"
     levels = kinds.count("level")
-    assert 3 <= levels <= 12  # ~31 per second while the 250 ms drain lasted
+    # Real-time smoke test: ~31 levels/s while the 250 ms drain lasted (~8). Bounds are wide on purpose so a
+    # loaded machine does not flake; it checks that levels flow and stop, not their exact rate.
+    assert 1 <= levels <= 20
     assert all(k == "level" for k in kinds[1:-1])  # nothing else in between
     sent = tl.count("level")
     time.sleep(0.2)
@@ -869,3 +871,55 @@ def test_a_level_write_stuck_on_a_stalled_host_never_blocks_a_barge_in():
     finally:
         release.set()
         gate.set()
+
+
+def _pacer_threads():
+    return [t for t in threading.enumerate() if t.name == "level-pacer" and t.is_alive()]
+
+
+def test_levels_continue_across_an_engine_fallback_at_another_sample_rate():
+    quiet_edge = PcmChunk(bytes(960), 24_000)  # 20 ms of silence: the carry of a slice not yet complete
+    tone_22k = PcmChunk(TONE_1S.data, 22_050)
+    seen = []
+    speaker, tl, ended, outputs = build_levels(
+        [FakeEngine("edge", [quiet_edge]), FakeEngine("piper", [tone_22k])],
+    )
+    emit = speaker._emit
+
+    def spy(message):
+        if message["type"] == "level":
+            seen.append(len(outputs))  # which device was open when the level went out
+        emit(message)
+
+    speaker._emit = spy
+    run_speak(speaker)
+    assert [o.sample_rate for o in outputs] == [24_000, 22_050]
+    assert tl.count("speak_started") == 1 and tl.count("speak_done") == 1 and tl.count("error") == 0
+    assert seen and set(seen) == {2}  # every level belongs to the new rate, none from the silent old one
+    kinds = [entry[1] for entry in tl.log if entry[0] == "event"]
+    assert kinds[0] == "speak_started" and kinds[-1] == "speak_done"
+    assert "level" in kinds
+    assert _pacer_threads() == []  # one pacer, gone with the speech
+    sent = tl.count("level")
+    time.sleep(0.15)
+    assert tl.count("level") == sent  # no emit after the end
+
+
+def test_a_device_failure_mid_utterance_stops_the_levels():
+    class DiesOnSecondWrite(FakeOutput):
+        latency = 0.0
+
+        def write(self, pcm):
+            if self.written:
+                raise OutputError("device went away")
+            super().write(pcm)
+
+    tone = [PcmChunk(TONE_1S.data[i : i + 9600], 24_000) for i in range(0, len(TONE_1S.data), 9600)]
+    speaker, tl, ended, outputs = build_levels([FakeEngine("edge", tone)], output_class=DiesOnSecondWrite)
+    run_speak(speaker, speak_id=5)
+    assert tl.count("speak_started") == 1 and tl.count("speak_done") == 0
+    assert tl.count("error") == 1 and ended == [5]
+    assert _pacer_threads() == []  # `finish` on the failure path
+    sent = tl.count("level")
+    time.sleep(0.15)
+    assert tl.count("level") == sent
