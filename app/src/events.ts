@@ -2,6 +2,8 @@
 
 export const VIEW_EVENT = "niva://view";
 export const ISLAND_EVENT = "niva://island";
+/** The audio level of Niva's voice, ~30 a second while it speaks. Not part of the view. */
+export const LEVEL_EVENT = "niva://level";
 
 export const ALL_STATES = [
   "idle",
@@ -44,6 +46,12 @@ export interface ViewPayload {
   confirm?: ConfirmView;
   /** How many reminders merged into the alert. */
   reminder?: { count: number };
+}
+
+/** Payload of `niva://level`: seven integers 0..100. Only Niva's own voice ("tts"). */
+export interface LevelPayload {
+  src: string;
+  bands: number[];
 }
 
 export interface IslandPayload {
