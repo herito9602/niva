@@ -452,8 +452,15 @@ class _Run:
         self.pacer = LevelPacer(self._level, offset_ms=level_offset_ms)
 
     def _level(self, bands: list[int]) -> None:
-        if self.audible.is_set():
-            self.say(protocol.level(bands))
+        """Levels are disposable, so they are sent OUTSIDE `lock`: a host that stopped
+        reading its pipe blocks this write, and a barge-in (`abort`) must never wait
+        for it. The cancel check is still made under the lock, right before sending."""
+        if not self.audible.is_set():
+            return
+        with self.lock:
+            if self.cancel.is_set():
+                return
+        self._emit(protocol.level(bands))
 
     def say(self, message: dict[str, Any]) -> None:
         """Send a protocol line unless this utterance was stopped. Checking and
@@ -467,11 +474,11 @@ class _Run:
             self.cancel.set()
             output = self.output
             prefetch = self.prefetch
-        self.pacer.stop()  # a barge-in: the bars stop with the sound, not a period later
         if prefetch is not None:
             prefetch.discard()
         if output is not None:
-            output.abort()
+            output.abort()  # the sound stops first: nothing below may delay it
+        self.pacer.stop()  # a barge-in: the bars stop with the sound, not a period later
 
     def start_prefetch(self, make_output: Callable[[int], AudioOutput], sample_rate: int) -> None:
         with self.lock:

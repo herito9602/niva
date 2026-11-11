@@ -829,3 +829,43 @@ def test_a_barge_in_stops_the_levels_at_once():
     time.sleep(0.15)
     assert tl.count("level") == count  # not one level after the stop
     assert tl.count("speak_done") == 0
+
+
+def test_a_level_write_stuck_on_a_stalled_host_never_blocks_a_barge_in():
+    """Levels are disposable: a host that stops reading the pipe must not keep the voice playing."""
+    stuck, release = threading.Event(), threading.Event()
+    starts, tl = [], Timeline()
+
+    def emit(message):
+        if message["type"] == "level":
+            starts.append(time.monotonic())
+            stuck.set()
+            release.wait(5)  # the blocking stdout write of a full pipe
+        tl.emit(message)
+
+    gate, outputs = threading.Event(), []
+
+    def make_output(rate):
+        outputs.append(DrainingOutput(tl, rate))
+        return outputs[-1]
+
+    speaker = Speaker([FakeEngine("edge", [TONE_1S], gate=gate)], make_output, emit, [].append, PLAIN)
+    try:
+        speaker.speak(7, "Hello there.", "en")
+        assert stuck.wait(2)  # a level write is blocked right now
+        stopper = threading.Thread(target=speaker.stop)
+        began = time.monotonic()
+        stopper.start()
+        stopper.join(1.0)
+        assert not stopper.is_alive(), "the barge-in waited for the blocked level write"
+        assert time.monotonic() - began < 1.0
+        assert outputs[0].aborted
+        count = len(starts)
+        release.set()
+        gate.set()
+        speaker.join(3)
+        time.sleep(0.15)  # real-time smoke: give a stray level the chance to show up
+        assert len(starts) == count  # no level write began after the stop returned
+    finally:
+        release.set()
+        gate.set()
