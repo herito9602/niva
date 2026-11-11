@@ -141,3 +141,28 @@ class Harness:
 @pytest.fixture
 def h() -> Harness:
     return Harness().start()
+
+
+class FakeAudioOutput:
+    """An `AudioOutput` for tests: reports a latency, keeps what was written and,
+    given a clock, the time each write returned."""
+
+    def __init__(self, sample_rate: int = 24_000, latency: float = 0.1, clock=None) -> None:
+        self.sample_rate = sample_rate
+        self.latency = latency
+        self._clock = clock
+        self.written: list[bytes] = []
+        self.returned_at: list[float] = []
+        self.aborted = False
+        self.closed = False
+
+    def write(self, pcm: bytes) -> None:
+        self.written.append(pcm)
+        if self._clock is not None:
+            self.returned_at.append(self._clock())
+
+    def abort(self) -> None:
+        self.aborted = True
+
+    def close(self) -> None:
+        self.closed = True

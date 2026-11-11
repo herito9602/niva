@@ -763,3 +763,69 @@ def test_discarding_an_unused_device_aborts_it_before_closing_it():
     assert prefetch._opened.wait(2)
     prefetch.discard()
     assert calls == ["abort", "close"]
+
+
+# ------------------------------------------------------------------ level messages
+
+
+TONE_1S = PcmChunk(
+    np.rint(0.3 * 32767 * np.sin(2 * np.pi * 900 * np.arange(24_000) / 24_000)).astype(np.int16).tobytes(), 24_000
+)
+
+
+class DrainingOutput(FakeOutput):
+    """A device that takes a while to play out its buffer on close, like the real one."""
+
+    latency = 0.0
+
+    def close(self):
+        time.sleep(0.25)
+        super().close()
+
+
+def build_levels(engines, output_class=DrainingOutput):
+    timeline, ended, outputs = Timeline(), [], []
+
+    def make_output(rate):
+        out = output_class(timeline, rate)
+        outputs.append(out)
+        return out
+
+    return Speaker(engines, make_output, timeline.emit, ended.append, PLAIN), timeline, ended, outputs
+
+
+def test_idle_sends_no_tts_level():
+    speaker, tl, ended, outputs = build_levels([FakeEngine("edge", [TONE_1S])])
+    time.sleep(0.2)
+    assert tl.count("level") == 0  # nobody spoke
+    speaker.stop()  # a stop with nothing playing is harmless and sends nothing either
+    assert tl.count("level") == 0
+
+
+def test_levels_flow_while_the_voice_is_audible_and_end_with_the_speech():
+    speaker, tl, ended, outputs = build_levels([FakeEngine("edge", [TONE_1S])])
+    run_speak(speaker)
+    kinds = [entry[1] for entry in tl.log if entry[0] == "event"]
+    assert kinds[0] == "speak_started" and kinds[-1] == "speak_done"
+    levels = kinds.count("level")
+    assert 3 <= levels <= 12  # ~31 per second while the 250 ms drain lasted
+    assert all(k == "level" for k in kinds[1:-1])  # nothing else in between
+    sent = tl.count("level")
+    time.sleep(0.2)
+    assert tl.count("level") == sent  # the pacer is gone with the speech
+
+
+def test_a_barge_in_stops_the_levels_at_once():
+    gate = threading.Event()
+    speaker, tl, ended, outputs = build_levels([FakeEngine("edge", [TONE_1S], gate=gate)])
+    speaker.speak(7, "Hello there.", "en")
+    assert wait_until(lambda: tl.count("level") >= 2)
+    started = time.monotonic()
+    speaker.stop()
+    assert time.monotonic() - started < 0.1
+    count = tl.count("level")
+    gate.set()
+    speaker.join(3)
+    time.sleep(0.15)
+    assert tl.count("level") == count  # not one level after the stop
+    assert tl.count("speak_done") == 0

@@ -28,6 +28,7 @@ import protocol
 from audio_io import AudioOutput, OutputError
 from config import Tunables
 from edge_ws import EdgeWsClient, EdgeWsTimeout, UnsupportedText
+from level_pacer import LevelPacer, level_offset_ms
 from protocol import ErrorCode
 from tts_cache import TtsCache
 from voice_fx import RobotVoice, float_to_pcm16, pcm16_to_float
@@ -437,7 +438,7 @@ class OutputPrefetch:
 class _Run:
     """State of one utterance: its own cancel flag and its own output device."""
 
-    def __init__(self, emit: Callable[[dict[str, Any]], None]) -> None:
+    def __init__(self, emit: Callable[[dict[str, Any]], None], level_offset_ms: float = 0.0) -> None:
         self.cancel = threading.Event()
         self.output: AudioOutput | None = None
         self.prefetch: OutputPrefetch | None = None  # device being opened ahead of the first audio
@@ -445,6 +446,14 @@ class _Run:
         self.odd = b""  # a lone trailing byte of an odd-sized chunk, completed by the next one
         self.lock = threading.Lock()
         self._emit = emit
+        # Levels of the voice for the notch, paced to what is audible. They flow only
+        # between `speak_started` and the end of the speech: nobody speaking, no levels.
+        self.audible = threading.Event()
+        self.pacer = LevelPacer(self._level, offset_ms=level_offset_ms)
+
+    def _level(self, bands: list[int]) -> None:
+        if self.audible.is_set():
+            self.say(protocol.level(bands))
 
     def say(self, message: dict[str, Any]) -> None:
         """Send a protocol line unless this utterance was stopped. Checking and
@@ -458,6 +467,7 @@ class _Run:
             self.cancel.set()
             output = self.output
             prefetch = self.prefetch
+        self.pacer.stop()  # a barge-in: the bars stop with the sound, not a period later
         if prefetch is not None:
             prefetch.discard()
         if output is not None:
@@ -491,6 +501,14 @@ class _Run:
             self.output = None
 
 
+def _latency_of(output: AudioOutput) -> float:
+    """The output's latency in seconds; an output that does not report one counts as immediate."""
+    try:
+        return max(0.0, float(getattr(output, "latency", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class Speaker:
     """Speaks one utterance at a time on a worker thread."""
 
@@ -507,12 +525,13 @@ class Speaker:
         self._emit = emit
         self._on_ended = on_ended
         self._t = tunables
+        self._level_offset_ms = level_offset_ms()  # NIVA_TTS_LEVEL_OFFSET_MS, read once at start
         self._current: _Run | None = None
         self._thread: threading.Thread | None = None
 
     def speak(self, speak_id: int, text: str, lang: str) -> None:
         self.stop()
-        run = _Run(self._emit)
+        run = _Run(self._emit, self._level_offset_ms)
         self._current = run
         self._thread = threading.Thread(
             target=self._work, args=(speak_id, text, lang, run), name=f"speak-{speak_id}", daemon=True
@@ -556,6 +575,7 @@ class Speaker:
             if unused is not None:  # no audio ever needed the device that was opened ahead
                 unused.discard()
             run.close_output()  # drains: the sound has really finished after this
+            run.pacer.finish()  # what is due goes out, the rest of the levels never will
             if completed:
                 run.say(protocol.speak_done(speak_id))
             self._on_ended(speak_id)
@@ -580,6 +600,7 @@ class Speaker:
             if not started and pcm and not is_silent(pcm, self._t.silent_peak):
                 started = True
                 run.say(protocol.speak_started(speak_id))
+                run.audible.set()
 
         for engine in self._engines:
             run.fx, run.odd = None, b""  # a new engine is a new signal: no effect state carries over
@@ -657,7 +678,10 @@ class Speaker:
             if run.output is None or run.output.sample_rate != chunk.sample_rate:
                 run.close_output()
                 run.adopt(self._open_output(run, chunk.sample_rate))
+            handed = time.perf_counter()  # the pacer's clock: monotonic() ticks every 15.6 ms on Windows
             run.output.write(chunk.data)
+            returned = time.perf_counter()
+            run.pacer.on_write(chunk.data, chunk.sample_rate, returned, _latency_of(run.output), handed)
         except OutputError as exc:
             raise _DeviceFailure(str(exc)) from exc
 

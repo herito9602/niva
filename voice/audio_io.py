@@ -44,6 +44,10 @@ class Microphone(Protocol):
 
 class AudioOutput(Protocol):
     sample_rate: int
+    # Seconds between handing samples to the device and hearing them (the stream's
+    # output latency). The level pacer needs it to show the waveform when the voice
+    # is audible, not when it is written.
+    latency: float
 
     def write(self, pcm: bytes) -> None:
         """Write int16 mono PCM; blocks until the device accepted it. Raises
@@ -140,6 +144,13 @@ class SoundDeviceOutput:
             self._stream.start()
         except Exception as exc:  # noqa: BLE001
             raise OutputError(f"cannot open output device: {exc}") from exc
+
+    @property
+    def latency(self) -> float:
+        try:
+            return float(self._stream.latency)
+        except Exception:  # noqa: BLE001 - a stream without a latency is read as an immediate one
+            return 0.0
 
     def write(self, pcm: bytes) -> None:
         try:

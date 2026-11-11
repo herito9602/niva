@@ -95,6 +95,7 @@ How the host finds things (all optional in a dev checkout):
 | `NIVA_WHISPER_MODEL` | first Whisper model of the ladder (name or path) | `small`, then `base` |
 | `NIVA_MIC_DEVICE` | microphone index or name (`--mic-device`; one value, so a name with spaces works) | the system default |
 | `NIVA_VOICE_ARGS` | extra options for `main.py`, split on spaces (`--no-edge`, `--allow-cpu`, `--verbose`) | none |
+| `NIVA_TTS_LEVEL_OFFSET_MS` | milliseconds added to the moment the notch waveform reacts to Niva's voice (negative = earlier); for latency the audio device does not report, such as Bluetooth. Values beyond +-500 or unreadable ones are ignored | `0` |
 
 Try Niva by voice (this opens the microphone and plays sound; `uv` must be on `PATH` and
 `voice\.venv` must exist, see Setup):
@@ -183,3 +184,22 @@ Start margin and endpointer check on the recorded phrases (no microphone):
 ```powershell
 uv run --offline --no-project python margin.py ..\spikes\vad\audio
 ```
+
+## Waveform levels (living-pc-notch, slice 5)
+
+While Niva speaks, the sidecar sends `{"type":"level","src":"tts","bands":[7 integers 0-100]}`
+about 31 times a second (one per 32 ms of audio). Only Niva's own voice is analysed; there is no
+microphone level, ever. `levels.py` computes the bands (Hann window, FFT, 7 log bands between
+80 Hz and 8 kHz, -60..-10 dBFS mapped to 0-100).
+
+The levels are paced to the moment the sound is audible, not to the moment it is written:
+the output device holds `stream.latency` seconds of audio ahead of the loudspeaker, so
+`level_pacer.py` keeps a model of the playback clock (the first write anchors it, a stalled
+network re-anchors it) and emits each slice when it is heard. The pacer stops with the
+speech and at once on a barge-in. `python tools/output_latency.py` prints the latency and the
+write timing of the default output device.
+
+If the bars still move before or after the sound on a device that under- or over-reports its
+latency (typically Bluetooth), set `NIVA_TTS_LEVEL_OFFSET_MS`: a negative number makes the bars
+earlier, a positive one later. Film the debug window's "level test" at 240 fps to measure it: the
+rise of the bars should follow the sound by 50 ms on average and never by more than 100 ms.
