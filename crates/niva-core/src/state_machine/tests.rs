@@ -151,11 +151,27 @@ pub(super) fn assert_ignored(state: State, event: Event) {
     );
 }
 
+/// The command listen of an activation (wake word or shortcut): the host
+/// acknowledges it with a cue before the microphone opens.
 pub(super) fn listen_cmd(id: u64) -> [Effect; 2] {
     [
         Effect::Listen {
             id,
             mode: ListenMode::Command,
+            ack: true,
+        },
+        start(TimerKind::NoSpeech),
+    ]
+}
+
+/// The command listen that follows a spoken follow-up question: Niva has just
+/// spoken, so there is nothing to acknowledge.
+pub(super) fn follow_up_listen_cmd(id: u64) -> [Effect; 2] {
+    [
+        Effect::Listen {
+            id,
+            mode: ListenMode::Command,
+            ack: false,
         },
         start(TimerKind::NoSpeech),
     ]
@@ -272,6 +288,10 @@ pub(super) fn assert_invariants(s: &State, context: &str) {
         "{context}: confirmation id was never issued: {s:?}"
     );
     assert!(
+        s.audible_speak.is_none() || s.audible_speak == s.speak_id,
+        "{context}: only the speech in flight can be audible: {s:?}"
+    );
+    assert!(
         s.speak_id.is_some() == s.speak_kind.is_some(),
         "{context}: speak id and kind move together: {s:?}"
     );
@@ -347,7 +367,7 @@ fn entering_idle_hides_the_island_and_drains_queued_reminders() {
 fn leaving_idle_shows_the_island() {
     let mut s = state_in(Phase::Idle);
     let mut fx = Vec::new();
-    s.enter_listening(&mut fx);
+    s.enter_listening(true, &mut fx);
     assert_eq!(s.phase, Phase::Listening);
     assert_eq!(s.listen_id, Some(100));
     assert_eq!(s.utterance, Utterance::WaitingForSpeech);
@@ -358,7 +378,8 @@ fn leaving_idle_shows_the_island() {
             Effect::ShowIsland,
             Effect::Listen {
                 id: 100,
-                mode: ListenMode::Command
+                mode: ListenMode::Command,
+                ack: true,
             },
             start(TimerKind::NoSpeech),
         ]
@@ -369,7 +390,7 @@ fn leaving_idle_shows_the_island() {
 fn moving_between_visible_states_does_not_show_the_island_again() {
     let mut s = state_in(Phase::Success);
     let mut fx = Vec::new();
-    s.enter_listening(&mut fx);
+    s.enter_listening(true, &mut fx);
     assert!(!fx.contains(&Effect::ShowIsland));
 }
 
@@ -509,7 +530,7 @@ fn the_pending_slot_survives_only_the_follow_up_listen() {
     s.request_id = None;
     s.pending = Some(slot());
     let mut fx = Vec::new();
-    s.enter_listening(&mut fx);
+    s.enter_listening(true, &mut fx);
     assert_eq!(s.pending, Some(slot()));
 
     let mut s = state_in(Phase::Listening);
@@ -572,6 +593,14 @@ fn timers_are_tracked_and_cancelled_individually() {
 }
 
 #[test]
+fn settle_timer_is_1500ms() {
+    assert_eq!(
+        TimerKind::Settle.duration(),
+        Some(std::time::Duration::from_millis(1_500))
+    );
+}
+
+#[test]
 fn timer_durations_follow_the_design() {
     use std::time::Duration;
     let secs = |k: TimerKind| k.duration().map(|d| d.as_secs());
@@ -581,7 +610,10 @@ fn timer_durations_follow_the_design() {
     assert_eq!(secs(TimerKind::FollowUp), Some(15));
     assert_eq!(secs(TimerKind::Tool), Some(5));
     assert_eq!(secs(TimerKind::Confirm), Some(10));
-    assert_eq!(secs(TimerKind::Settle), Some(3));
+    assert_eq!(
+        TimerKind::Settle.duration(),
+        Some(Duration::from_millis(1_500))
+    );
     assert_eq!(secs(TimerKind::AlertEnd), Some(30));
     assert_eq!(TimerKind::SpeakWatchdog.duration(), None);
     assert!(TimerKind::SttTimeout.duration() > Some(Duration::ZERO));

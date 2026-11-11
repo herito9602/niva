@@ -343,7 +343,19 @@ fn row(kind: EventKind) -> [Expect; 9] {
         EventKind::AskFollowUp => [I, I, Stays(reply), I, I, I, I, I, I],
         EventKind::Accept => [I, I, I, I, Goes(Acting, accept), I, I, I, I],
         EventKind::Reject => [I, I, I, I, Goes(Success, reject), I, I, I, I],
-        EventKind::SpeakStarted => [I, I, I, I, I, I, I, I, I],
+        // A state-only update: the matching speech becomes audible (the view's
+        // `speaking`). Phases that never speak hold a stale id, so they ignore it.
+        EventKind::SpeakStarted => [
+            I,
+            I,
+            Stays(&[]),
+            I,
+            Stays(&[]),
+            Stays(&[]),
+            Stays(&[]),
+            Stays(&[]),
+            Stays(&[]),
+        ],
         EventKind::SpeakDone | EventKind::TtsFailed => [
             I,
             I,
@@ -352,7 +364,8 @@ fn row(kind: EventKind) -> [Expect; 9] {
             Stays(&[E::StartTimer, E::Listen]),
             Stays(&[E::StartTimer]),
             Stays(&[E::StartTimer]),
-            Stays(&[]),
+            // The alert is over once it was heard: it settles like a result.
+            Goes(Success, &[E::StopSpeaking, E::StartTimer]),
             Stays(&[]),
         ],
         EventKind::Watchdog => [
@@ -693,4 +706,18 @@ fn every_event_x_state_cell_is_asserted() {
         }
     }
     assert_eq!(checked, EventKind::ALL.len() * Phase::ALL.len());
+}
+
+/// `SpeakStarted` never emits an effect or changes the phase: it only records
+/// that the matching speech is audible.
+#[test]
+fn coverage_matrix_speak_started_is_state_only() {
+    for phase in Phase::ALL {
+        let start = fixture(EventKind::SpeakStarted, phase);
+        let (after, fx) = reduce(start.clone(), sample(EventKind::SpeakStarted, &start));
+        assert!(fx.is_empty(), "{phase:?}: {fx:?}");
+        assert_eq!(after.phase, phase);
+        let speaks = start.speak_id == Some(SPEAK_ID);
+        assert_eq!(after.audible_speak, speaks.then_some(SPEAK_ID), "{phase:?}");
+    }
 }

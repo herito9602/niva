@@ -394,7 +394,7 @@ fn an_alert_goes_on_and_still_ends_on_its_own() {
     let (s, _) = step(&alert_playing(), err(CODE));
     assert_eq!(s.phase, Phase::ReminderAlert);
     let (after, _) = step(&s, Event::SpeakDone { id: SPEAK_ID });
-    assert_eq!(after.phase, Phase::Idle);
+    assert_eq!(after.phase, Phase::Success, "the alert is over and settles");
 }
 
 #[test]

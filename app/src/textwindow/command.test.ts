@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import capability from "../../src-tauri/capabilities/text-window.json";
 import windowSource from "./TextWindow.tsx?raw";
-import { MAX_COMMAND_CHARS, SUBMIT_COMMAND, createSubmitter, prepareCommand, viewAfter } from "./command";
+import {
+  HINT_READY,
+  MAX_COMMAND_CHARS,
+  SUBMIT_COMMAND,
+  createSubmitter,
+  prepareCommand,
+  viewAfter,
+} from "./command";
 
 /** An invoke whose calls stay pending until the test settles them. */
 function controlledInvoke() {
@@ -65,6 +72,23 @@ describe("createSubmitter: one command in flight at a time", () => {
     const submit = createSubmitter(invoke);
     expect(await submit("   ")).toBe("blank");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("typing a command", () => {
+  it("typed_command_enter_submits_and_clears_box", async () => {
+    const { invoke, calls } = controlledInvoke();
+    const submit = createSubmitter(invoke);
+    const sending = submit("  open notepad ");
+    calls[0].resolve();
+    expect(await sending).toBe("sent");
+    expect(calls[0].args).toEqual({ text: "open notepad" });
+    expect(viewAfter("sent")).toEqual({ clear: true, failed: false });
+  });
+
+  it("the hint says Niva answers by voice and names no island text", () => {
+    expect(HINT_READY).toMatch(/voice/i);
+    expect(HINT_READY).not.toMatch(/island|screen|appears/i);
   });
 });
 

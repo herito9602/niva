@@ -131,7 +131,6 @@ impl Core {
     }
 
     fn apply(&mut self, effects: Vec<Effect>) {
-        self.view.set_lang(self.runner.requests().lang());
         let ui_events = self.view.update(&self.state, &effects, (self.now_ms)());
         // Window effects first, so the island is on screen before the webview
         // is told to animate it in.
@@ -218,6 +217,8 @@ mod tests {
         rx: mpsc::UnboundedReceiver<Input>,
         host: Arc<FakeHost>,
         ui: Arc<FakeUi>,
+        /// What Niva said, as the dev log gets it (the view carries no text).
+        spoken: Arc<Mutex<Vec<String>>>,
     }
 
     fn rig(debug_build: bool) -> Rig {
@@ -235,24 +236,73 @@ mod tests {
         requests: impl FnOnce(EventSink) -> Arc<dyn Requests>,
         activity: Option<Arc<dyn niva_core::ports::InputActivity>>,
     ) -> Rig {
+        rig_parts(debug_build, requests, activity, None)
+    }
+
+    /// The host's own sounds, counted: every chime the runner asks for.
+    #[derive(Default)]
+    struct CountingCue {
+        chimes: Mutex<u32>,
+    }
+
+    impl niva_core::ports::AudioCue for CountingCue {
+        fn chime(&self, done: Box<dyn FnOnce() + Send>) {
+            *self.chimes.lock().unwrap() += 1;
+            done();
+        }
+        fn listening_cue(&self, done: Box<dyn FnOnce() + Send>) {
+            done();
+        }
+        fn listening_cue_len(&self) -> std::time::Duration {
+            std::time::Duration::ZERO
+        }
+        fn stop(&self) {}
+    }
+
+    fn rig_parts(
+        debug_build: bool,
+        requests: impl FnOnce(EventSink) -> Arc<dyn Requests>,
+        activity: Option<Arc<dyn niva_core::ports::InputActivity>>,
+        cue: Option<Arc<dyn niva_core::ports::AudioCue>>,
+    ) -> Rig {
         let (tx, rx) = mpsc::unbounded_channel();
         let host = Arc::new(FakeHost::default());
         let ui = Arc::new(FakeUi::default());
         let sink: EventSink = Arc::new(move |event| {
             let _ = tx.send(Input::Event(event));
         });
-        let mut runner = EffectRunner::new(sink.clone(), host.clone(), requests(sink));
+        let spoken: Arc<Mutex<Vec<String>>> = Arc::default();
+        let log = spoken.clone();
+        let mut runner = EffectRunner::new(sink.clone(), host.clone(), requests(sink))
+            .with_speak_log(Arc::new(move |line| {
+                let text = line.strip_prefix("niva says: ").unwrap_or(&line);
+                log.lock().unwrap().push(text.to_owned());
+            }));
         if let Some(activity) = activity {
             runner = runner.with_activity(activity);
+        }
+        if let Some(cue) = cue {
+            runner = runner.with_cue(cue);
         }
         let mut core = Core::new(runner, ui.clone(), Box::new(|| 1_000));
         for event in startup_events(debug_build) {
             core.handle(Input::Event(event));
         }
-        Rig { core, rx, host, ui }
+        Rig {
+            core,
+            rx,
+            host,
+            ui,
+            spoken,
+        }
     }
 
     impl Rig {
+        /// The last thing Niva said (the text of the latest `Speak`).
+        fn said(&self) -> Option<String> {
+            self.spoken.lock().unwrap().last().cloned()
+        }
+
         fn send(&mut self, event: Event) {
             self.core.handle(Input::Event(event));
             self.pump();
@@ -321,10 +371,64 @@ mod tests {
         let view = r.ui.last_view();
         assert_eq!(view.state, "error");
         assert_eq!(
-            view.caption.as_deref(),
+            r.said().as_deref(),
             Some("Voice is not ready. Type a command instead.")
         );
         assert_eq!(*r.host.calls.lock().unwrap(), vec!["show"]);
+    }
+
+    // --- voice down: error look, host chime, hide after the settle (design L15) ---
+
+    fn voice_down_rig() -> (Rig, Arc<CountingCue>) {
+        let cue = Arc::new(CountingCue::default());
+        let r = rig_parts(false, |_| Arc::new(Ignore), None, Some(cue.clone()));
+        (r, cue)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sidecar_down_activation_plays_host_chime_and_error_view() {
+        let (mut r, cue) = voice_down_rig();
+        assert!(!r.core.state().voice_available);
+        r.send(Event::Shortcut);
+        assert_eq!(r.ui.last_view().state, "error");
+        assert_eq!(*cue.chimes.lock().unwrap(), 1, "the host plays the chime");
+        assert!(!r.ui.last_view().speaking);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn mic_error_plays_chime_and_error_view() {
+        let cue = Arc::new(CountingCue::default());
+        let mut r = rig_parts(true, |_| Arc::new(Ignore), None, Some(cue.clone()));
+        r.send(Event::Shortcut);
+        assert_eq!(r.phase(), Phase::Listening);
+        assert_eq!(
+            *cue.chimes.lock().unwrap(),
+            0,
+            "listening plays nothing here"
+        );
+        r.send(Event::SidecarError {
+            code: niva_core::state_machine::SidecarErrorCode::MicBusy,
+            id: None,
+        });
+        assert_eq!(r.ui.last_view().state, "error");
+        assert_eq!(*cue.chimes.lock().unwrap(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn voice_down_view_hides_after_settle() {
+        let (mut r, _cue) = voice_down_rig();
+        r.send(Event::Shortcut);
+        assert_eq!(r.phase(), Phase::Error);
+        r.advance(ms(1499)).await;
+        assert_eq!(r.phase(), Phase::Error);
+        r.advance(ms(1)).await;
+        assert_eq!(r.phase(), Phase::Idle);
+        assert!(
+            r.ui.events
+                .lock()
+                .unwrap()
+                .ends_with(&[UiEvent::Island { visible: false }])
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -750,7 +854,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn success_reply_settles_to_idle_3_s_after_the_synthesized_speak_done() {
+    async fn success_hides_after_speech_plus_settle() {
         let mut r = rig(true);
         r.reach_thinking();
         let req = r.req();
@@ -759,14 +863,14 @@ mod tests {
             text: "Done".into(),
         });
         assert_eq!(r.phase(), Phase::Success, "settle is still pending");
-        r.advance(ms(2999)).await;
+        r.advance(ms(1499)).await;
         assert_eq!(r.phase(), Phase::Success);
         r.advance(ms(1)).await;
         assert_eq!(r.phase(), Phase::Idle);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_long_reply_stays_up_long_enough_to_read_it() {
+    async fn a_long_reply_is_not_held_for_reading() {
         let mut r = rig(true);
         r.reach_thinking();
         let req = r.req();
@@ -775,46 +879,51 @@ mod tests {
             text: "word ".repeat(80),
         });
         assert_eq!(r.phase(), Phase::Success);
-        r.advance(ms(11_999)).await;
-        assert_eq!(r.phase(), Phase::Success, "12 s cap not reached yet");
+        // 400 characters: the same 1.5 s settle, no 12 s reading hold.
+        r.advance(ms(1499)).await;
+        assert_eq!(r.phase(), Phase::Success);
         r.advance(ms(1)).await;
         assert_eq!(r.phase(), Phase::Idle);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_shortcut_during_the_reading_hold_barges_in_and_the_old_hold_is_gone() {
+    async fn activation_during_settle_cancels_pending_hide() {
         let mut r = rig(true);
         r.reach_thinking();
         let req = r.req();
         r.send(Event::Reply {
             req,
-            text: "word ".repeat(80),
+            text: "Done".into(),
         });
-        r.advance(ms(2_000)).await;
+        r.advance(ms(1_000)).await;
         assert_eq!(r.phase(), Phase::Success);
         r.send(Event::Shortcut);
         assert_eq!(r.phase(), Phase::Listening);
-        // The listen is open (6 s no-speech timer). Speech starts, so nothing
-        // else may end the session: the old 12 s hold must not fire.
+        // The listen is open. Speech starts, so nothing else may end the
+        // session: the old settle must not fire.
         let id = r.listen_id();
         r.send(Event::SpeechStart { id });
         r.advance(ms(12_000)).await;
-        assert_eq!(r.phase(), Phase::Listening, "the stale hold timer fired");
+        assert_eq!(r.phase(), Phase::Listening, "the stale settle fired");
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_short_reply_still_settles_after_3_s_with_the_reading_rule() {
+    async fn error_hides_after_settle() {
         let mut r = rig(true);
         r.reach_thinking();
         let req = r.req();
-        r.send(Event::Reply {
-            req,
-            text: "Opening Notepad".into(),
-        });
-        r.advance(ms(2999)).await;
-        assert_eq!(r.phase(), Phase::Success);
+        r.send(Event::Failure { req });
+        assert_eq!(r.phase(), Phase::Error);
+        r.advance(ms(1499)).await;
+        assert_eq!(r.phase(), Phase::Error);
         r.advance(ms(1)).await;
         assert_eq!(r.phase(), Phase::Idle);
+        assert!(
+            r.ui.events
+                .lock()
+                .unwrap()
+                .ends_with(&[UiEvent::Island { visible: false }])
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -841,23 +950,32 @@ mod tests {
         assert_eq!(r.phase(), Phase::ConfirmationNeeded);
         r.advance(ms(1)).await;
         assert_eq!(r.phase(), Phase::Success);
-        assert_eq!(r.ui.last_view().caption.as_deref(), Some("Cancelled."));
+        assert_eq!(r.said().as_deref(), Some("Cancelled."));
     }
 
     #[tokio::test(start_paused = true)]
-    async fn the_instant_alert_ends_at_once_and_the_held_alert_at_the_30_s_cap() {
+    async fn the_instant_alert_settles_after_its_speech_and_a_silent_held_one_ends_at_the_30_s_cap()
+    {
         let mut r = rig(true);
         r.send(Event::ReminderDue {
             count: 1,
             silent: false,
         });
-        assert_eq!(r.phase(), Phase::Idle, "chime and speech end instantly");
+        assert_eq!(
+            r.phase(),
+            Phase::Success,
+            "the speech ended instantly: the alert is over and settles"
+        );
+        r.advance(ms(1_500)).await;
+        assert_eq!(r.phase(), Phase::Idle);
 
+        // A reminder that is never spoken (fullscreen) with the chime held:
+        // only the 30 s cap ends it.
         let mut r = rig(true);
         r.core.set_media_mode(MediaMode::Held);
         r.send(Event::ReminderDue {
             count: 1,
-            silent: false,
+            silent: true,
         });
         assert_eq!(r.phase(), Phase::ReminderAlert);
         r.advance(ms(29_999)).await;
@@ -1020,10 +1138,9 @@ mod tests {
             });
             assert_eq!(r.phase(), Phase::ConfirmationNeeded);
             let view = r.ui.last_view();
-            let confirm = view.confirm.expect("the confirmation with its buttons");
-            assert_eq!(confirm.prompt, "Close Spotify.exe?");
-            assert_eq!(confirm.confirm_label, "Confirm");
-            assert_eq!(confirm.cancel_label, "Cancel");
+            let confirm = view.confirm.expect("the confirmation");
+            assert_eq!(Some(confirm.id), r.core.state().confirm_id);
+            assert_eq!(r.said().as_deref(), Some("Close Spotify.exe?"));
             assert!(apps.opened.lock().unwrap().is_empty());
             assert!(apps.closed.lock().unwrap().is_empty());
             assert!(output.changes.lock().unwrap().is_empty());
@@ -1047,10 +1164,7 @@ mod tests {
                 if accept {
                     assert_eq!(closed, ["Spotify.exe"]);
                     assert_eq!(r.phase(), Phase::Success);
-                    assert_eq!(
-                        r.ui.last_view().caption.as_deref(),
-                        Some("Closed Spotify.exe.")
-                    );
+                    assert_eq!(r.said().as_deref(), Some("Closed Spotify.exe."));
                 } else {
                     assert!(closed.is_empty(), "a cancel closes nothing");
                 }
@@ -1067,10 +1181,7 @@ mod tests {
             assert_eq!(r.phase(), Phase::Success);
             assert_eq!(*apps.opened.lock().unwrap(), ["notepad"]);
             // The reply names the entry that was launched, not the model's word.
-            assert_eq!(
-                r.ui.last_view().caption.as_deref(),
-                Some("Opened Bloc de notas.")
-            );
+            assert_eq!(r.said().as_deref(), Some("Opened Bloc de notas."));
         }
 
         #[tokio::test(start_paused = true)]
@@ -1081,7 +1192,7 @@ mod tests {
             });
             assert_eq!(r.phase(), Phase::Error);
             assert_eq!(
-                r.ui.last_view().caption.as_deref(),
+                r.said().as_deref(),
                 Some("I can't think right now. Is the language model running?")
             );
             assert!(apps.opened.lock().unwrap().is_empty());
@@ -1131,7 +1242,7 @@ mod tests {
             }
 
             fn caption(&self) -> String {
-                self.ui.last_view().caption.unwrap_or_default()
+                self.said().unwrap_or_default()
             }
 
             /// A click on the buttons the island shows now: it sends back the
@@ -1190,10 +1301,6 @@ mod tests {
                 .count()
         }
 
-        fn countdown_shown(r: &Rig) -> crate::ui_adapter::CountdownView {
-            r.ui.last_view().countdown.expect("a countdown in the view")
-        }
-
         #[tokio::test(start_paused = true)]
         async fn suspende_la_pc_asks_then_counts_down_in_spanish_and_sleeps_at_the_end() {
             let (mut r, _activity, lines) = sleep_rig();
@@ -1205,9 +1312,8 @@ mod tests {
                 r.caption(),
                 "Suspendiendo en 10 segundos. Presiona una tecla o mueve el mouse para cancelar."
             );
-            // The deadline is in the view (the clock reads 1 000 ms).
-            assert_eq!(countdown_shown(&r).ends_at, 11_000);
-            assert_eq!(r.ui.last_view().state, "acting");
+            // The countdown has its own state and no number in the view.
+            assert_eq!(r.ui.last_view().state, "countdown");
             r.advance(ms(9_999)).await;
             assert_eq!(r.phase(), Phase::Countdown);
             assert_eq!(slept(&lines), 0, "nothing slept before the deadline");
@@ -1215,7 +1321,6 @@ mod tests {
             assert_eq!(slept(&lines), 1);
             assert_eq!(r.ui.last_view().state, "success");
             assert_eq!(r.caption(), "Suspendiendo el PC.");
-            assert_eq!(r.ui.last_view().countdown, None);
         }
 
         #[tokio::test(start_paused = true)]
@@ -1271,12 +1376,11 @@ mod tests {
             r.advance(ms(5_000)).await;
             r.click(true);
             assert_eq!(r.phase(), Phase::Countdown);
-            let ends_at = countdown_shown(&r).ends_at;
             // The announcement is never "done" (held), its own watchdog fires at
             // 5 s: the countdown is still there, with the same deadline.
             r.advance(ms(5_000)).await;
             assert_eq!(r.phase(), Phase::Countdown);
-            assert_eq!(countdown_shown(&r).ends_at, ends_at);
+            assert_eq!(r.ui.last_view().state, "countdown");
             assert_eq!(slept(&lines), 0);
             r.advance(ms(5_000)).await;
             assert_eq!(slept(&lines), 1, "10 s after it started, speech or not");
@@ -1361,7 +1465,7 @@ mod tests {
             r.type_text("close spotify");
             assert_eq!(r.phase(), Phase::ConfirmationNeeded);
             let confirm = r.ui.last_view().confirm.expect("a confirmation");
-            assert_eq!(confirm.prompt, "Close Spotify.exe?");
+            assert_eq!(r.caption(), "Close Spotify.exe?");
             assert_eq!(Some(confirm.id), r.core.state().confirm_id);
             r.click(true);
             assert_eq!(r.ui.last_view().state, "success");

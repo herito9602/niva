@@ -15,37 +15,36 @@ export const ALL_STATES = [
   "reminder-alert",
 ] as const;
 
-export type StateName = (typeof ALL_STATES)[number];
+/**
+ * Every state the host publishes. `ALL_STATES` lists the ones the debug window
+ * can script; the sleep countdown has a state of its own and no script.
+ */
+export type StateName = (typeof ALL_STATES)[number] | "countdown";
 
 /**
- * The open confirmation. The island shows two buttons with these labels (in the
- * request's language) and answers with `id`, never with a number of its own.
+ * The open confirmation. The notch draws no text and no buttons: it carries the
+ * id the confirm keys answer with, the deadline once the question was spoken,
+ * and whether only the Ctrl+Shift+Enter chord can confirm.
  */
 export interface ConfirmView {
   id: number;
-  prompt: string;
-  confirmLabel: string;
-  cancelLabel: string;
   expiresAt?: number;
   /** True when only the Ctrl+Shift+Enter chord can confirm (restart, shutdown). */
   chord?: boolean;
 }
 
+/**
+ * Payload of `niva://view` (design L5): the state, whether Niva's voice is
+ * audible, and the details of a confirmation or a reminder. It never carries
+ * reply text, labels or countdown numbers.
+ */
 export interface ViewPayload {
   state: StateName;
   /** True while Niva's voice is audible. A payload without it means false. */
   speaking?: boolean;
-  /** Reply text: kept in the payload until the view trim, never drawn by the notch. */
-  caption?: string;
   confirm?: ConfirmView;
-  reminder?: { id: number; text: string };
-  /**
-   * A sleep countdown (shown with the `acting` pose). The island counts down
-   * from `endsAt` (epoch ms); the host sends no event per second. `text` is the
-   * localized message and `{n}` stands for the whole seconds left; `seconds` is
-   * the length of the countdown, i.e. the widest number.
-   */
-  countdown?: { endsAt: number; seconds: number; text: string };
+  /** How many reminders merged into the alert. */
+  reminder?: { count: number };
 }
 
 export interface IslandPayload {

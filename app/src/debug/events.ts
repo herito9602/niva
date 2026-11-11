@@ -1,5 +1,5 @@
 import data from "./events.json";
-import { ALL_STATES, type StateName } from "../events";
+import { ALL_STATES } from "../events";
 
 export { ALL_STATES };
 
@@ -40,4 +40,4 @@ export const EVENT_BUTTONS: EventButton[] = data.buttons;
  * Events that drive the reducer into each state from a fresh reset. Shared
  * with the Rust tests, which parse every entry as a `DebugEvent`.
  */
-export const STATE_SCRIPTS = data.scripts as Record<StateName, DebugEvent[]>;
+export const STATE_SCRIPTS = data.scripts as Record<(typeof ALL_STATES)[number], DebugEvent[]>;

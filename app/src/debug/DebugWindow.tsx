@@ -5,13 +5,11 @@ import { VIEW_EVENT, type ViewPayload } from "../events";
 import { Notch } from "../notch/Notch";
 import { levelStore, type LevelSrc } from "../notch/levelStore";
 import { viewToLook } from "../notch/looks";
-import { useNow } from "../state/useNow";
 import { ALL_STATES, EVENT_BUTTONS, STATE_SCRIPTS, answerEvent, rawEvent, type DebugEvent } from "./events";
 import {
   DEV_LOG_EVENT,
   MAX_DEBUG_TEXT,
   appendLog,
-  countdownLeft,
   describeView,
   prepareText,
   type DevLogPayload,
@@ -36,7 +34,6 @@ export default function DebugWindow() {
   const [log, setLog] = useState<string[]>([]);
   const [levelSrc, setLevelSrc] = useState<LevelSrc | null>(null);
   const lastView = useRef<ViewPayload | null>(null);
-  const now = useNow(Boolean(view?.countdown));
 
   useEffect(() => {
     const subs = [
@@ -116,13 +113,11 @@ export default function DebugWindow() {
         <span className="state" data-state={view?.state ?? "idle"}>
           {view?.state ?? "idle"}
         </span>
-        <span className="caption">{view?.caption ?? ""}</span>
-        {view?.confirm && <span className="extra">confirm: {view.confirm.prompt}</span>}
-        {view?.reminder && <span className="extra">reminder: {view.reminder.text}</span>}
-        {view?.countdown && (
-          <span className="extra">
-            sleep countdown: {countdownLeft(view.countdown.endsAt, now)} s left (the PC is dry-run and never sleeps)
-          </span>
+        {view?.speaking && <span className="extra">speaking</span>}
+        {view?.confirm && <span className="extra">confirm: question open (reply text is in the log)</span>}
+        {view?.reminder && <span className="extra">reminder: {view.reminder.count} due</span>}
+        {view?.state === "countdown" && (
+          <span className="extra">sleep countdown (the PC is dry-run and never sleeps)</span>
         )}
       </section>
 
@@ -146,7 +141,7 @@ export default function DebugWindow() {
           />
           <button type="submit">Send</button>
         </form>
-        {view?.countdown && (
+        {view?.state === "countdown" && (
           <div className="row confirm">
             <button onClick={() => dispatch({ type: "countdown_cancel" })}>Cancel countdown</button>
             <span className="extra">Any key or mouse input cancels it too, after 1 s.</span>

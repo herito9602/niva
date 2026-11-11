@@ -16,7 +16,7 @@ A due reminder MUST show the notch with the reminder-alert look (coral outward p
 #### Scenario: Notch cannot draw over exclusive fullscreen
 - GIVEN an exclusive-mode fullscreen app over which the notch cannot be drawn [verify, detection spike in design L16]
 - WHEN a reminder falls due or the user activates Niva by shortcut or wake word
-- THEN the achievable behavior applies: a soft chime for the reminder, and the same host chime (`audio_cue`) when listening starts, with no visual notch
+- THEN the achievable behavior applies: a soft chime for the reminder, and the same acknowledgement cue as on every activation (voice-activation, "Activation plays an acknowledgement cue"), with no visual notch
 
 ## Notes
 - The reminder's content is not presented anywhere during fullscreen: no text, no tray item. Speaking a missed reminder after fullscreen ends is deferred (BACKLOG).

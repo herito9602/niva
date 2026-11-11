@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ViewPayload } from "../events";
-import { MAX_DEBUG_TEXT, appendLog, countdownLeft, describeView, prepareText } from "./log";
+import { MAX_DEBUG_TEXT, appendLog, describeView, prepareText } from "./log";
 
 const view = (over: Partial<ViewPayload>): ViewPayload => ({ state: "idle", ...over });
 
@@ -32,53 +32,22 @@ describe("appendLog", () => {
 });
 
 describe("describeView", () => {
-  it("reports a new caption with its state", () => {
-    expect(describeView(null, view({ state: "success", caption: "Opened notepad." }))).toBe(
-      "success: Opened notepad.",
-    );
+  it("reports a state change", () => {
+    expect(describeView(null, view({ state: "success" }))).toBe("state: success");
+    expect(describeView(view({ state: "success" }), view({ state: "idle" }))).toBe("state: idle");
   });
 
-  it("reports a confirmation prompt once, as a confirmation", () => {
-    const asked = view({
-      state: "confirmation-needed",
-      caption: "Close notepad.exe?",
-      confirm: { id: 3, prompt: "Close notepad.exe?", confirmLabel: "Confirm", cancelLabel: "Cancel" },
-    });
-    expect(describeView(null, asked)).toBe("confirm: Close notepad.exe?");
-    const withDeadline = view({
-      ...asked,
-      confirm: {
-        id: 3,
-        prompt: "Close notepad.exe?",
-        confirmLabel: "Confirm",
-        cancelLabel: "Cancel",
-        expiresAt: 5000,
-      },
-    });
-    expect(describeView(asked, withDeadline)).toBeNull();
+  it("reports when Niva's voice becomes audible and when it stops", () => {
+    const quiet = view({ state: "success", speaking: false });
+    const loud = view({ state: "success", speaking: true });
+    expect(describeView(quiet, loud)).toBe("state: success (speaking)");
+    expect(describeView(loud, quiet)).toBe("state: success");
   });
 
-  it("says nothing when nothing new is shown", () => {
-    const same = view({ state: "success", caption: "Done." });
+  it("says nothing when nothing changed, and never any reply text", () => {
+    const same = view({ state: "success" });
     expect(describeView(same, same)).toBeNull();
-    expect(describeView(null, view({ state: "listening" }))).toBeNull();
-  });
-
-  it("reports the same caption again when a new reply repeats it in a new state", () => {
-    const a = view({ state: "success", caption: "Done." });
-    const b = view({ state: "idle" });
-    expect(describeView(a, b)).toBeNull();
-    expect(describeView(b, a)).toBe("success: Done.");
-  });
-});
-
-describe("countdownLeft", () => {
-  it("counts whole seconds up to the deadline and never goes below zero", () => {
-    expect(countdownLeft(20_000, 10_000)).toBe(10);
-    expect(countdownLeft(20_000, 10_001)).toBe(10);
-    expect(countdownLeft(20_000, 11_000)).toBe(9);
-    expect(countdownLeft(20_000, 19_001)).toBe(1);
-    expect(countdownLeft(20_000, 20_000)).toBe(0);
-    expect(countdownLeft(20_000, 25_000)).toBe(0);
+    const asked = view({ state: "confirmation-needed", confirm: { id: 3, chord: false } });
+    expect(describeView(asked, view({ ...asked, confirm: { id: 3, chord: false, expiresAt: 5000 } }))).toBeNull();
   });
 });

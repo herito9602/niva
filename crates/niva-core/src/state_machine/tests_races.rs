@@ -394,7 +394,7 @@ fn voice_flapping_during_a_pending_slot_still_listens_when_the_question_ends() {
     let (after, fx) = step(&s, Event::SpeakDone { id: SPEAK_ID });
     assert_eq!(after.phase, Phase::Listening);
     assert_eq!(after.pending, Some(slot()));
-    assert_eq!(fx, listen_cmd(NEXT_ID).to_vec());
+    assert_eq!(fx, follow_up_listen_cmd(NEXT_ID).to_vec());
 }
 
 #[test]
@@ -556,7 +556,7 @@ fn a_silent_alert_also_ends_by_click_or_the_30s_cap() {
 }
 
 #[test]
-fn a_spoken_alert_ends_at_the_later_of_chime_and_speech() {
+fn a_spoken_alert_ends_with_its_speech_whatever_the_chime_does() {
     let (alert, _) = step(&state_in(Phase::Idle), reminder(1, false));
     let chime = NEXT_ID;
     let speech = NEXT_ID + 1;
@@ -566,14 +566,13 @@ fn a_spoken_alert_ends_at_the_later_of_chime_and_speech() {
     assert_eq!(s.phase, Phase::ReminderAlert);
     assert!(fx.is_empty());
     let (s, _) = step(&s, Event::SpeakDone { id: speech });
-    assert_eq!(s.phase, Phase::Idle);
+    assert_eq!(s.phase, Phase::Success, "the alert settles");
 
-    // Speech first: the chime keeps it up.
-    let (s, fx) = step(&alert, Event::SpeakDone { id: speech });
-    assert_eq!(s.phase, Phase::ReminderAlert);
-    assert!(fx.is_empty());
-    let (s, _) = step(&s, Event::ChimeDone { id: chime });
-    assert_eq!(s.phase, Phase::Idle);
+    // Speech first: the alert is over at once (the pulse never resumes) and the
+    // late chime report is stale.
+    let (s, _) = step(&alert, Event::SpeakDone { id: speech });
+    assert_eq!(s.phase, Phase::Success);
+    assert_ignored(s, Event::ChimeDone { id: chime });
 }
 
 #[test]

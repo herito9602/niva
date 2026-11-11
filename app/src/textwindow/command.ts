@@ -11,6 +11,9 @@ export function prepareCommand(raw: string): string | null {
   return Array.from(text).slice(0, MAX_COMMAND_CHARS).join("");
 }
 
+/** What the window says while it waits: Niva answers aloud, nothing is shown back. */
+export const HINT_READY = "Press Enter. Niva answers by voice.";
+
 /** The only command this window may call (its capability grants nothing else). */
 export const SUBMIT_COMMAND = "submit_text";
 

@@ -23,21 +23,12 @@ export function appendLog(log: readonly string[], entry: string, max = 60): stri
 }
 
 /**
- * The log line a view change deserves: a new caption (a reply, a question, an
- * error) or a new confirmation prompt. Nothing for changes that only move the
- * confirmation deadline or show no text.
+ * The log line a view change deserves: a new state, or the voice becoming
+ * audible in the same state. The view carries no reply text; what Niva says
+ * arrives as its own dev-log line from the host (debug builds).
  */
 export function describeView(prev: ViewPayload | null, next: ViewPayload): string | null {
-  const prompt = next.confirm?.prompt;
-  if (prompt && prompt !== prev?.confirm?.prompt) return `confirm: ${prompt}`;
-  if (next.confirm) return null;
-  if (next.caption && (next.caption !== prev?.caption || next.state !== prev?.state)) {
-    return `${next.state}: ${next.caption}`;
-  }
-  return null;
-}
-
-/** Whole seconds until `endsAt` (epoch ms), never below zero. */
-export function countdownLeft(endsAt: number, nowMs: number): number {
-  return Math.max(0, Math.ceil((endsAt - nowMs) / 1000));
+  const speaking = next.speaking === true;
+  if (next.state === prev?.state && speaking === (prev?.speaking === true)) return null;
+  return `state: ${next.state}${speaking ? " (speaking)" : ""}`;
 }

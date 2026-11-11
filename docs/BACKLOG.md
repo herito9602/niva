@@ -137,7 +137,6 @@ Owner decision: finish the MVP first (slice 3 commit, reminders, installer), the
 - [ ] **Slice 3: preload the model on the wake word or the shortcut.** The model now leaves the GPU after 30 idle minutes, so the first request costs a 10 to 13 s cold load. Start loading when the wake word or the shortcut fires, so the load runs while the user speaks. Also measure the cold load with Whisper resident in VRAM (S1 only measured both already loaded).
 - [ ] **A cold load over the 15 s budget fails the first request.** The `Timeout` re-warm finishes the load, so the retry works; decide whether the reply should say the model is waking up.
 
-- [ ] **The acting hold eats into the reading time.** The island holds a quick result up to 900 ms behind `acting` (`viewStore.ts`), but the reducer starts the reading timer when the result arrives, so the message is on screen up to 900 ms less than `reading.rs` computes. Add that margin in the core if a short reply feels rushed.
 
 ## Ideas from OpenJarvis (github.com/open-jarvis/OpenJarvis, reviewed 2026-11-04)
 Read through fetched summaries of selected files, not a full audit. Its safety and voice loop are weaker than ours; these are the parts worth taking.

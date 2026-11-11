@@ -29,7 +29,7 @@ describe("createViewStore", () => {
 
   it("stores the latest view as received", () => {
     const store = createViewStore();
-    const view: ViewPayload = { state: "thinking", caption: "Which one?" };
+    const view: ViewPayload = { state: "thinking" };
     store.setView(view);
     expect(store.getState().view).toBe(view);
     store.setView({ state: "idle" });
@@ -71,18 +71,37 @@ describe("createViewStore", () => {
 });
 
 describe("the payload the notch reads", () => {
-  it("existing_payload_with_caption_is_accepted_and_text_ignored", () => {
+  it("view_store_parses_trimmed_payload", () => {
+    // The payload exactly as the host serializes it (design L5): no reply text,
+    // no labels, no countdown numbers.
+    const wire = '{"state":"confirmation-needed","speaking":false,"confirm":{"id":4,"expiresAt":1700,"chord":true}}';
     const store = createViewStore();
-    const withText: ViewPayload = {
-      state: "success",
-      caption: "Opening Notepad",
-      confirm: { id: 4, prompt: "Close it?", confirmLabel: "Yes", cancelLabel: "No" },
-      countdown: { text: "Sleeping in {n}", seconds: 10, endsAt: 0 },
-    };
-    store.setView(withText);
-    expect(store.getState().view).toBe(withText);
-    // The look is the same as for the bare state: no field of text changes it.
-    expect(viewToLook(store.getState().view)).toBe(viewToLook({ state: "success" }));
+    const { listen, fire } = fakeListen();
+    bindHostEvents(store, listen);
+    fire(VIEW_EVENT, JSON.parse(wire));
+    const view = store.getState().view;
+    expect(view?.state).toBe("confirmation-needed");
+    expect(view?.confirm).toEqual({ id: 4, expiresAt: 1700, chord: true });
+    expect(isSpeaking(view)).toBe(false);
+    expect(viewToLook(view)).toBe(LOOKS.confirmation);
+    // A reminder carries a count only; the look has no text to draw.
+    fire(VIEW_EVENT, JSON.parse('{"state":"reminder-alert","speaking":false,"reminder":{"count":3}}'));
+    expect(store.getState().view?.reminder).toEqual({ count: 3 });
+    expect(viewToLook(store.getState().view)).toBe(LOOKS.reminder);
+    // The countdown is a state of its own.
+    fire(VIEW_EVENT, JSON.parse('{"state":"countdown","speaking":false}'));
+    expect(viewToLook(store.getState().view)).toBe(LOOKS.confirmation);
+  });
+
+  it("the speaking flag from the host reaches the look and drops again", () => {
+    const store = createViewStore();
+    const { listen, fire } = fakeListen();
+    bindHostEvents(store, listen);
+    fire(VIEW_EVENT, { state: "success", speaking: false });
+    expect(viewToLook(store.getState().view)).toBe(LOOKS.success);
+    fire(VIEW_EVENT, { state: "success", speaking: true });
+    expect(viewToLook(store.getState().view)).toBe(LOOKS.speaking);
+    fire(VIEW_EVENT, { state: "success", speaking: false });
     expect(viewToLook(store.getState().view)).toBe(LOOKS.success);
   });
 
@@ -97,7 +116,7 @@ describe("the payload the notch reads", () => {
 
 describe("the minimum time on screen for acting", () => {
   const acting: ViewPayload = { state: "acting" };
-  const success: ViewPayload = { state: "success", caption: "Opened Notepad." };
+  const success: ViewPayload = { state: "success" };
   const shown = (store: ReturnType<typeof createViewStore>) => store.getState().view;
 
   beforeEach(() => {
@@ -107,7 +126,7 @@ describe("the minimum time on screen for acting", () => {
     vi.useRealTimers();
   });
 
-  it("holds a quick result until acting was visible for the minimum", () => {
+  it("quick_action_holds_acting_900ms_before_result", () => {
     const store = createViewStore();
     store.setView(acting);
     vi.advanceTimersByTime(40);
@@ -121,7 +140,7 @@ describe("the minimum time on screen for acting", () => {
 
   it("holds an error the same way", () => {
     const store = createViewStore();
-    const error: ViewPayload = { state: "error", caption: "I could not do that." };
+    const error: ViewPayload = { state: "error" };
     store.setView(acting);
     store.setView(error);
     expect(shown(store)).toBe(acting);
@@ -137,19 +156,19 @@ describe("the minimum time on screen for acting", () => {
     expect(shown(store)).toBe(success);
   });
 
-  it("does not restart the minimum when acting changes its caption", () => {
+  it("does not restart the minimum when another acting view arrives", () => {
     const store = createViewStore();
     store.setView(acting);
     vi.advanceTimersByTime(ACTING_MIN_MS - 100);
-    store.setView({ state: "acting", caption: "Second step" });
+    store.setView({ state: "acting", speaking: false });
     store.setView(success);
     vi.advanceTimersByTime(100);
     expect(shown(store)).toBe(success);
   });
 
   it.each<ViewPayload>([
-    { state: "reminder-alert", caption: "Pizza" },
-    { state: "confirmation-needed", caption: "Close Spotify?" },
+    { state: "reminder-alert", reminder: { count: 1 } },
+    { state: "confirmation-needed", confirm: { id: 7, chord: false } },
     { state: "idle" },
     { state: "listening" },
   ])("shows $state at once", (view) => {
@@ -159,9 +178,9 @@ describe("the minimum time on screen for acting", () => {
     expect(shown(store)).toBe(view);
   });
 
-  it("a newer view replaces a held result, which never appears", () => {
+  it("reminder_during_hold_shows_at_once_and_drops_held_result", () => {
     const store = createViewStore();
-    const alert: ViewPayload = { state: "reminder-alert", caption: "Pizza" };
+    const alert: ViewPayload = { state: "reminder-alert", reminder: { count: 1 } };
     store.setView(acting);
     store.setView(success);
     store.setView(alert);
@@ -169,12 +188,9 @@ describe("the minimum time on screen for acting", () => {
     expect(shown(store)).toBe(alert);
   });
 
-  it("never holds the sleep countdown or what follows it", () => {
+  it("countdown_is_never_held", () => {
     const store = createViewStore();
-    const countdown: ViewPayload = {
-      state: "acting",
-      countdown: { text: "Sleeping in {n}", seconds: 10, endsAt: 0 },
-    };
+    const countdown: ViewPayload = { state: "countdown" };
     store.setView(countdown);
     expect(shown(store)).toBe(countdown);
     store.setView(success);
@@ -183,24 +199,20 @@ describe("the minimum time on screen for acting", () => {
 
   it("a countdown that follows acting cancels the minimum", () => {
     const store = createViewStore();
-    const countdown: ViewPayload = {
-      state: "acting",
-      countdown: { text: "Sleeping in {n}", seconds: 10, endsAt: 0 },
-    };
+    const countdown: ViewPayload = { state: "countdown" };
     store.setView(acting);
     store.setView(countdown);
     store.setView(success);
     expect(shown(store)).toBe(success);
   });
 
-  it("shows a confirmation at once, with its buttons, even while acting is still held", () => {
+  it("shows a confirmation at once, even while acting is still held", () => {
     const store = createViewStore();
     store.setView(acting);
     vi.advanceTimersByTime(40);
     const confirmation: ViewPayload = {
       state: "confirmation-needed",
-      caption: "Close Spotify.exe?",
-      confirm: { id: 7, prompt: "Close Spotify.exe?", confirmLabel: "Confirm", cancelLabel: "Cancel" },
+      confirm: { id: 7, chord: false },
     };
     store.setView(confirmation);
     expect(shown(store)).toBe(confirmation);

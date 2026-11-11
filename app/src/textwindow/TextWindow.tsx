@@ -1,11 +1,11 @@
 import { useCallback, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { MAX_COMMAND_CHARS, createSubmitter, viewAfter } from "./command";
+import { HINT_READY, MAX_COMMAND_CHARS, createSubmitter, viewAfter } from "./command";
 import "./text.css";
 
 // The release "Type a command" window. It can do one thing: hand the typed
-// text to the host, which turns it into a text event. The answer appears on the
-// island, so nothing is shown back here.
+// text to the host, which turns it into a text event. Niva answers by voice, so
+// nothing is shown back here.
 export default function TextWindow() {
   const [text, setText] = useState("");
   const [failed, setFailed] = useState(false);
@@ -44,7 +44,7 @@ export default function TextWindow() {
           <button type="submit">Send</button>
         </div>
         <p className="hint" role="status">
-          {failed ? "Could not send the command. Try again." : "Press Enter. The answer appears on the island."}
+          {failed ? "Could not send the command. Try again." : HINT_READY}
         </p>
       </form>
     </main>

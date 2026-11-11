@@ -11,6 +11,9 @@ mod dispatcher;
 mod effect_runner;
 #[cfg(feature = "eval")]
 pub mod eval;
+// Waits for the reminder service (`reminder_due`); the listen cue no longer asks.
+#[allow(dead_code)]
+mod fullscreen;
 mod latency;
 #[cfg(windows)]
 pub mod release;
@@ -151,6 +154,18 @@ type DevAssistantWith = fn(
 ) -> niva_core::assistant::Assistant;
 #[cfg(debug_assertions)]
 const _: DevAssistantWith = dev::assistant_with;
+
+/// Debug builds: the text of each reply, as one dev-log line in the debug window.
+#[cfg(debug_assertions)]
+fn dev_speak_log(app: AppHandle) -> effect_runner::SpeakLog {
+    use tauri::Emitter;
+
+    Arc::new(move |line| {
+        eprintln!("{line}");
+        let payload = serde_json::json!({ "line": line });
+        let _ = app.emit_to(debug::DEBUG_WINDOW_LABEL, debug::DEV_LOG_EVENT, payload);
+    })
+}
 
 /// Who answers the reducer's request effects. Debug builds run the assistant
 /// loop on Ollama (dev LLM until it is ready) and the dry-run PC; release builds
@@ -409,6 +424,10 @@ pub fn run() {
             #[cfg(windows)]
             let runner =
                 runner.with_activity(Arc::new(adapters::windows_activity::WindowsActivity));
+            // Debug builds only: what Niva says goes to the debug window's log. The
+            // notch draws no text, and release builds log none.
+            #[cfg(debug_assertions)]
+            let runner = runner.with_speak_log(dev_speak_log(app.handle().clone()));
             // The confirmation keys: Esc and Ctrl+Shift+Enter, registered only
             // while a confirmation is on screen. Their answers re-enter through
             // the same queue as every other event.
