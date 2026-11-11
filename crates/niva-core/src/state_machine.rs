@@ -563,6 +563,11 @@ pub enum Effect {
     Listen {
         id: u64,
         mode: ListenMode,
+        /// The listen starts a turn the user asked for (wake word or
+        /// shortcut): the host plays an acknowledgement cue and opens the
+        /// microphone when it ends. False after a spoken question (a
+        /// follow-up or a confirmation): Niva has just spoken.
+        ack: bool,
     },
     CancelListen {
         id: u64,
@@ -710,15 +715,17 @@ impl State {
     }
 
     /// Opens a sidecar listen and records its id.
-    pub(crate) fn open_listen(&mut self, mode: ListenMode, fx: &mut Vec<Effect>) {
+    pub(crate) fn open_listen(&mut self, mode: ListenMode, ack: bool, fx: &mut Vec<Effect>) {
         let id = self.alloc_id();
         self.listen_id = Some(id);
-        fx.push(Effect::Listen { id, mode });
+        fx.push(Effect::Listen { id, mode, ack });
     }
 
-    pub(crate) fn enter_listening(&mut self, fx: &mut Vec<Effect>) {
+    /// Listening for a command. `ack` is true when the user just asked for
+    /// it (activation), false when it follows a question Niva spoke.
+    pub(crate) fn enter_listening(&mut self, ack: bool, fx: &mut Vec<Effect>) {
         self.transition(Phase::Listening, fx);
-        self.open_listen(ListenMode::Command, fx);
+        self.open_listen(ListenMode::Command, ack, fx);
         self.start_timer(TimerKind::NoSpeech, fx);
     }
 
@@ -871,7 +878,7 @@ impl State {
     /// with the "voice not ready" template (the text window is offered).
     fn activate(&mut self, fx: &mut Vec<Effect>) {
         if self.voice_available {
-            self.enter_listening(fx);
+            self.enter_listening(true, fx);
         } else {
             self.enter_error(Template::VoiceNotReady, fx);
         }
@@ -884,12 +891,12 @@ impl State {
             // wake cannot come from a dead sidecar, so there is nothing to do.
             Phase::Success | Phase::Error => {
                 if self.speak_id.is_none() && self.voice_available {
-                    self.enter_listening(fx);
+                    self.enter_listening(true, fx);
                 }
             }
             Phase::ReminderAlert => {
                 if self.voice_available {
-                    self.enter_listening(fx);
+                    self.enter_listening(true, fx);
                 }
             }
             Phase::Listening
@@ -1008,7 +1015,7 @@ impl State {
     /// again with a new id while the 10 s timer keeps running (never restarted).
     fn reissue_confirm_listen(&mut self, fx: &mut Vec<Effect>) {
         if self.voice_available && !self.confirm_click_only {
-            self.open_listen(ListenMode::Confirm, fx);
+            self.open_listen(ListenMode::Confirm, false, fx);
         }
     }
 
@@ -1338,14 +1345,14 @@ impl State {
                     self.start_timer(TimerKind::Confirm, fx);
                     // Click-only: no voice channel, the buttons are the only way.
                     if self.voice_available && !self.confirm_click_only {
-                        self.open_listen(ListenMode::Confirm, fx);
+                        self.open_listen(ListenMode::Confirm, false, fx);
                     }
                 }
             }
             ReplyKind::AskFollowUp => {
                 if self.phase == Phase::Thinking {
                     if self.voice_available {
-                        self.enter_listening(fx);
+                        self.enter_listening(false, fx);
                     } else {
                         // Slot stays open; `TextSubmitted` or this timer ends it.
                         self.start_timer(TimerKind::FollowUp, fx);

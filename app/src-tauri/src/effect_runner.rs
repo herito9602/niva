@@ -44,7 +44,6 @@ use niva_core::ports::{
 use niva_core::state_machine::{Effect, Event, ListenMode, ReplyKind, Say, Template, TimerKind};
 use tokio::task::JoinHandle;
 
-use crate::fullscreen::{Fullscreen, FullscreenProbe};
 use crate::requests::Requests;
 use crate::ui_adapter::{say_text, template_caption};
 
@@ -136,11 +135,9 @@ pub struct EffectRunner {
     prompt: Option<SpokenPrompt>,
     /// Debug builds: one line with the reply text per `Speak`.
     speak_log: Option<SpeakLog>,
-    /// What is in front of the desktop (exclusive fullscreen hides the notch).
-    fullscreen: Option<Arc<dyn FullscreenProbe>>,
-    /// The id of the listen waiting for the fullscreen cue to end, if any. The
-    /// cue's callback opens it only while it is still this id; a new `Listen`
-    /// or its own `CancelListen` clears it.
+    /// The id of the listen waiting for the acknowledgement cue to end, if
+    /// any. The cue's callback opens it only while it is still this id; a new
+    /// `Listen` or its own `CancelListen` clears it.
     pending_listen: Arc<Mutex<Option<u64>>>,
     /// How long the pending cue delays the microphone: added to the reducer's
     /// no-speech window, which starts right after the `Listen` effect.
@@ -161,7 +158,6 @@ impl EffectRunner {
             timers: Vec::new(),
             watchdog: None,
             speak_log: None,
-            fullscreen: None,
             pending_listen: Arc::new(Mutex::new(None)),
             cue_delay: Duration::ZERO,
             activity: Arc::new(NoActivity),
@@ -183,13 +179,6 @@ impl EffectRunner {
     /// Wires the host's own sounds (the alert chime).
     pub fn with_cue(mut self, cue: Arc<dyn AudioCue>) -> Self {
         self.cue = Some(cue);
-        self
-    }
-
-    /// Where the runner asks what is in front of the desktop. Without one the
-    /// notch is assumed visible.
-    pub fn with_fullscreen(mut self, probe: Arc<dyn FullscreenProbe>) -> Self {
-        self.fullscreen = Some(probe);
         self
     }
 
@@ -254,7 +243,7 @@ impl EffectRunner {
                     cue.stop();
                 }
             }
-            Effect::Listen { id, mode } => self.listen(id, mode),
+            Effect::Listen { id, mode, ack } => self.listen(id, mode, ack),
             Effect::CancelListen { id } => {
                 // Only the listen that is waiting for its cue is dropped; the
                 // cancel of any other listen must not touch it.
@@ -284,11 +273,12 @@ impl EffectRunner {
         }
     }
 
-    /// Opens a listen. Over an exclusive fullscreen app the notch cannot be
-    /// drawn, so a command listen is announced by the host chime and opens when
-    /// the chime is over: the microphone never hears the cue, and a listen
-    /// cancelled in the meantime never opens.
-    fn listen(&mut self, id: u64, mode: ListenMode) {
+    /// Opens a listen. A listen the user asked for (`ack`: wake word or
+    /// shortcut) is first acknowledged by the host cue and opens when the cue
+    /// is over: the microphone never hears the cue, and a listen cancelled in
+    /// the meantime never opens. Audio spoken meanwhile is kept by the sidecar
+    /// (wake pre-roll or rolling buffer) and replayed by the late `listen`.
+    fn listen(&mut self, id: u64, mode: ListenMode, ack: bool) {
         // A new listen supersedes any listen still waiting for its cue.
         *lock(&self.pending_listen) = None;
         self.cue_delay = Duration::ZERO;
@@ -301,12 +291,8 @@ impl EffectRunner {
         if mode == ListenMode::Command {
             self.prompt = None;
         }
-        let hidden = self
-            .fullscreen
-            .as_ref()
-            .is_some_and(|probe| probe.current() == Fullscreen::Exclusive);
         if mode == ListenMode::Command
-            && hidden
+            && ack
             && let Some(cue) = self.cue.clone()
         {
             *lock(&self.pending_listen) = Some(id);
@@ -1004,6 +990,7 @@ mod tests {
             Effect::Listen {
                 id: 1,
                 mode: ListenMode::Command,
+                ack: false,
             },
             Effect::CancelListen { id: 1 },
             Effect::ForceEndOfSpeech { id: 1 },
@@ -1364,38 +1351,31 @@ mod tests {
         assert!(cue.calls.lock().unwrap().is_empty());
     }
 
-    // --- exclusive fullscreen: a cue instead of the notch (design L16) ------
+    // --- activation: an acknowledgement cue before the microphone (design L17) --
 
-    struct FakeFullscreen(Fullscreen);
-
-    impl FullscreenProbe for FakeFullscreen {
-        fn current(&self) -> Fullscreen {
-            self.0
-        }
-    }
-
-    fn fullscreen_rig(state: Fullscreen) -> (Rig, Arc<FakeCue>, Arc<FakeVoice>) {
+    fn cue_listen_rig() -> (Rig, Arc<FakeCue>, Arc<FakeVoice>) {
         let voice = FakeVoice::up();
         let (mut r, cue) = cue_rig(None);
         r.runner = EffectRunner::new(r.runner.sink.clone(), r.host.clone(), r.requests.clone())
             .with_voice(voice.clone(), voice.clone())
-            .with_cue(cue.clone())
-            .with_fullscreen(Arc::new(FakeFullscreen(state)));
+            .with_cue(cue.clone());
         (r, cue, voice)
     }
 
+    /// The command listen of an activation (wake word or shortcut).
     fn command_listen(id: u64) -> Effect {
         Effect::Listen {
             id,
             mode: ListenMode::Command,
+            ack: true,
         }
     }
 
     #[tokio::test(start_paused = true)]
-    async fn exclusive_fullscreen_plays_cue_on_listen_start_instead_of_notch() {
-        let (mut r, cue, voice) = fullscreen_rig(Fullscreen::Exclusive);
+    async fn an_activation_plays_the_cue_and_opens_the_microphone_when_it_ends() {
+        let (mut r, cue, voice) = cue_listen_rig();
         r.runner.run(vec![command_listen(3)]);
-        // The short listening cue, not the long alert chime.
+        // The short acknowledgement, not the long alert chime.
         assert_eq!(*cue.calls.lock().unwrap(), vec!["listening"]);
         // The microphone opens only when the cue is over, so it never hears it.
         assert!(voice.calls().is_empty(), "{:?}", voice.calls());
@@ -1405,8 +1385,35 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_listen_that_follows_a_spoken_question_has_no_cue() {
+        let (mut r, cue, voice) = cue_listen_rig();
+        r.runner.run(vec![
+            Effect::Listen {
+                id: 3,
+                mode: ListenMode::Command,
+                ack: false,
+            },
+            Effect::Listen {
+                id: 4,
+                mode: ListenMode::Confirm,
+                ack: false,
+            },
+        ]);
+        assert!(cue.calls.lock().unwrap().is_empty());
+        assert_eq!(voice.calls(), vec!["listen 3 Command", "listen 4 Confirm"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_a_cue_port_an_activation_opens_at_once() {
+        let voice = FakeVoice::up();
+        let mut r = voice_rig(&voice);
+        r.runner.run(vec![command_listen(3)]);
+        assert_eq!(voice.calls(), vec!["listen 3 Command"]);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_listen_cancelled_during_the_cue_never_opens() {
-        let (mut r, cue, voice) = fullscreen_rig(Fullscreen::Exclusive);
+        let (mut r, cue, voice) = cue_listen_rig();
         r.runner
             .run(vec![command_listen(3), Effect::CancelListen { id: 3 }]);
         let done = cue.done.lock().unwrap().pop().expect("the cue's callback");
@@ -1416,7 +1423,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_cancel_of_another_listen_keeps_the_pending_one() {
-        let (mut r, cue, voice) = fullscreen_rig(Fullscreen::Exclusive);
+        let (mut r, cue, voice) = cue_listen_rig();
         r.runner
             .run(vec![command_listen(3), Effect::CancelListen { id: 2 }]);
         let done = cue.done.lock().unwrap().pop().expect("the cue's callback");
@@ -1426,12 +1433,13 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_confirm_listen_supersedes_a_pending_cue_listen() {
-        let (mut r, cue, voice) = fullscreen_rig(Fullscreen::Exclusive);
+        let (mut r, cue, voice) = cue_listen_rig();
         r.runner.run(vec![
             command_listen(3),
             Effect::Listen {
                 id: 4,
                 mode: ListenMode::Confirm,
+                ack: false,
             },
         ]);
         // The confirm listen opened the microphone at once.
@@ -1444,7 +1452,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_newer_cue_listen_supersedes_the_older_one() {
-        let (mut r, cue, voice) = fullscreen_rig(Fullscreen::Exclusive);
+        let (mut r, cue, voice) = cue_listen_rig();
         r.runner.run(vec![command_listen(3), command_listen(4)]);
         let mut dones: Vec<_> = cue.done.lock().unwrap().drain(..).collect();
         for done in dones.drain(..) {
@@ -1455,9 +1463,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_no_speech_window_counts_from_when_the_cue_is_over() {
-        let (mut r, cue, _voice) = fullscreen_rig(Fullscreen::Exclusive);
+        let (mut r, cue, _voice) = cue_listen_rig();
         cue.listening_ms
-            .store(150, std::sync::atomic::Ordering::SeqCst);
+            .store(240, std::sync::atomic::Ordering::SeqCst);
         r.runner.run(vec![
             command_listen(3),
             Effect::StartTimer {
@@ -1465,7 +1473,7 @@ mod tests {
                 token: 3,
             },
         ]);
-        advance(ms(6_149)).await;
+        advance(ms(6_239)).await;
         assert!(drain(&mut r.rx).is_empty());
         advance(ms(1)).await;
         assert_eq!(
@@ -1479,9 +1487,13 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_no_speech_window_is_not_extended_without_a_cue() {
-        let (mut r, _cue, _voice) = fullscreen_rig(Fullscreen::No);
+        let (mut r, _cue, _voice) = cue_listen_rig();
         r.runner.run(vec![
-            command_listen(3),
+            Effect::Listen {
+                id: 3,
+                mode: ListenMode::Command,
+                ack: false,
+            },
             Effect::StartTimer {
                 kind: TimerKind::NoSpeech,
                 token: 3,
@@ -1492,30 +1504,24 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn without_exclusive_fullscreen_the_listen_opens_at_once_with_no_cue() {
-        for state in [Fullscreen::No, Fullscreen::Windowed] {
-            let (mut r, cue, voice) = fullscreen_rig(state);
-            r.runner.run(vec![
-                command_listen(3),
-                Effect::Listen {
-                    id: 4,
-                    mode: ListenMode::Confirm,
-                },
-            ]);
-            assert!(cue.calls.lock().unwrap().is_empty(), "{state:?}");
-            assert_eq!(voice.calls(), vec!["listen 3 Command", "listen 4 Confirm"]);
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_confirm_listen_gets_no_cue_even_over_an_exclusive_game() {
-        let (mut r, cue, voice) = fullscreen_rig(Fullscreen::Exclusive);
-        r.runner.run(vec![Effect::Listen {
-            id: 4,
-            mode: ListenMode::Confirm,
-        }]);
-        assert!(cue.calls.lock().unwrap().is_empty());
-        assert_eq!(voice.calls(), vec!["listen 4 Confirm"]);
+    async fn a_follow_up_after_a_cued_listen_does_not_inherit_its_delay() {
+        let (mut r, cue, _voice) = cue_listen_rig();
+        cue.listening_ms
+            .store(240, std::sync::atomic::Ordering::SeqCst);
+        r.runner.run(vec![
+            command_listen(3),
+            Effect::Listen {
+                id: 4,
+                mode: ListenMode::Command,
+                ack: false,
+            },
+            Effect::StartTimer {
+                kind: TimerKind::NoSpeech,
+                token: 4,
+            },
+        ]);
+        advance(ms(6_000)).await;
+        assert_eq!(drain(&mut r.rx).len(), 1);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1526,12 +1532,14 @@ mod tests {
             Effect::Listen {
                 id: 3,
                 mode: ListenMode::Command,
+                ack: false,
             },
             Effect::ForceEndOfSpeech { id: 3 },
             Effect::CancelListen { id: 3 },
             Effect::Listen {
                 id: 4,
                 mode: ListenMode::Confirm,
+                ack: false,
             },
         ]);
         assert_eq!(
@@ -1555,7 +1563,11 @@ mod tests {
     }
 
     fn listen(id: u64, mode: ListenMode) -> Effect {
-        Effect::Listen { id, mode }
+        Effect::Listen {
+            id,
+            mode,
+            ack: false,
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -1701,6 +1713,7 @@ mod tests {
             Effect::Listen {
                 id: 6,
                 mode: ListenMode::Command,
+                ack: false,
             },
         ]);
         assert!(voice.calls().is_empty());
@@ -1745,6 +1758,7 @@ mod tests {
             Effect::Listen {
                 id: 1,
                 mode: ListenMode::Command,
+                ack: false,
             },
             Effect::Chime { id: 2 },
             speak(3, Say::Text("x".into())),

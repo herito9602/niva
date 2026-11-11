@@ -170,6 +170,7 @@ Goal: remove reply text and labels from the payload, add `audible_speak`, delete
 - [x] 3.9 Empty transcript. RED: `empty_transcript_runs_no_tool_and_shows_error_then_hides` (core). **Done (apply):** existing behavior, now pinned by a test.
 - [x] 3.10 Exclusive fullscreen (L16), depends on spike 2.10. RED: `exclusive_fullscreen_plays_cue_on_listen_start_instead_of_notch`. If the spike found detection infeasible, record this task as deferred in apply-progress and skip the test. **Done (apply, not deferred):** over `Fullscreen::Exclusive` (D3D fullscreen) a command listen plays the chime first and opens the listen when the chime ends, guarded by an epoch so a cancelled listen never opens; this also answers the BACKLOG item about the microphone hearing the cue.
 - [x] 3.11 Frontend consumes `speaking` and `countdown`. RED in `looks.test.ts`: `speaking_flag_from_payload_overrides_phase_look`, `countdown_payload_maps_to_confirmation_look`. Regression: `typed_text_in_confirmation_is_ignored` (core), `typed_command_enter_submits_and_clears_box` (frontend, existing behavior), reply to typed command shows no text. **Done (apply):** `speaking.test.ts` crosses the host boundary (JSON payload to store to look to wave level); the text window hint no longer says the answer appears on the island (`HINT_READY`).
+- [x] 3.12 Activation acknowledgement cue (L19). RED: reducer `Effect::Listen { ack }` (`listen_cmd` ack true for wake and shortcut, `follow_up_listen_cmd` ack false, confirm false), runner `an_activation_plays_the_cue_and_opens_the_microphone_when_it_ends`, `a_listen_that_follows_a_spoken_question_has_no_cue`, `without_a_cue_port_an_activation_opens_at_once`, `the_no_speech_window_counts_from_when_the_cue_is_over`, `a_follow_up_after_a_cued_listen_does_not_inherit_its_delay`, and `audio_cue` `the_acknowledgement_is_two_warm_rising_notes`, `the_acknowledgement_is_quieter_than_the_chime`, `a_rendered_note_fades_in_from_silence_and_dies_away`. **Done (apply):** the cue plays on every activation, no longer only over exclusive fullscreen, so the runner no longer takes a fullscreen probe; the cue is 240 ms (was 90 ms) and `Tone` gained attack, release and harmonic. Cue first, listen after: the sidecar pre-roll keeps what the user says meanwhile (see L19). Hand test: say "Hey Jarvis" and press Ctrl+Shift+Space, speaking immediately after each, and check the first word is transcribed.
 
 Verification:
 - `cargo test -p niva-core`
@@ -316,6 +317,13 @@ Rollback boundary: revert PR 5 only. The notch keeps working on the simulated wa
 | speech-io | Mismatched SpeakStarted | 3.1 |
 | fullscreen-policy | Reminder during video | 3.7 |
 | fullscreen-policy | Notch cannot draw over exclusive fullscreen | 2.10, 3.10 |
+| voice-activation | Wake word is acknowledged | 3.12 |
+| voice-activation | Shortcut is acknowledged | 3.12 |
+| voice-activation | Speaking right after the wake word | 3.12 |
+| voice-activation | Cue does not become a turn | 3.12 |
+| voice-activation | Cancelled before the cue ends | 3.12 |
+| voice-activation | Follow-up question has no cue | 3.12 |
+| voice-activation | Voice down gives no cue | 3.12 |
 | reminders | Fires at due time | 3.7 |
 | reminders | Speaking overrides the pulse | 2.2, 3.7 |
 | reminders | The alert ends with the speech | 3.7 |

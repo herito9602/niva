@@ -7,9 +7,9 @@
 //!
 //! - A reminder that falls due over any fullscreen app is `silent`: the chime
 //!   and the coral pulse, no speech and no text ([`reminder_due`]).
-//! - Over an exclusive Direct3D fullscreen app the notch cannot be drawn, so
-//!   listening is announced by the host chime instead ([`Fullscreen::Exclusive`],
-//!   used by the effect runner on `Listen`).
+//! - Over an exclusive Direct3D fullscreen app the notch cannot be drawn
+//!   ([`Fullscreen::Exclusive`]). Listening is announced by the host cue on every
+//!   activation (design L17), so it needs no probe of its own.
 //!
 //! Whether a particular game is truly exclusive or composited (fullscreen
 //! optimizations) can only be told by trying it: that stays a hand test.

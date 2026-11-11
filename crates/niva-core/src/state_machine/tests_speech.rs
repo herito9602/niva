@@ -112,7 +112,8 @@ fn a_finished_confirm_prompt_opens_the_confirm_listen_and_the_10s_timer() {
                 start(TimerKind::Confirm),
                 Effect::Listen {
                     id: 100,
-                    mode: ListenMode::Confirm
+                    mode: ListenMode::Confirm,
+                    ack: false,
                 },
             ]
         );
@@ -147,7 +148,7 @@ fn a_finished_follow_up_question_listens_directly_when_voice_is_ready() {
         assert_eq!(s.timers, vec![TimerKind::NoSpeech]);
         assert_eq!(
             fx,
-            listen_cmd(100).to_vec(),
+            follow_up_listen_cmd(100).to_vec(),
             "no settle timer, no island change"
         );
     }

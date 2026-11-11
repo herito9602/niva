@@ -394,7 +394,7 @@ fn voice_flapping_during_a_pending_slot_still_listens_when_the_question_ends() {
     let (after, fx) = step(&s, Event::SpeakDone { id: SPEAK_ID });
     assert_eq!(after.phase, Phase::Listening);
     assert_eq!(after.pending, Some(slot()));
-    assert_eq!(fx, listen_cmd(NEXT_ID).to_vec());
+    assert_eq!(fx, follow_up_listen_cmd(NEXT_ID).to_vec());
 }
 
 #[test]
