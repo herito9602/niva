@@ -3,8 +3,8 @@
 // paces one display transition (see `ACTING_MIN_MS`). The payload carries no
 // text (design L5); the notch only reads the state and the `speaking` flag.
 
-import { CURSOR_EVENT, ISLAND_EVENT, VIEW_EVENT } from "../events";
-import type { CursorPayload, IslandPayload, ViewPayload } from "../events";
+import { ISLAND_EVENT, VIEW_EVENT } from "../events";
+import type { IslandPayload, ViewPayload } from "../events";
 
 /** Whether the island is sliding in, sliding out or away. */
 export type SlidePhase = "hidden" | "in" | "out";
@@ -17,7 +17,6 @@ export const isSpeaking = (view: ViewPayload | null): boolean => view?.speaking 
 export interface ViewState {
   view: ViewPayload | null;
   phase: SlidePhase;
-  cursor: CursorPayload | null;
 }
 
 export interface ViewStore {
@@ -25,7 +24,6 @@ export interface ViewStore {
   subscribe(listener: () => void): () => void;
   setView(view: ViewPayload): void;
   setIsland(visible: boolean): void;
-  setCursor(cursor: CursorPayload): void;
 }
 
 /**
@@ -42,7 +40,7 @@ const isPlainActing = (view: ViewPayload | null) => view?.state === "acting";
 const isResult = (view: ViewPayload) => view.state === "success" || view.state === "error";
 
 export function createViewStore(): ViewStore {
-  let state: ViewState = { view: null, phase: "hidden", cursor: null };
+  let state: ViewState = { view: null, phase: "hidden" };
   const listeners = new Set<() => void>();
   let actingEndsAt = 0;
   let heldResult: ReturnType<typeof setTimeout> | undefined;
@@ -75,7 +73,6 @@ export function createViewStore(): ViewStore {
     },
     setView,
     setIsland: (visible) => update({ phase: phaseForIsland(visible) }),
-    setCursor: (cursor) => update({ cursor }),
   };
 }
 
@@ -85,7 +82,7 @@ export type Listen = <T>(
   handler: (event: { payload: T }) => void,
 ) => Promise<() => void>;
 
-/** Feeds the three host events into the store. Returns the unbind function. */
+/** Feeds the two host events into the store. Returns the unbind function. */
 export function bindHostEvents(
   store: ViewStore,
   listen: Listen,
@@ -100,7 +97,6 @@ export function bindHostEvents(
   const subs = [
     track(listen<ViewPayload>(VIEW_EVENT, (e) => store.setView(e.payload))),
     track(listen<IslandPayload>(ISLAND_EVENT, (e) => store.setIsland(e.payload.visible))),
-    track(listen<CursorPayload>(CURSOR_EVENT, (e) => store.setCursor(e.payload))),
   ];
   return () => {
     // Unlistening waits for the subscription to resolve, so an early unbind

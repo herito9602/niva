@@ -2,7 +2,6 @@
 
 export const VIEW_EVENT = "niva://view";
 export const ISLAND_EVENT = "niva://island";
-export const CURSOR_EVENT = "niva://cursor";
 
 export const ALL_STATES = [
   "idle",
@@ -51,8 +50,3 @@ export interface IslandPayload {
   visible: boolean;
 }
 
-/** Logical pixels relative to the island window's top-left corner. */
-export interface CursorPayload {
-  x: number;
-  y: number;
-}

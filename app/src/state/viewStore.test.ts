@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CURSOR_EVENT, ISLAND_EVENT, VIEW_EVENT, type ViewPayload } from "../events";
+import { ISLAND_EVENT, VIEW_EVENT, type ViewPayload } from "../events";
 import { LOOKS, viewToLook } from "../notch/looks";
 import { ACTING_MIN_MS, bindHostEvents, createViewStore, isSpeaking, type Listen } from "./viewStore";
 
@@ -24,7 +24,7 @@ function fakeListen() {
 
 describe("createViewStore", () => {
   it("starts empty and hidden", () => {
-    expect(createViewStore().getState()).toEqual({ view: null, phase: "hidden", cursor: null });
+    expect(createViewStore().getState()).toEqual({ view: null, phase: "hidden" });
   });
 
   it("stores the latest view as received", () => {
@@ -44,20 +44,20 @@ describe("createViewStore", () => {
     expect(store.getState().phase).toBe("out");
   });
 
-  it("stores the cursor", () => {
+  it("has no cursor state or cursor event (the window is always click-through)", () => {
     const store = createViewStore();
-    store.setCursor({ x: 10, y: -4 });
-    expect(store.getState().cursor).toEqual({ x: 10, y: -4 });
+    expect(store).not.toHaveProperty("setCursor");
+    expect(store.getState()).not.toHaveProperty("cursor");
   });
 
   it("notifies subscribers on change and stops after unsubscribe", () => {
     const store = createViewStore();
     const listener = vi.fn();
     const off = store.subscribe(listener);
-    store.setCursor({ x: 1, y: 2 });
+    store.setIsland(true);
     expect(listener).toHaveBeenCalledTimes(1);
     off();
-    store.setCursor({ x: 3, y: 4 });
+    store.setIsland(false);
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
@@ -230,21 +230,19 @@ describe("the minimum time on screen for acting", () => {
 });
 
 describe("bindHostEvents", () => {
-  it("routes the three host events into the store", () => {
+  it("routes the two host events into the store", () => {
     const store = createViewStore();
     const { listen, fire } = fakeListen();
     bindHostEvents(store, listen);
     fire(VIEW_EVENT, { state: "acting" });
     fire(ISLAND_EVENT, { visible: true });
-    fire(CURSOR_EVENT, { x: 5, y: 6 });
     expect(store.getState()).toEqual({
       view: { state: "acting" },
       phase: "in",
-      cursor: { x: 5, y: 6 },
     });
   });
 
-  it("unlistens all three subscriptions after they resolved", async () => {
+  it("unlistens both subscriptions after they resolved", async () => {
     const store = createViewStore();
     const { listen, unlisten } = fakeListen();
     const unbind = bindHostEvents(store, listen);
@@ -252,7 +250,7 @@ describe("bindHostEvents", () => {
     expect(unlisten).not.toHaveBeenCalled();
     unbind();
     await flush();
-    expect(unlisten).toHaveBeenCalledTimes(3);
+    expect(unlisten).toHaveBeenCalledTimes(2);
   });
 
   it("unbinding before listen resolves still unlistens once they do", async () => {
@@ -266,7 +264,7 @@ describe("bindHostEvents", () => {
     expect(unlisten).not.toHaveBeenCalled();
     resolvers.forEach((resolve) => resolve(unlisten)); // the late resolution
     await flush();
-    expect(unlisten).toHaveBeenCalledTimes(3);
+    expect(unlisten).toHaveBeenCalledTimes(2);
   });
 
   it("reports a rejected listen instead of leaving an unhandled rejection", async () => {
@@ -275,7 +273,7 @@ describe("bindHostEvents", () => {
     const listen: Listen = () => Promise.reject(new Error("no ipc"));
     const unbind = bindHostEvents(store, listen, onError);
     await flush();
-    expect(onError).toHaveBeenCalledTimes(3);
+    expect(onError).toHaveBeenCalledTimes(2);
     unbind(); // must not throw or reject
     await flush();
   });
@@ -291,6 +289,6 @@ describe("bindHostEvents", () => {
     await flush();
     unbind();
     await flush();
-    expect(onError).toHaveBeenCalledTimes(3);
+    expect(onError).toHaveBeenCalledTimes(2);
   });
 });
