@@ -13,6 +13,7 @@ use niva_core::state_machine::{ListenMode, SidecarErrorCode};
 use super::*;
 use crate::adapters::voice_sidecar::policy::Degraded;
 use crate::adapters::voice_sidecar::process::Spawned;
+use crate::adapters::voice_sidecar::wire::Level;
 use niva_core::ports::{Speaker, SpeechEngine};
 
 // ---------------------------------------------------------------- the fake
@@ -227,6 +228,7 @@ struct Rig {
     events: Arc<Mutex<Vec<Event>>>,
     statuses: Arc<Mutex<Vec<Status>>>,
     logs: Arc<Mutex<Vec<String>>>,
+    levels: Arc<Mutex<Vec<Level>>>,
 }
 
 fn fast_settings() -> Settings {
@@ -255,6 +257,7 @@ fn rig_with(settings: Settings, plans: &[Plan]) -> Rig {
     let events = Arc::new(Mutex::new(Vec::new()));
     let statuses = Arc::new(Mutex::new(Vec::new()));
     let logs = Arc::new(Mutex::new(Vec::new()));
+    let levels = Arc::new(Mutex::new(Vec::new()));
     let started = Instant::now();
     let sup = Supervisor::start(Deps {
         launcher: launcher.clone(),
@@ -273,6 +276,10 @@ fn rig_with(settings: Settings, plans: &[Plan]) -> Rig {
             let statuses = statuses.clone();
             Arc::new(move |s| statuses.lock().unwrap().push(s))
         },
+        levels: {
+            let levels = levels.clone();
+            Arc::new(move |level| levels.lock().unwrap().push(level))
+        },
         settings,
     });
     Rig {
@@ -283,6 +290,7 @@ fn rig_with(settings: Settings, plans: &[Plan]) -> Rig {
         events,
         statuses,
         logs,
+        levels,
     }
 }
 
@@ -787,6 +795,7 @@ fn real_sidecar_without_a_microphone_reports_mic_missing_and_stops_on_shutdown()
         clock: Arc::new(move || started.elapsed().as_millis() as u64),
         log: Arc::new(|line| eprintln!("{line}")),
         status: Arc::new(|s| eprintln!("status: {s:?}")),
+        levels: Arc::new(|_| {}),
         settings,
     });
     let until = Instant::now() + Duration::from_secs(120);
@@ -809,6 +818,73 @@ fn real_sidecar_without_a_microphone_reports_mic_missing_and_stops_on_shutdown()
     sup.shutdown();
     eprintln!("shutdown took {:?}", stopping.elapsed());
     assert!(stopping.elapsed() < Duration::from_secs(10));
+}
+
+const LEVEL_LINE: &str = r#"{"type":"level","src":"tts","bands":[0,12,40,55,30,8,100]}"#;
+
+#[test]
+fn level_creates_no_reducer_event() {
+    let r = rig();
+    let fake = r.launcher.run(0);
+    fake.ready();
+    r.wait_event(READY_ON);
+    fake.say(LEVEL_LINE);
+    fake.say(r#"{"type":"speak_started","id":6}"#);
+    r.wait_event(Event::SpeakStarted { id: 6 });
+    // The sentinel went through after the level: the level made no event of its own.
+    assert_eq!(r.events(), vec![READY_ON, Event::SpeakStarted { id: 6 }]);
+    assert_eq!(
+        *r.levels.lock().unwrap(),
+        vec![Level {
+            bands: [0, 12, 40, 55, 30, 8, 100]
+        }]
+    );
+}
+
+#[test]
+fn level_flood_30hz_does_not_reach_dispatcher() {
+    let r = rig();
+    let fake = r.launcher.run(0);
+    fake.ready();
+    r.wait_event(READY_ON);
+    for _ in 0..300 {
+        fake.say(LEVEL_LINE); // ten seconds of speech at 30 Hz
+    }
+    fake.say(r#"{"type":"speak_done","id":6}"#);
+    r.wait_event(Event::SpeakDone { id: 6 });
+    assert_eq!(r.events(), vec![READY_ON, Event::SpeakDone { id: 6 }]);
+    assert_eq!(r.levels.lock().unwrap().len(), 300);
+}
+
+#[test]
+fn level_is_not_logged() {
+    let r = rig();
+    let fake = r.launcher.run(0);
+    fake.ready();
+    r.wait_event(READY_ON);
+    let before = r.logs.lock().unwrap().len();
+    for _ in 0..50 {
+        fake.say(LEVEL_LINE);
+    }
+    fake.say(r#"{"type":"speak_done","id":6}"#);
+    r.wait_event(Event::SpeakDone { id: 6 });
+    let logs = r.logs.lock().unwrap().clone();
+    assert_eq!(logs.len(), before, "{logs:?}");
+    assert!(logs.iter().all(|l| !l.contains("level")), "{logs:?}");
+}
+
+#[test]
+fn malformed_level_does_not_block_other_messages() {
+    let r = rig();
+    let fake = r.launcher.run(0);
+    fake.ready();
+    r.wait_event(READY_ON);
+    fake.say(r#"{"type":"level","src":"tts","bands":[1,2,3]}"#);
+    fake.say(r#"{"type":"level","src":"mic","bands":[1,2,3,4,5,6,7]}"#);
+    fake.say(r#"{"type":"level","src":"tts","bands":[0,0,0,0,0,0,101]}"#);
+    fake.say(r#"{"type":"speak_started","id":6}"#);
+    r.wait_event(Event::SpeakStarted { id: 6 });
+    assert!(r.levels.lock().unwrap().is_empty());
 }
 
 #[test]

@@ -26,10 +26,12 @@ use super::link::Link;
 use super::policy::{Action, Policy, Signal, Status, Timing};
 use super::process::{Launcher, Line, Proc, read_lines};
 use super::translate::{HostClock, ListenModes, Log, Translator};
-use super::wire::{self, Outgoing, ParseError};
+use super::wire::{self, Level, Outgoing, ParseError};
 
 pub type EventOut = Arc<dyn Fn(Event) + Send + Sync>;
 pub type StatusOut = Arc<dyn Fn(Status) + Send + Sync>;
+/// Where the supervisor hands each audio level (~30 per second while Niva speaks).
+pub type LevelOut = Arc<dyn Fn(Level) + Send + Sync>;
 
 /// Holds the first start until the LLM is warm (design "Model-load order"):
 /// the larger, less flexible GPU allocation lands first when it can, and a
@@ -74,6 +76,8 @@ pub struct Deps {
     pub clock: HostClock,
     pub log: Log,
     pub status: StatusOut,
+    /// Where audio levels go: not the reducer, not the log.
+    pub levels: LevelOut,
     pub settings: Settings,
 }
 
@@ -382,6 +386,9 @@ impl Run {
             }
             Ok(incoming) => {
                 let translated = self.translator.translate(incoming);
+                if let Some(level) = translated.level {
+                    (self.deps.levels)(level);
+                }
                 for event in translated.events {
                     if matches!(event, Event::SidecarError { .. }) {
                         self.deps.link.set_up(false);

@@ -46,7 +46,7 @@ use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
 use crate::adapters::audio_cue::RodioCue;
 use crate::adapters::ollama::{OllamaProvider, keeper};
-use crate::adapters::voice_sidecar::{HostClock, ListenModes, Status, Voice};
+use crate::adapters::voice_sidecar::{HostClock, LevelSink, ListenModes, Status, Voice};
 use crate::click_through::{IslandWindow, prepare_island, show_island_window};
 use crate::confirm_keys::{
     ConfirmKeys, Key, KeyState, KeysUi, ShortcutRegistry, TooltipPort, key_of, shortcut,
@@ -279,6 +279,8 @@ fn start_voice(
         status,
         clock,
         Arc::new(|line| eprintln!("{line}")),
+        // The audio level of Niva's voice goes to the island window only.
+        LevelSink::new(Arc::new(app.clone())).into_out(),
         Some(Arc::new(move || llm_ready.is_ready())),
     )
 }
