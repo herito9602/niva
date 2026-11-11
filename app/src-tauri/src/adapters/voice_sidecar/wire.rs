@@ -35,6 +35,16 @@ impl fmt::Debug for Private {
     }
 }
 
+/// How many bands a level carries.
+pub const LEVEL_BANDS: usize = 7;
+
+/// The seven band levels (0-100) of Niva's own voice for one 32 ms slice. There
+/// is no microphone level: the protocol has no such message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Level {
+    pub bands: [u8; LEVEL_BANDS],
+}
+
 /// What the sidecar says.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Incoming {
@@ -71,6 +81,8 @@ pub enum Incoming {
         msg: String,
         id: Option<u64>,
     },
+    /// The audio level of Niva's voice, ~30 per second while it speaks.
+    Level(Level),
 }
 
 /// Why a line was not a message. Never carries the line.
@@ -115,6 +127,31 @@ fn number(obj: &Value, key: &'static str) -> Result<f64, ParseError> {
         .and_then(Value::as_f64)
         .filter(|n| n.is_finite())
         .ok_or(ParseError::BadField(key))
+}
+
+/// A level: `src` must be exactly `"tts"` and `bands` exactly seven integers in
+/// 0..=100. Anything else is dropped as a bad field (a microphone level is not
+/// part of the protocol, so `"mic"` is dropped like any unknown source).
+fn level(obj: &Value) -> Result<Level, ParseError> {
+    if obj.get("src").and_then(Value::as_str) != Some("tts") {
+        return Err(ParseError::BadField("src"));
+    }
+    let list = obj
+        .get("bands")
+        .and_then(Value::as_array)
+        .ok_or(ParseError::BadField("bands"))?;
+    let mut bands = [0u8; LEVEL_BANDS];
+    if list.len() != LEVEL_BANDS {
+        return Err(ParseError::BadField("bands"));
+    }
+    for (slot, value) in bands.iter_mut().zip(list) {
+        *slot = value
+            .as_u64()
+            .filter(|n| *n <= 100)
+            .and_then(|n| u8::try_from(n).ok())
+            .ok_or(ParseError::BadField("bands"))?;
+    }
+    Ok(Level { bands })
 }
 
 /// Reads one line (without its newline) from the sidecar.
@@ -172,6 +209,7 @@ pub fn parse_line(line: &str) -> Result<Incoming, ParseError> {
                 Some(_) => Some(uint(&value, "id")?),
             },
         },
+        "level" => Incoming::Level(level(&value)?),
         _ => return Err(ParseError::UnknownType),
     })
 }
@@ -450,6 +488,85 @@ mod tests {
         serde_json::from_str(line.trim_end()).unwrap()
     }
 
+    // --- level (Slice 5): seven 0-100 integers, Niva's own voice only ---------
+
+    #[test]
+    fn parse_valid_level_message() {
+        assert_eq!(
+            parse(r#"{"type":"level","src":"tts","bands":[0,12,40,55,30,8,100]}"#),
+            Ok(Incoming::Level(Level {
+                bands: [0, 12, 40, 55, 30, 8, 100]
+            }))
+        );
+    }
+
+    #[test]
+    fn level_with_six_bands_is_dropped() {
+        for bad in [
+            r#"{"type":"level","src":"tts","bands":[1,2,3,4,5,6]}"#,
+            r#"{"type":"level","src":"tts","bands":[1,2,3,4,5,6,7,8]}"#,
+            r#"{"type":"level","src":"tts","bands":[]}"#,
+            r#"{"type":"level","src":"tts"}"#,
+            r#"{"type":"level","src":"tts","bands":"1234567"}"#,
+        ] {
+            assert_eq!(parse(bad), Err(ParseError::BadField("bands")), "{bad}");
+        }
+    }
+
+    #[test]
+    fn level_with_value_101_is_dropped() {
+        assert_eq!(
+            parse(r#"{"type":"level","src":"tts","bands":[0,0,0,0,0,0,101]}"#),
+            Err(ParseError::BadField("bands"))
+        );
+        assert_eq!(
+            parse(r#"{"type":"level","src":"tts","bands":[256,0,0,0,0,0,0]}"#),
+            Err(ParseError::BadField("bands"))
+        );
+    }
+
+    #[test]
+    fn level_with_negative_or_non_integer_is_dropped() {
+        for bad in [
+            r#"{"type":"level","src":"tts","bands":[-1,0,0,0,0,0,0]}"#,
+            r#"{"type":"level","src":"tts","bands":[1.5,0,0,0,0,0,0]}"#,
+            r#"{"type":"level","src":"tts","bands":[5.0,0,0,0,0,0,0]}"#,
+            r#"{"type":"level","src":"tts","bands":["5",0,0,0,0,0,0]}"#,
+            r#"{"type":"level","src":"tts","bands":[null,0,0,0,0,0,0]}"#,
+            r#"{"type":"level","src":"tts","bands":[true,0,0,0,0,0,0]}"#,
+        ] {
+            assert_eq!(parse(bad), Err(ParseError::BadField("bands")), "{bad}");
+        }
+    }
+
+    #[test]
+    fn level_with_unknown_src_is_dropped() {
+        for bad in [
+            r#"{"type":"level","src":"mic","bands":[1,2,3,4,5,6,7]}"#,
+            r#"{"type":"level","src":"TTS","bands":[1,2,3,4,5,6,7]}"#,
+            r#"{"type":"level","src":5,"bands":[1,2,3,4,5,6,7]}"#,
+            r#"{"type":"level","bands":[1,2,3,4,5,6,7]}"#,
+        ] {
+            assert_eq!(parse(bad), Err(ParseError::BadField("src")), "{bad}");
+        }
+    }
+
+    #[test]
+    fn malformed_level_does_not_block_other_messages() {
+        // Parsing is stateless: a dropped level leaves the next line untouched.
+        assert!(parse(r#"{"type":"level","src":"tts","bands":[1]}"#).is_err());
+        assert_eq!(
+            parse(r#"{"type":"speak_started","id":8}"#),
+            Ok(Incoming::SpeakStarted { id: 8 })
+        );
+    }
+
+    #[test]
+    fn a_level_carries_no_text_and_debug_shows_only_numbers() {
+        let shown = format!("{:?}", Level { bands: [1; 7] });
+        assert!(shown.contains("bands"), "{shown}");
+    }
+
     #[test]
     fn every_host_command_encodes_as_the_protocol_says() {
         assert_eq!(
@@ -536,6 +653,7 @@ mod tests {
             "speak_started",
             "speak_done",
             "error",
+            "level",
         ] {
             assert!(
                 source.contains(&format!("\"type\": \"{name}\"")),

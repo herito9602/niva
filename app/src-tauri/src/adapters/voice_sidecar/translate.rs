@@ -13,6 +13,7 @@
 //! | `error{TTS_FAILED, id}` | `Event::TtsFailed{id}` |
 //! | `error{code, id?}` of the six codes | `Event::SidecarError{code, id}` and [`Signal::Error`] |
 //! | `error{unknown code}` | treated as `INTERNAL` |
+//! | `level{src:tts,bands}` | no event: [`Translated::level`], for the notch only |
 //!
 //! Nothing here logs what the user said or what Niva answers: only counts,
 //! ids, the language and timestamps.
@@ -23,7 +24,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use niva_core::state_machine::{Event, ListenMode, SidecarErrorCode};
 
 use super::policy::Signal;
-use super::wire::Incoming;
+use super::wire::{Incoming, Level};
 use crate::latency::Stamp;
 
 /// Below this combined es + en probability the log says so. Nothing is dropped
@@ -102,6 +103,9 @@ pub struct Translated {
     pub events: Vec<Event>,
     /// What the restart policy must hear about.
     pub signal: Option<Signal>,
+    /// The audio level of Niva's voice. Never an event: at ~30 Hz it would
+    /// flood the dispatcher, so it goes straight to the notch's `LevelSink`.
+    pub level: Option<Level>,
 }
 
 impl Translated {
@@ -109,6 +113,7 @@ impl Translated {
         Translated {
             events: vec![event],
             signal: None,
+            level: None,
         }
     }
 }
@@ -149,6 +154,7 @@ impl Translator {
                 Translated {
                     events: Vec::new(),
                     signal: Some(Signal::Ready),
+                    level: None,
                 }
             }
             Incoming::Wake { score } => {
@@ -215,6 +221,11 @@ impl Translator {
             }
             Incoming::SpeakDone { id } => Translated::event(Event::SpeakDone { id }),
             Incoming::Error { code, msg, id } => self.error(&code, &msg, id),
+            // Not logged and not an event (a level is ~30 lines a second of numbers).
+            Incoming::Level(level) => Translated {
+                level: Some(level),
+                ..Translated::default()
+            },
         }
     }
 
@@ -244,6 +255,7 @@ impl Translator {
         Translated {
             events: vec![Event::SidecarError { code, id }],
             signal: Some(Signal::Error { code, memory }),
+            level: None,
         }
     }
 }
@@ -263,7 +275,7 @@ mod tests {
     use niva_core::replies::Lang;
 
     use super::*;
-    use crate::adapters::voice_sidecar::wire::Private;
+    use crate::adapters::voice_sidecar::wire::{Level, Private};
 
     struct Rig {
         t: Translator,
@@ -329,6 +341,30 @@ mod tests {
             events(&mut r, Incoming::SpeakDone { id: 5 }),
             vec![Event::SpeakDone { id: 5 }]
         );
+    }
+
+    #[test]
+    fn a_level_is_not_a_reducer_event_and_is_not_logged() {
+        let mut r = rig();
+        let got = r.t.translate(Incoming::Level(Level { bands: [9; 7] }));
+        assert!(got.events.is_empty(), "{got:?}");
+        assert_eq!(got.signal, None);
+        assert_eq!(got.level, Some(Level { bands: [9; 7] }));
+        assert!(r.logs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_a_level_message_carries_a_level() {
+        let mut r = rig();
+        for incoming in [
+            Incoming::Wake { score: 0.7 },
+            Incoming::SpeakStarted { id: 1 },
+            Incoming::SpeakDone { id: 1 },
+            Incoming::Ready { now_ms: 1 },
+            transcript(1, "hola", 0.9),
+        ] {
+            assert_eq!(r.t.translate(incoming).level, None);
+        }
     }
 
     #[test]
