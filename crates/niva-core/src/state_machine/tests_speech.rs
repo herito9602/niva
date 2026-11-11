@@ -74,6 +74,17 @@ fn audible_speak_clears_wherever_speak_id_clears() {
     assert_eq!(after.audible_speak, None);
 }
 
+/// A new speak id never inherits the audibility of the previous one.
+#[test]
+fn a_new_speak_starts_silent_even_if_the_previous_one_was_audible() {
+    let mut s = state_in(Phase::Success);
+    s.audible_speak = Some(3);
+    let mut fx = Vec::new();
+    s.speak(ReplyKind::Final, tmpl(Template::ActionDone), &mut fx);
+    assert!(s.speak_id.is_some());
+    assert_eq!(s.audible_speak, None);
+}
+
 #[test]
 fn a_final_reply_that_finished_starts_the_settle_timer() {
     for phase in [Phase::Success, Phase::Error] {

@@ -704,6 +704,7 @@ impl State {
     pub(crate) fn speak(&mut self, kind: ReplyKind, say: Say, fx: &mut Vec<Effect>) {
         let id = self.alloc_id();
         self.speak_id = Some(id);
+        self.audible_speak = None; // the new speech is not audible until it starts
         self.speak_kind = Some(kind);
         fx.push(Effect::Speak { id, kind, say });
     }

@@ -736,6 +736,38 @@ mod tests {
         assert_eq!(view.reminder, Some(ReminderView { count: 1 }));
     }
 
+    fn keys(value: &Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    #[test]
+    fn the_view_json_has_exactly_the_agreed_keys() {
+        let idle = serde_json::to_value(ViewPayload::idle()).unwrap();
+        assert_eq!(keys(&idle), ["speaking", "state"]);
+
+        let full = serde_json::to_value(ViewPayload {
+            state: "confirmation-needed",
+            speaking: true,
+            confirm: Some(ConfirmView {
+                id: 1,
+                expires_at: Some(2),
+                chord: true,
+            }),
+            reminder: Some(ReminderView { count: 3 }),
+        })
+        .unwrap();
+        assert_eq!(keys(&full), ["confirm", "reminder", "speaking", "state"]);
+        assert_eq!(keys(&full["confirm"]), ["chord", "expiresAt", "id"]);
+        assert_eq!(keys(&full["reminder"]), ["count"]);
+    }
+
     /// Keys that would carry text or labels to the island.
     const TEXT_KEYS: [&str; 6] = [
         "caption",

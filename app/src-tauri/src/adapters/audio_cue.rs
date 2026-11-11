@@ -139,8 +139,14 @@ impl AudioCue for RodioCue {
         }
     }
 
-    fn listening_cue(&self) {
-        let _ = self.send(Cmd::Play(&LISTENING, None));
+    fn listening_cue(&self, done: Done) {
+        if let Err(Cmd::Play(_, Some(done))) = self.send(Cmd::Play(&LISTENING, Some(done))) {
+            done();
+        }
+    }
+
+    fn listening_cue_len(&self) -> Duration {
+        Duration::from_millis(LISTENING.iter().map(|tone| tone.ms).sum())
     }
 
     fn stop(&self) {
@@ -184,7 +190,12 @@ mod tests {
             let _ = done_tx.send(());
         }));
         assert!(done_rx.try_recv().is_ok());
-        cue.listening_cue();
+        let (done_tx, done_rx) = channel();
+        cue.listening_cue(Box::new(move || {
+            let _ = done_tx.send(());
+        }));
+        assert!(done_rx.try_recv().is_ok());
+        assert_eq!(cue.listening_cue_len(), Duration::from_millis(90));
         cue.stop();
     }
 }

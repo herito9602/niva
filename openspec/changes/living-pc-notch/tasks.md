@@ -328,3 +328,4 @@ Unchanged baseline scenarios (sleep countdown cancel, grace, races and so on) ar
 - Exact locations of `ConfirmView`, `GateUi`/`ConfirmGate` and the `Speak` effect sites are named from the design; confirm with `rg` before editing.
 - Exclusive-fullscreen detection (2.10) is a spike; 3.10 may be deferred.
 - Chain strategy must be confirmed before PR 1 is opened.
+- Slice 3 note (fullscreen reminder policy): the `silent` flag logic (`fullscreen::reminder_due`, the reducer path that turns a fullscreen reminder into chime plus pulse with no speech) is delivered and tested, but it has no production caller because the reminder service does not exist yet. It is wired only when the reminders slice of niva-mvp lands; `fullscreen.rs` keeps `allow(dead_code)` with the comment "until the reminder service calls it". No fake caller is added.

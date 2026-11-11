@@ -32,8 +32,10 @@
 //! nothing. `StartRequest`, `RunTool` and `CancelRequest` go to the
 //! [`Requests`] handler. No log line carries a reply or a transcript.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use niva_core::activity::{InputWatch, POLL_INTERVAL, Watch};
 use niva_core::ports::{
@@ -136,9 +138,17 @@ pub struct EffectRunner {
     speak_log: Option<SpeakLog>,
     /// What is in front of the desktop (exclusive fullscreen hides the notch).
     fullscreen: Option<Arc<dyn FullscreenProbe>>,
-    /// Bumped by every `Listen` and `CancelListen`: a listen that waited for
-    /// the fullscreen cue opens only if nothing came after it.
-    listen_epoch: Arc<AtomicU64>,
+    /// The id of the listen waiting for the fullscreen cue to end, if any. The
+    /// cue's callback opens it only while it is still this id; a new `Listen`
+    /// or its own `CancelListen` clears it.
+    pending_listen: Arc<Mutex<Option<u64>>>,
+    /// How long the pending cue delays the microphone: added to the reducer's
+    /// no-speech window, which starts right after the `Listen` effect.
+    cue_delay: Duration,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl EffectRunner {
@@ -152,7 +162,8 @@ impl EffectRunner {
             watchdog: None,
             speak_log: None,
             fullscreen: None,
-            listen_epoch: Arc::new(AtomicU64::new(0)),
+            pending_listen: Arc::new(Mutex::new(None)),
+            cue_delay: Duration::ZERO,
             activity: Arc::new(NoActivity),
             watcher: None,
             speech: None,
@@ -245,7 +256,14 @@ impl EffectRunner {
             }
             Effect::Listen { id, mode } => self.listen(id, mode),
             Effect::CancelListen { id } => {
-                self.listen_epoch.fetch_add(1, Ordering::SeqCst);
+                // Only the listen that is waiting for its cue is dropped; the
+                // cancel of any other listen must not touch it.
+                let mut pending = lock(&self.pending_listen);
+                if *pending == Some(id) {
+                    *pending = None;
+                    self.cue_delay = Duration::ZERO;
+                }
+                drop(pending);
                 if let Some(speech) = &self.speech {
                     speech.cancel_listen(id);
                 }
@@ -271,7 +289,9 @@ impl EffectRunner {
     /// the chime is over: the microphone never hears the cue, and a listen
     /// cancelled in the meantime never opens.
     fn listen(&mut self, id: u64, mode: ListenMode) {
-        let epoch = self.listen_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        // A new listen supersedes any listen still waiting for its cue.
+        *lock(&self.pending_listen) = None;
+        self.cue_delay = Duration::ZERO;
         let (MediaMode::Instant, Some(speech)) = (self.mode, self.speech.clone()) else {
             eprintln!("[niva] listen {id} ({mode:?}): no voice attached");
             return;
@@ -287,12 +307,20 @@ impl EffectRunner {
             .is_some_and(|probe| probe.current() == Fullscreen::Exclusive);
         if mode == ListenMode::Command
             && hidden
-            && let Some(cue) = &self.cue
+            && let Some(cue) = self.cue.clone()
         {
-            let live = self.listen_epoch.clone();
-            cue.chime(Box::new(move || {
-                if live.load(Ordering::SeqCst) == epoch && !speech.listen(id, ListenMode::Command) {
-                    eprintln!("[niva] listen {id}: the voice is not running");
+            *lock(&self.pending_listen) = Some(id);
+            // The reducer starts its no-speech window right after this effect;
+            // it must count from when the microphone opens.
+            self.cue_delay = cue.listening_cue_len();
+            let pending = self.pending_listen.clone();
+            cue.listening_cue(Box::new(move || {
+                let mut pending = lock(&pending);
+                if *pending == Some(id) {
+                    *pending = None;
+                    if !speech.listen(id, ListenMode::Command) {
+                        eprintln!("[niva] listen {id}: the voice is not running");
+                    }
                 }
             }));
             return;
@@ -352,6 +380,11 @@ impl EffectRunner {
             eprintln!("[niva] ignoring reducer-started {kind:?}");
             return;
         };
+        let duration = if kind == TimerKind::NoSpeech {
+            duration + std::mem::take(&mut self.cue_delay)
+        } else {
+            duration
+        };
         let sink = self.sink.clone();
         let deadline = tokio::time::Instant::now() + duration;
         let task = tokio::spawn(async move {
@@ -408,14 +441,6 @@ impl EffectRunner {
         if self.mode != MediaMode::Instant {
             return; // the debug window holds the media: only the watchdog ends it
         }
-        // Voice down (the sidecar or the microphone): the notch shows the error
-        // look and the host plays its own chime. The sidecar is the thing that
-        // is down, so it plays nothing (design L15).
-        if is_voice_down_notice(say)
-            && let Some(cue) = &self.cue
-        {
-            cue.chime(Box::new(|| {}));
-        }
         // With the sidecar down (or no speaker at all) the speech "ends" at
         // once; the watchdog above still guards a sidecar that never answers.
         let spoken = self
@@ -423,6 +448,15 @@ impl EffectRunner {
             .as_ref()
             .filter(|speaker| speaker.is_available())
             .is_some_and(|speaker| speaker.speak(id, &say_text(say, lang), lang));
+        // The host chime stands in for a voice that cannot speak the notice
+        // (design L15). When the sidecar is up it says the error itself, and a
+        // chime on top would overlap the speech.
+        if !spoken
+            && is_voice_down_notice(say)
+            && let Some(cue) = &self.cue
+        {
+            cue.chime(Box::new(|| {}));
+        }
         if !spoken {
             (self.sink)(Event::SpeakDone { id });
             self.disarm_watchdog(Some(id));
@@ -1210,6 +1244,7 @@ mod tests {
     struct FakeCue {
         calls: Mutex<Vec<String>>,
         done: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+        listening_ms: std::sync::atomic::AtomicU64,
     }
 
     impl AudioCue for FakeCue {
@@ -1217,8 +1252,12 @@ mod tests {
             self.calls.lock().unwrap().push("chime".into());
             self.done.lock().unwrap().push(done);
         }
-        fn listening_cue(&self) {
+        fn listening_cue(&self, done: Box<dyn FnOnce() + Send>) {
             self.calls.lock().unwrap().push("listening".into());
+            self.done.lock().unwrap().push(done);
+        }
+        fn listening_cue_len(&self) -> Duration {
+            ms(self.listening_ms.load(std::sync::atomic::Ordering::SeqCst))
         }
         fn stop(&self) {
             self.calls.lock().unwrap().push("cue stop".into());
@@ -1268,12 +1307,48 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn mic_error_plays_chime_and_error_view() {
-        let voice = FakeVoice::up();
+    async fn mic_error_is_spoken_by_the_sidecar_with_no_host_chime_when_it_is_up() {
+        use niva_core::state_machine::SidecarErrorCode::{MicBusy, MicMissing};
+        for code in [MicBusy, MicMissing] {
+            let voice = FakeVoice::up();
+            let (mut r, cue) = cue_rig(Some(&voice));
+            r.runner.run(vec![say(Template::Sidecar(code))]);
+            assert!(cue.calls.lock().unwrap().is_empty(), "{code:?}");
+            assert_eq!(voice.calls().len(), 1, "{:?}", voice.calls());
+            assert!(voice.calls()[0].starts_with("speak 1 "), "{code:?}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn mic_error_with_the_voice_down_plays_the_chime_and_says_nothing() {
+        use niva_core::state_machine::SidecarErrorCode::MicBusy;
+        let voice = Arc::new(FakeVoice::default());
         let (mut r, cue) = cue_rig(Some(&voice));
-        r.runner.run(vec![say(Template::Sidecar(
-            niva_core::state_machine::SidecarErrorCode::MicBusy,
-        ))]);
+        r.runner.run(vec![say(Template::Sidecar(MicBusy))]);
+        assert_eq!(*cue.calls.lock().unwrap(), vec!["chime"]);
+        assert!(voice.calls().is_empty(), "{:?}", voice.calls());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_speak_of_a_voice_notice_falls_back_to_the_chime() {
+        struct Refusing;
+        impl Speaker for Refusing {
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn speak(&self, _: u64, _: &str, _: Lang) -> bool {
+                false
+            }
+            fn stop(&self) -> bool {
+                true
+            }
+        }
+        let voice = FakeVoice::up();
+        let (mut r, cue) = cue_rig(None);
+        r.runner = EffectRunner::new(r.runner.sink.clone(), r.host.clone(), r.requests.clone())
+            .with_voice(voice.clone(), Arc::new(Refusing))
+            .with_cue(cue.clone());
+        r.runner.run(vec![say(Template::VoiceNotReady)]);
         assert_eq!(*cue.calls.lock().unwrap(), vec!["chime"]);
     }
 
@@ -1320,7 +1395,8 @@ mod tests {
     async fn exclusive_fullscreen_plays_cue_on_listen_start_instead_of_notch() {
         let (mut r, cue, voice) = fullscreen_rig(Fullscreen::Exclusive);
         r.runner.run(vec![command_listen(3)]);
-        assert_eq!(*cue.calls.lock().unwrap(), vec!["chime"]);
+        // The short listening cue, not the long alert chime.
+        assert_eq!(*cue.calls.lock().unwrap(), vec!["listening"]);
         // The microphone opens only when the cue is over, so it never hears it.
         assert!(voice.calls().is_empty(), "{:?}", voice.calls());
         let done = cue.done.lock().unwrap().pop().expect("the cue's callback");
@@ -1336,6 +1412,83 @@ mod tests {
         let done = cue.done.lock().unwrap().pop().expect("the cue's callback");
         done();
         assert_eq!(voice.calls(), vec!["cancel 3"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_cancel_of_another_listen_keeps_the_pending_one() {
+        let (mut r, cue, voice) = fullscreen_rig(Fullscreen::Exclusive);
+        r.runner
+            .run(vec![command_listen(3), Effect::CancelListen { id: 2 }]);
+        let done = cue.done.lock().unwrap().pop().expect("the cue's callback");
+        done();
+        assert_eq!(voice.calls(), vec!["cancel 2", "listen 3 Command"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_confirm_listen_supersedes_a_pending_cue_listen() {
+        let (mut r, cue, voice) = fullscreen_rig(Fullscreen::Exclusive);
+        r.runner.run(vec![
+            command_listen(3),
+            Effect::Listen {
+                id: 4,
+                mode: ListenMode::Confirm,
+            },
+        ]);
+        // The confirm listen opened the microphone at once.
+        assert_eq!(voice.calls(), vec!["listen 4 Confirm"]);
+        let done = cue.done.lock().unwrap().pop().expect("the cue's callback");
+        done();
+        // The stale cue opens nothing more.
+        assert_eq!(voice.calls(), vec!["listen 4 Confirm"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_newer_cue_listen_supersedes_the_older_one() {
+        let (mut r, cue, voice) = fullscreen_rig(Fullscreen::Exclusive);
+        r.runner.run(vec![command_listen(3), command_listen(4)]);
+        let mut dones: Vec<_> = cue.done.lock().unwrap().drain(..).collect();
+        for done in dones.drain(..) {
+            done();
+        }
+        assert_eq!(voice.calls(), vec!["listen 4 Command"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_no_speech_window_counts_from_when_the_cue_is_over() {
+        let (mut r, cue, _voice) = fullscreen_rig(Fullscreen::Exclusive);
+        cue.listening_ms
+            .store(150, std::sync::atomic::Ordering::SeqCst);
+        r.runner.run(vec![
+            command_listen(3),
+            Effect::StartTimer {
+                kind: TimerKind::NoSpeech,
+                token: 3,
+            },
+        ]);
+        advance(ms(6_149)).await;
+        assert!(drain(&mut r.rx).is_empty());
+        advance(ms(1)).await;
+        assert_eq!(
+            drain(&mut r.rx),
+            vec![Event::Watchdog {
+                kind: TimerKind::NoSpeech,
+                token: 3
+            }]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_no_speech_window_is_not_extended_without_a_cue() {
+        let (mut r, _cue, _voice) = fullscreen_rig(Fullscreen::No);
+        r.runner.run(vec![
+            command_listen(3),
+            Effect::StartTimer {
+                kind: TimerKind::NoSpeech,
+                token: 3,
+            },
+        ]);
+        advance(ms(6_000)).await;
+        assert_eq!(drain(&mut r.rx).len(), 1);
     }
 
     #[tokio::test(start_paused = true)]

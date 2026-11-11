@@ -250,7 +250,12 @@ mod tests {
             *self.chimes.lock().unwrap() += 1;
             done();
         }
-        fn listening_cue(&self) {}
+        fn listening_cue(&self, done: Box<dyn FnOnce() + Send>) {
+            done();
+        }
+        fn listening_cue_len(&self) -> std::time::Duration {
+            std::time::Duration::ZERO
+        }
         fn stop(&self) {}
     }
 

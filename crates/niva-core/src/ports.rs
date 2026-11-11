@@ -180,8 +180,11 @@ pub trait AudioCue: Send + Sync {
     /// Plays the alert chime and calls `done` once, when it ended or could not
     /// play (no output device). Never blocks.
     fn chime(&self, done: Box<dyn FnOnce() + Send>);
-    /// A soft cue for "listening started".
-    fn listening_cue(&self);
+    /// A soft, short cue for "listening started"; `done` runs once when it
+    /// ended or could not play, like [`AudioCue::chime`].
+    fn listening_cue(&self, done: Box<dyn FnOnce() + Send>);
+    /// How long [`AudioCue::listening_cue`] takes to play.
+    fn listening_cue_len(&self) -> std::time::Duration;
     /// Cuts a playing cue short (its `done` still runs).
     fn stop(&self);
 }

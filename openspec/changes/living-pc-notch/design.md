@@ -115,3 +115,5 @@ Rollback: revert in reverse order. Invariant: the buttons are removed only after
 
 - Ctrl+Shift+Enter collides with Excel array formulas while a power confirmation is pending. Accepted by the owner as a visible risk. Mitigated: it is registered only after the prompt is spoken, there is a 500 ms arm delay, and the user started the request.
 - `stream.latency` may misreport on some drivers. The offset variable and the 240 fps check cover it.
+
+- Fullscreen reminder policy (L18): the `silent` flag logic is delivered and tested in this change, but it is only wired to a production caller when the reminder service lands (niva-mvp reminders slice). Until then `fullscreen.rs` keeps `allow(dead_code)` with that comment.
