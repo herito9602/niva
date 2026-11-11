@@ -303,26 +303,6 @@ pub fn template(template: Template, lang: Lang) -> &'static str {
     }
 }
 
-/// What the island shows while the sleep countdown runs: `{n}` is replaced by the
-/// whole seconds left, counted down in the view from a deadline (not by one
-/// event per second).
-pub fn countdown_display(lang: Lang) -> &'static str {
-    match lang {
-        Lang::En => "Suspending in {n} s. Press a key or move the mouse to cancel.",
-        Lang::Es => "Suspendiendo en {n} s. Presiona una tecla o mueve el mouse para cancelar.",
-    }
-}
-
-/// The labels of the island's confirmation buttons, as `(confirm, cancel)`, in
-/// the request's language. They come from here (not from the frontend) so the
-/// buttons speak the language of the question they answer.
-pub fn confirm_labels(lang: Lang) -> (&'static str, &'static str) {
-    match lang {
-        Lang::En => ("Confirm", "Cancel"),
-        Lang::Es => ("Confirmar", "Cancelar"),
-    }
-}
-
 /// "a", "a or b", "a, b or c".
 fn join_or(items: &[String], or: &str) -> String {
     match items {
