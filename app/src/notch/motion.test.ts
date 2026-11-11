@@ -8,9 +8,9 @@ import {
 } from "./motion";
 
 describe("notch motion constants", () => {
-  it("notch_is_118_by_30", () => {
-    expect(NOTCH_W).toBe(118);
-    expect(NOTCH_H).toBe(30);
+  it("notch_is_210_by_36", () => {
+    expect(NOTCH_W).toBe(210);
+    expect(NOTCH_H).toBe(36);
   });
 
   it("hide_delay_within_exit_plus_100", () => {

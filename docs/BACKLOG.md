@@ -159,9 +159,8 @@ Read its README, 20 commit messages, `src/lib/vad.ts` and `src/lib/voice.ts`, no
 - [ ] **Restart and shutdown replies are said before Windows may object.** `ExitWindowsEx` returns once the request is accepted; with unsaved work Windows shows its own "apps are preventing" screen and the reply "Restarting the PC." has already been given.
 
 ## Island confirm buttons (PR 2d-b part 1, 2026-11-05)
-- [ ] **Hand-test the buttons on a real desktop** (capture toggle on an unfocusable window, margins, a first click without focus, 125% and 150% scaling, a second monitor).
-- [ ] **Keyboard access to the confirmation** (the island is unfocusable by design): Enter and Esc would need a global key, which conflicts with the "no key hook" rule. Voice and the buttons are the ways for now.
-- [ ] **Buttons while the island springs.** The reported rectangle is the settled one; during the 900 ms intro the drawn button can be a few pixels off (covered by the 6 px margin and the 500 ms guard). If it ever feels wrong, report per frame or delay the reveal of the buttons.
+- [x] (obsolete, living-pc-notch slice 4) **The island confirm buttons, their hit test, the cursor poller and the `island-actions` capability are gone.** The notch has no buttons and the window is always click-through. A confirmation is answered by voice (close, lock, sleep), by Esc (reject), or by the Ctrl+Shift+Enter chord (the only physical way to accept a restart or a shutdown). `Channel::Physical` is the chord, plus the debug window's Confirm button in debug builds only.
+- [x] (done in living-pc-notch slice 1) **Keyboard access to the confirmation**: Esc and Ctrl+Shift+Enter, registered only while a confirmation is on screen.
 
 ## From task 3.2, sidecar errors (2026-11-05)
 - [x] (done in task 3.4, Batch 37: `translate.rs`, unknown code = `INTERNAL`) **Voice supervisor (task 3.4): send `SidecarError{code, id}`** for the six codes (`MIC_MISSING`, `MIC_BUSY`, `CUDA_OOM`, `MODEL_LOAD`, `PROTOCOL`, `INTERNAL`) using `SidecarErrorCode::from_wire`, with the listen or speak id the sidecar reports (none for process-level failures). `TTS_FAILED` goes to `TtsFailed`. Decide what an unknown code means (suggested: treat as `INTERNAL`; `from_wire` returns `None` on purpose).

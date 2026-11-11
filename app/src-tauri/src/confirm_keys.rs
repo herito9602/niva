@@ -21,8 +21,9 @@
 //! that is why no lock is held across a registry call here: a press is handled
 //! on the main thread and takes the same lock.
 //!
-//! [`KeysUi`] keeps the keys in step with the views the host publishes. It sits
-//! next to the buttons' `GateUi` and changes nothing about them.
+//! [`KeysUi`] keeps the keys in step with the views the host publishes. It is
+//! the only physical confirmation channel of a release build: the island has
+//! no buttons and the webview can call no command that answers.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -681,6 +682,72 @@ mod tests {
         r.press(Key::Chord);
         assert_eq!(r.sent(), vec![Event::Accept { id: 7 }]);
         assert!(r.reg.registered().is_empty());
+    }
+
+    /// A reducer waiting on a confirmation that only a physical input can answer.
+    fn confirming(click_only: bool) -> State {
+        let mut state = State::default();
+        for event in [
+            Event::VoiceReadinessChanged { ready: true },
+            Event::Shortcut,
+        ] {
+            state = reduce(state, event).0;
+        }
+        let id = state.listen_id.expect("a listen");
+        state = reduce(
+            state,
+            Event::Transcript {
+                id,
+                text: "restart the pc".into(),
+                lang: None,
+            },
+        )
+        .0;
+        let req = state.request_id.expect("a request");
+        reduce(
+            state,
+            Event::ToolCalls {
+                req,
+                verdict: ToolVerdict::Confirm {
+                    prompt: "Restart the PC?".into(),
+                    click_only,
+                    cancel_text: None,
+                },
+            },
+        )
+        .0
+    }
+
+    /// The invariant of the host cleanup: with the click channel gone, the chord
+    /// still accepts a restart or shutdown (a click-only confirmation) all the
+    /// way into the reducer.
+    #[test]
+    fn a_click_only_confirmation_is_accepted_through_the_chord_into_the_reducer() {
+        let r = rig();
+        let state = confirming(true);
+        assert_eq!(state.phase, Phase::ConfirmationNeeded);
+        assert!(state.confirm_click_only);
+        let id = state.confirm_id.expect("a confirmation");
+        r.keys.on_view(Some(power(id, true)));
+        r.advance(ARM_MS);
+        r.press(Key::Chord);
+        let sent = r.sent();
+        assert_eq!(sent, vec![Event::Accept { id }]);
+        let (after, _) = reduce(state, sent[0].clone());
+        assert_ne!(after.phase, Phase::ConfirmationNeeded);
+    }
+
+    #[test]
+    fn a_stale_or_wrong_id_changes_nothing_in_the_reducer() {
+        let state = confirming(true);
+        let id = state.confirm_id.expect("a confirmation");
+        for wrong in [0, id + 1, id.wrapping_sub(1)] {
+            for event in [Event::Accept { id: wrong }, Event::Reject { id: wrong }] {
+                let (after, effects) = reduce(state.clone(), event.clone());
+                assert_eq!(after, state, "{event:?}");
+                assert!(effects.is_empty());
+            }
+        }
     }
 
     #[test]

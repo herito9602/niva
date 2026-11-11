@@ -36,5 +36,5 @@
 .debug .confirm .yes { background: #1f5b34; border-color: #2f8a50; }
 .debug .log { margin: 0 0 6px; padding: 8px 10px 8px 28px; max-height: 190px; overflow: auto; background: #0d0d11; border-radius: 6px; font-family: Consolas, monospace; font-size: 12px; user-select: text; }
 .debug .log li { margin: 1px 0; }
-.debug .notch-preview { position: relative; width: 200px; height: 70px; margin: 4px 0 8px; background: #3a3a46; border-radius: 4px; overflow: hidden; }
+.debug .notch-preview { position: relative; width: 290px; height: 76px; margin: 4px 0 8px; background: #3a3a46; border-radius: 4px; overflow: hidden; }
 .debug button[aria-pressed="true"] { background: #1f3f5b; border-color: #378add; }

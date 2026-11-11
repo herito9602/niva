@@ -22,14 +22,18 @@ const reply = {
 } as unknown as ViewPayload;
 
 describe("Notch markup", () => {
-  it("renders_one_waveform_canvas_in_118x30_shell", () => {
+  it("renders_one_waveform_canvas_in_210x36_shell", () => {
     const html = render({ state: "listening" });
     expect(html.match(/<canvas /g)).toHaveLength(1);
     expect(html).not.toContain('class="bar"');
     expect(html).toContain(`width:${NOTCH_W}px`);
     expect(html).toContain(`height:${NOTCH_H}px`);
-    expect(NOTCH_W).toBe(118);
-    expect(NOTCH_H).toBe(30);
+    expect(NOTCH_W).toBe(210);
+    expect(NOTCH_H).toBe(36);
+  });
+
+  it("rounds_the_bottom_corners_to_17px", () => {
+    expect(css).toContain("border-radius: 0 0 17px 17px");
   });
 
   it("status_region_has_state_name_and_no_reply_text", () => {
@@ -72,8 +76,8 @@ describe("Notch markup", () => {
     expect(ms("out-ms")).toBe(NOTCH_OUT_MS);
     expect(ms("fade-ms")).toBe(REDUCED_FADE_MS);
     expect(css).toContain("cubic-bezier(0.34, 1.56, 0.64, 1)");
-    expect(css).toContain("left: calc(50% - 59px)");
-    expect(NOTCH_W / 2).toBe(59);
+    expect(css).toContain("left: calc(50% - 105px)");
+    expect(NOTCH_W / 2).toBe(105);
   });
 });
 

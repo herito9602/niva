@@ -5,13 +5,13 @@ Baseline: `openspec/changes/niva-mvp/specs/island-shell/spec.md`. Unchanged: "Tr
 ## MODIFIED Requirements
 
 ### Requirement: Island window
-The system MUST show a transparent, non-focusable, always-on-top window of about 200x70 px at the top center of the primary display, holding the notch. The notch MUST be horizontally centered and flush with the top edge. The background outside the notch MUST be transparent.
+The system MUST show a transparent, non-focusable, always-on-top window of about 290x76 px at the top center of the primary display, holding the notch. The notch MUST be horizontally centered and flush with the top edge. The background outside the notch MUST be transparent.
 (Previously: a transparent, always-on-top island of 640x232 px sized for text, mascot and buttons.)
 
 #### Scenario: Island placement
 - GIVEN Niva is running
 - WHEN the notch is shown
-- THEN the window is about 200x70 px, horizontally centered at the top of the primary display and above normal windows
+- THEN the window is about 290x76 px, horizontally centered at the top of the primary display and above normal windows
 - AND it is transparent and does not take focus
 
 ### Requirement: Click-through (owner request 2026-11-03)
@@ -93,4 +93,4 @@ Reason: no numbers are shown.
 Migration: the sleep countdown shows the amber pulse (`notch`, "Palette and motion per state") and is announced by voice (`action-safety`, "Sleep countdown").
 
 ## Notes
-- Design L4 fixes the window at 200x70 px.
+- Design L4 fixes the window at 290x76 px.

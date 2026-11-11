@@ -14,8 +14,8 @@
       {
         "label": "island",
         "title": "Niva",
-        "width": 200,
-        "height": 70,
+        "width": 290,
+        "height": 76,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,

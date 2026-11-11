@@ -282,9 +282,9 @@ describe("drawWave", () => {
 describe("fitCanvas", () => {
   it("sizes the backing store by the device pixel ratio and reports it", () => {
     const canvas = { width: 0, height: 0 };
-    expect(fitCanvas(canvas, 118, 30, 2)).toEqual({ w: 236, h: 60 });
-    expect(canvas).toEqual({ width: 236, height: 60 });
-    expect(fitCanvas(canvas, 118, 30, 1.25)).toEqual({ w: 148, h: 38 });
-    expect(fitCanvas(canvas, 118, 30, 0)).toEqual({ w: 118, h: 30 });
+    expect(fitCanvas(canvas, 210, 36, 2)).toEqual({ w: 420, h: 72 });
+    expect(canvas).toEqual({ width: 420, height: 72 });
+    expect(fitCanvas(canvas, 210, 36, 1.25)).toEqual({ w: 263, h: 45 });
+    expect(fitCanvas(canvas, 210, 36, 0)).toEqual({ w: 210, h: 36 });
   });
 });

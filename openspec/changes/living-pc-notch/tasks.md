@@ -197,10 +197,11 @@ Gate G2: S1 is merged and its lifecycle tests are green on the base branch. S2 a
 
 Goal: delete the click channel and hit-test machinery. Restart and shutdown are confirmable only by the chord (and by the debug button in debug builds).
 
-- [ ] 4.1 RED first in `app/src-tauri/src/capabilities_tests.rs`: `island_capability_grants_no_commands`, `no_island_actions_capability_or_permission_files`. GREEN: delete `capabilities/island-actions.json` and `permissions-release/island-actions.toml`; update `app/scripts/check-release-binary.mjs` so `npm run check:release` expects no island commands.
-- [ ] 4.2 Delete `confirm_buttons.rs`, the host click command, the rectangles report, the 500 ms button guard (`GateUi`/`ConfirmGate`, replaced by `KeysUi`). RED: `no_click_command_registered_in_invoke_handler`, `no_references_to_confirm_buttons_remain` (build). The S1 `ConfirmKeys` tests must stay green and untouched.
-- [ ] 4.3 Delete `cursor.rs` and the cursor poller; `click_through.rs` keeps prepare/show only. RED: `window_ignores_cursor_events_in_every_state`, `no_cursor_poller_started`.
-- [ ] 4.4 Re-assert the invariant in release: RED/GREEN `release_has_chord_as_only_power_confirmation_channel`, `debug_button_confirm_exists_in_debug_builds_only` (cfg-gated), `chord_registration_failure_still_rejects_in_release`. Update docs for `Channel::Physical` (the debug window's button, debug builds only).
+- [x] 4.1 RED first in `app/src-tauri/src/capabilities_tests.rs`: `island_capability_grants_no_commands`, `no_island_actions_capability_or_permission_files`. GREEN: delete `capabilities/island-actions.json` and `permissions-release/island-actions.toml`; update `app/scripts/check-release-binary.mjs` so `npm run check:release` expects no island commands.
+- [x] 4.2 Delete `confirm_buttons.rs`, the host click command, the rectangles report, the 500 ms button guard (`GateUi`/`ConfirmGate`, replaced by `KeysUi`). RED: `no_click_command_registered_in_invoke_handler`, `no_references_to_confirm_buttons_remain` (build). The S1 `ConfirmKeys` tests must stay green and untouched.
+- [x] 4.3 Delete `cursor.rs` and the cursor poller; `click_through.rs` keeps prepare/show only. RED: `window_ignores_cursor_events_in_every_state`, `no_cursor_poller_started`.
+- [x] 4.4 Re-assert the invariant in release: RED/GREEN `release_has_chord_as_only_power_confirmation_channel`, `debug_button_confirm_exists_in_debug_builds_only` (cfg-gated), `chord_registration_failure_still_rejects_in_release`. Update docs for `Channel::Physical` (the debug window's button, debug builds only).
+- [x] 4.5 Widen the notch to 210x36 (owner, 2026-11-11), bottom radius 17 px, window 290x76 (keeps the 40 px side and bottom room of L4). RED first: `notch_is_210_by_36`, `renders_one_waveform_canvas_in_210x36_shell`, `rounds_the_bottom_corners_to_17px_and_centers_on_half_the_width`, `fitCanvas` at 210x36, `island_window_is_290x76_transparent_non_focusable`, `the_ts_constants_are_readable`. Waveform algorithm unchanged.
 
 Verification:
 - `cargo test` (from `app/src-tauri`) and `cargo test -p niva-core`
