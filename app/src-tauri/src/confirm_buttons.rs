@@ -743,17 +743,13 @@ mod tests {
     fn view(confirm: Option<u64>) -> UiEvent {
         UiEvent::View(ViewPayload {
             state: "confirmation-needed",
-            caption: None,
+            speaking: false,
             confirm: confirm.map(|id| ConfirmView {
                 id,
-                prompt: "Close Spotify.exe?".into(),
-                confirm_label: "Confirm",
-                cancel_label: "Cancel",
                 expires_at: None,
                 chord: false,
             }),
             reminder: None,
-            countdown: None,
         })
     }
 

@@ -1113,17 +1113,13 @@ mod tests {
         use crate::ui_adapter::ConfirmView;
         UiEvent::View(ViewPayload {
             state: "confirmation-needed",
-            caption: None,
+            speaking: false,
             confirm: confirm.map(|s| ConfirmView {
                 id: s.id,
-                prompt: "Sure?".into(),
-                confirm_label: "Confirm",
-                cancel_label: "Cancel",
                 expires_at: s.spoken.then_some(1),
                 chord: s.chord,
             }),
             reminder: None,
-            countdown: None,
         })
     }
 

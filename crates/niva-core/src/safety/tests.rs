@@ -742,7 +742,10 @@ fn model_bypass_still_needs_confirmation() {
         accepted: false,
         ..click(5)
     };
-    assert_eq!(gate.approve(request, denied), Err(ApprovalError::NotConfirmed));
+    assert_eq!(
+        gate.approve(request, denied),
+        Err(ApprovalError::NotConfirmed)
+    );
 }
 
 #[test]

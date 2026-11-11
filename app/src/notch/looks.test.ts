@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { ALL_STATES, type StateName, type ViewPayload } from "../events";
 import { LOOKS, viewToLook } from "./looks";
 
+/** Every state the host can publish: the debug scenes plus the sleep countdown. */
+const HOST_STATES: StateName[] = [...ALL_STATES, "countdown"];
+
 const view = (state: StateName, extra: Partial<ViewPayload> = {}): ViewPayload => ({
   state,
   ...extra,
@@ -23,7 +26,7 @@ describe("look table", () => {
       expect(LOOKS[name as keyof typeof LOOKS].color.toLowerCase()).toBe(color.toLowerCase());
     }
     // Every non-idle state of the host maps to one of the seven looks.
-    for (const state of ALL_STATES.filter((s) => s !== "idle")) {
+    for (const state of HOST_STATES.filter((s) => s !== "idle")) {
       expect(viewToLook(view(state), false), state).not.toBeNull();
     }
   });
@@ -49,9 +52,32 @@ describe("look table", () => {
   });
 
   it("countdown_uses_confirmation_look", () => {
-    const countdown = view("acting", { countdown: { endsAt: 0, seconds: 10, text: "Sleeping in {n}" } });
-    expect(viewToLook(countdown, false)).toBe(LOOKS.confirmation);
+    expect(viewToLook(view("countdown"), false)).toBe(LOOKS.confirmation);
     expect(viewToLook(view("confirmation-needed"), false)).toBe(LOOKS.confirmation);
+  });
+
+  it("countdown_payload_maps_to_confirmation_look", () => {
+    // The payload as the host sends it: its own state name, no numbers, no text.
+    const payload = JSON.parse('{"state":"countdown","speaking":false}') as ViewPayload;
+    expect(viewToLook(payload)).toBe(LOOKS.confirmation);
+    // Niva announcing the countdown is audible: the speaking look wins, then it reverts.
+    const announcing = JSON.parse('{"state":"countdown","speaking":true}') as ViewPayload;
+    expect(viewToLook(announcing)).toBe(LOOKS.speaking);
+  });
+
+  it("speaking_flag_from_payload_overrides_phase_look", () => {
+    // Straight from the host's JSON, with no second argument: the flag alone decides.
+    for (const state of HOST_STATES.filter((s) => s !== "idle")) {
+      const speaking = JSON.parse(`{"state":"${state}","speaking":true}`) as ViewPayload;
+      const quiet = JSON.parse(`{"state":"${state}","speaking":false}`) as ViewPayload;
+      expect(viewToLook(speaking), state).toBe(LOOKS.speaking);
+      expect(viewToLook(quiet), state).not.toBe(LOOKS.speaking);
+    }
+    // The speaking look is driven by the voice level; no phase look is.
+    expect(LOOKS.speaking.source).toBe("tts");
+    expect(LOOKS.speaking.color).toBe("#5DCAA5");
+    // The idle notch is hidden even if a stale flag arrives with it.
+    expect(viewToLook({ state: "idle", speaking: true })).toBeNull();
   });
 
   it("speaking_overrides_phase_look_and_reverts", () => {
@@ -72,14 +98,14 @@ describe("look table", () => {
   });
 
   it("reminder_alert_look_and_no_text", () => {
-    const reminder = view("reminder-alert", { caption: "Call mom", reminder: { id: 1, text: "Call mom" } });
+    const reminder = view("reminder-alert", { reminder: { count: 2 } });
     const look = viewToLook(reminder, false);
     expect(look).toBe(LOOKS.reminder);
-    expect(JSON.stringify(look)).not.toContain("Call mom");
+    expect(JSON.stringify(look)).not.toContain("count");
   });
 
   it("the announced name is the state name, never reply text", () => {
-    const look = viewToLook(view("success", { caption: "Opening Notepad" }), false);
+    const look = viewToLook(view("success"), false);
     expect(look?.label).toBe("Done");
     for (const l of Object.values(LOOKS)) expect(l.label).toMatch(/^[A-Za-z ]+$/);
   });

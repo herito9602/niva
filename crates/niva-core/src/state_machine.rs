@@ -115,6 +115,11 @@ pub struct State {
     pub listen_id: Option<u64>,
     /// Id of the `Speak` currently in flight and its reply kind.
     pub speak_id: Option<u64>,
+    /// The id of the speech that is audible now: set by `SpeakStarted` for the
+    /// matching `speak_id` (the sidecar reports first sound), cleared wherever
+    /// `speak_id` clears. The view's `speaking` flag reads it, so the notch is
+    /// green only while the voice is heard, not during the synthesis.
+    pub audible_speak: Option<u64>,
     pub speak_kind: Option<ReplyKind>,
     /// Id of the LLM/tool request in flight (late results are dropped by it).
     pub request_id: Option<u64>,
@@ -173,6 +178,7 @@ impl Default for State {
             pending: None,
             listen_id: None,
             speak_id: None,
+            audible_speak: None,
             speak_kind: None,
             request_id: None,
             utterance: Utterance::WaitingForSpeech,
@@ -210,7 +216,7 @@ impl State {
 /// Decides the follow-up transition at `speak_done`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyKind {
-    /// Success/error/cancel template or LLM reply: start the 3 s settle timer.
+    /// Success/error/cancel template or LLM reply: start the 1.5 s settle timer.
     Final,
     /// Confirmation prompt: open `listen{confirm}` and the 10 s timer.
     ConfirmPrompt,
@@ -324,7 +330,7 @@ pub enum TimerKind {
     Tool,
     /// 10 s confirmation.
     Confirm,
-    /// 3 s settle before hiding the island.
+    /// 1.5 s settle before hiding the notch.
     Settle,
     /// 30 s cap of a reminder alert.
     AlertEnd,
@@ -361,7 +367,7 @@ impl TimerKind {
             TimerKind::FollowUp => Some(Duration::from_secs(15)),
             TimerKind::Tool => Some(Duration::from_secs(5)),
             TimerKind::Confirm => Some(Duration::from_secs(10)),
-            TimerKind::Settle => Some(Duration::from_secs(3)),
+            TimerKind::Settle => Some(Duration::from_millis(1_500)),
             TimerKind::AlertEnd => Some(Duration::from_secs(30)),
             TimerKind::SpeakWatchdog => None,
             TimerKind::Countdown => Some(Duration::from_secs(10)),
@@ -655,6 +661,7 @@ impl State {
             fx.push(Effect::CancelListen { id });
         }
         let was_speaking = self.speak_id.take().is_some();
+        self.audible_speak = None;
         self.speak_kind = None;
         if was_speaking || from == Phase::ReminderAlert {
             fx.push(Effect::StopSpeaking);
@@ -791,8 +798,9 @@ pub fn reduce(mut state: State, event: Event) -> (State, Vec<Effect>) {
         Event::AskFollowUp { question, slot, .. } => {
             state.on_ask_follow_up(question, slot, &mut fx)
         }
-        // Nothing to do: the reply's follow-up starts at speak_done.
-        Event::SpeakStarted { .. } => {}
+        // State only: the matching speech (stale ids were dropped) is audible
+        // now. The reply's follow-up still starts at speak_done.
+        Event::SpeakStarted { id } => state.audible_speak = Some(id),
         // `TtsFailed` is treated as done: the text stays shown.
         Event::SpeakDone { .. } | Event::TtsFailed { .. } => state.on_speak_done(&mut fx),
         Event::Watchdog { kind, .. } => state.on_watchdog(kind, &mut fx),
@@ -1103,8 +1111,9 @@ impl State {
         }
     }
 
-    /// The alert ends at the later of "chime done" and "speech done" (the 30 s
-    /// cap and a click end it earlier).
+    /// A silent alert (nothing is spoken) ends when its chime is done; a spoken
+    /// one ends with its speech (`on_speak_done`). The 30 s cap and a click end
+    /// either earlier.
     fn end_alert_if_finished(&mut self, fx: &mut Vec<Effect>) {
         if self.chime_id.is_none() && self.speak_id.is_none() {
             self.transition(Phase::Idle, fx);
@@ -1312,6 +1321,7 @@ impl State {
     /// the speak watchdog): start whatever the reply kind waits for.
     fn on_speak_done(&mut self, fx: &mut Vec<Effect>) {
         let kind = self.speak_kind.take();
+        self.audible_speak = None;
         if self.speak_id.take().is_none() {
             return;
         }
@@ -1342,8 +1352,12 @@ impl State {
                 }
             }
             ReplyKind::Alert => {
+                // The alert is over once it has been heard: the pulse does not
+                // resume (even with the chime still playing); the notch
+                // settles like after any result.
                 if self.phase == Phase::ReminderAlert {
-                    self.end_alert_if_finished(fx);
+                    self.transition(Phase::Success, fx);
+                    self.start_timer(TimerKind::Settle, fx);
                 }
             }
             // Nothing waits for the countdown announcement.

@@ -272,6 +272,10 @@ pub(super) fn assert_invariants(s: &State, context: &str) {
         "{context}: confirmation id was never issued: {s:?}"
     );
     assert!(
+        s.audible_speak.is_none() || s.audible_speak == s.speak_id,
+        "{context}: only the speech in flight can be audible: {s:?}"
+    );
+    assert!(
         s.speak_id.is_some() == s.speak_kind.is_some(),
         "{context}: speak id and kind move together: {s:?}"
     );
@@ -572,6 +576,14 @@ fn timers_are_tracked_and_cancelled_individually() {
 }
 
 #[test]
+fn settle_timer_is_1500ms() {
+    assert_eq!(
+        TimerKind::Settle.duration(),
+        Some(std::time::Duration::from_millis(1_500))
+    );
+}
+
+#[test]
 fn timer_durations_follow_the_design() {
     use std::time::Duration;
     let secs = |k: TimerKind| k.duration().map(|d| d.as_secs());
@@ -581,7 +593,10 @@ fn timer_durations_follow_the_design() {
     assert_eq!(secs(TimerKind::FollowUp), Some(15));
     assert_eq!(secs(TimerKind::Tool), Some(5));
     assert_eq!(secs(TimerKind::Confirm), Some(10));
-    assert_eq!(secs(TimerKind::Settle), Some(3));
+    assert_eq!(
+        TimerKind::Settle.duration(),
+        Some(Duration::from_millis(1_500))
+    );
     assert_eq!(secs(TimerKind::AlertEnd), Some(30));
     assert_eq!(TimerKind::SpeakWatchdog.duration(), None);
     assert!(TimerKind::SttTimeout.duration() > Some(Duration::ZERO));

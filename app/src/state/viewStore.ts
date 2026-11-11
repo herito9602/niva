@@ -1,7 +1,7 @@
 // Frontend mirror of what the Rust core publishes. The reducer lives in
 // `niva-core`; this store only keeps the latest payload of each host event, and
-// paces one display transition (see `ACTING_MIN_MS`). The notch draws no text:
-// `caption`, labels and the countdown text in the payload are never read.
+// paces one display transition (see `ACTING_MIN_MS`). The payload carries no
+// text (design L5); the notch only reads the state and the `speaking` flag.
 
 import { CURSOR_EVENT, ISLAND_EVENT, VIEW_EVENT } from "../events";
 import type { CursorPayload, IslandPayload, ViewPayload } from "../events";
@@ -36,8 +36,8 @@ export interface ViewStore {
  */
 export const ACTING_MIN_MS = 900;
 
-/** The plain "working" view; the sleep countdown is a live timer, never held. */
-const isPlainActing = (view: ViewPayload | null) => view?.state === "acting" && !view.countdown;
+/** The plain "working" view; the sleep countdown is a state of its own, never held. */
+const isPlainActing = (view: ViewPayload | null) => view?.state === "acting";
 
 const isResult = (view: ViewPayload) => view.state === "success" || view.state === "error";
 

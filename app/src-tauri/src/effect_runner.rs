@@ -10,8 +10,8 @@
 //!   duration), so a `Speak` always ends in `SpeakDone`, `TtsFailed` or a
 //!   watchdog event and a confirmation can never stay pending (W2).
 //! - Every `Chime{id}` reports `ChimeDone{id}`.
-//! - A final reply stays up long enough to read: the `Settle` that follows its
-//!   speech is stretched to `niva_core::reading` (see [`ReadingHold`]).
+//! - The notch shows no text, so nothing is held for reading: the `Settle`
+//!   (1.5 s, the reducer's) starts at the end of the speech and that is all.
 //!
 //! - `WatchInput{id}` reads a baseline of the user's input and polls it every
 //!   100 ms until `StopWatchingInput` (or until it saw input or lost the
@@ -38,7 +38,6 @@ use niva_core::activity::{InputWatch, POLL_INTERVAL, Watch};
 use niva_core::ports::{
     ActivityError, AudioCue, InputActivity, Speaker, SpeechEngine, SpokenPrompt,
 };
-use niva_core::reading::{reading_time, settle_delay};
 use niva_core::state_machine::{Effect, Event, ListenMode, ReplyKind, Say, TimerKind};
 use tokio::task::JoinHandle;
 
@@ -88,15 +87,10 @@ pub fn speak_watchdog_duration(say: &Say) -> Duration {
     estimate.max(MIN_SPEAK_WATCHDOG)
 }
 
-/// When the final reply on screen was shown and how long it needs to be read.
-/// The next `Settle` start (at the end of its speech) uses it once.
-struct ReadingHold {
-    /// The final `Speak` this hold belongs to; a newer `Speak` replaces it and
-    /// `StopSpeaking` clears it.
-    speak_id: u64,
-    shown_at: tokio::time::Instant,
-    reading: Duration,
-}
+/// Where the text of each spoken reply goes in debug builds (the dev log, the
+/// debug window). Release builds never call it: the notch shows no text and
+/// the logs carry none.
+pub type SpeakLog = Arc<dyn Fn(String) + Send + Sync>;
 
 /// The activity source of a runner nobody gave one: it cannot be read, so a
 /// countdown fails closed (no suspend) instead of running unwatched.
@@ -116,8 +110,6 @@ pub struct EffectRunner {
     timers: Vec<(TimerKind, JoinHandle<()>)>,
     /// The speak watchdog of the speech in flight: (speak id, task).
     watchdog: Option<(u64, JoinHandle<()>)>,
-    /// Set by a final `Speak`, consumed by the `Settle` that follows it.
-    reading: Option<ReadingHold>,
     /// Where the user's input is read (sleep countdown).
     activity: Arc<dyn InputActivity>,
     /// The poller of the running countdown, if any.
@@ -130,6 +122,8 @@ pub struct EffectRunner {
     /// The confirmation question spoken last, for the confirm listen that
     /// follows it. Any other `Speak`, and a command `Listen`, make it stale.
     prompt: Option<SpokenPrompt>,
+    /// Debug builds: one line with the reply text per `Speak`.
+    speak_log: Option<SpeakLog>,
 }
 
 impl EffectRunner {
@@ -141,7 +135,7 @@ impl EffectRunner {
             mode: MediaMode::default(),
             timers: Vec::new(),
             watchdog: None,
-            reading: None,
+            speak_log: None,
             activity: Arc::new(NoActivity),
             watcher: None,
             speech: None,
@@ -161,6 +155,12 @@ impl EffectRunner {
     /// Wires the host's own sounds (the alert chime).
     pub fn with_cue(mut self, cue: Arc<dyn AudioCue>) -> Self {
         self.cue = Some(cue);
+        self
+    }
+
+    /// Debug builds: where the text of each `Speak` is logged. Ignored in release.
+    pub fn with_speak_log(mut self, log: SpeakLog) -> Self {
+        self.speak_log = Some(log);
         self
     }
 
@@ -200,7 +200,6 @@ impl EffectRunner {
             task.abort();
         }
         self.disarm_watchdog(None);
-        self.reading = None;
         self.stop_watching();
     }
 
@@ -213,7 +212,6 @@ impl EffectRunner {
             Effect::Speak { id, kind, say } => self.speak(id, kind, &say),
             Effect::StopSpeaking => {
                 self.disarm_watchdog(None);
-                self.reading = None;
                 if let Some(speaker) = &self.speaker {
                     speaker.stop();
                 }
@@ -309,30 +307,7 @@ impl EffectRunner {
             return;
         };
         let sink = self.sink.clone();
-        let now = tokio::time::Instant::now();
-        // Only the Settle that follows the final speech uses (and consumes) the
-        // hold; a timer of any other kind leaves it for that Settle.
-        let hold = if kind == TimerKind::Settle {
-            self.reading.take()
-        } else {
-            None
-        };
-        let duration = match hold {
-            // The quiet time after the speech, or what is left of the reading time.
-            Some(hold) => {
-                eprintln!(
-                    "[niva] settle after the reading time of speak {}",
-                    hold.speak_id
-                );
-                settle_delay(
-                    duration,
-                    hold.reading,
-                    now.saturating_duration_since(hold.shown_at),
-                )
-            }
-            None => duration,
-        };
-        let deadline = now + duration;
+        let deadline = tokio::time::Instant::now() + duration;
         let task = tokio::spawn(async move {
             tokio::time::sleep_until(deadline).await;
             sink(Event::Watchdog { kind, token });
@@ -370,16 +345,16 @@ impl EffectRunner {
     fn speak(&mut self, id: u64, kind: ReplyKind, say: &Say) {
         // Never the text itself: a reply can quote what the user asked.
         eprintln!("[niva] speak {id} ({kind:?}, {} chars)", char_count(say));
-        // Only final replies are held for reading; prompts wait for an answer.
-        self.reading = (kind == ReplyKind::Final).then(|| ReadingHold {
-            speak_id: id,
-            shown_at: tokio::time::Instant::now(),
-            reading: reading_time(char_count(say)),
-        });
         self.arm_watchdog(id, speak_watchdog_duration(say));
         // Every speak replaces the remembered question, held or not, so a
         // later confirm listen never carries an older confirmation's question.
         let lang = self.requests.lang();
+        // Debug builds only: the reply text goes to the dev log, nowhere else.
+        if cfg!(debug_assertions)
+            && let Some(log) = &self.speak_log
+        {
+            log(format!("niva says: {}", say_text(say, lang)));
+        }
         self.prompt = (kind == ReplyKind::ConfirmPrompt).then(|| SpokenPrompt {
             lang,
             text: say_text(say, lang),
@@ -542,7 +517,7 @@ mod tests {
         Say::Text("x".repeat(n))
     }
 
-    // --- reading time: a long final reply keeps the island up ------------
+    // --- settle: 1.5 s after the speech, with no reading hold (design L7) --
 
     fn settle(token: u64) -> Effect {
         Effect::StartTimer {
@@ -559,144 +534,107 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_short_final_reply_settles_after_3_s_as_before() {
+    async fn settle_timer_is_1500ms() {
         let mut r = rig();
         r.runner
             .run(vec![speak(1, Say::Text("Done".into())), settle(5)]);
-        advance(ms(2999)).await;
+        advance(ms(1499)).await;
         assert!(!drain(&mut r.rx).contains(&settle_fire(5)));
         advance(ms(1)).await;
         assert_eq!(drain(&mut r.rx), vec![settle_fire(5)]);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_long_final_reply_stays_for_its_reading_time() {
-        let mut r = rig();
-        // 400 characters: the 12 s cap, measured from the moment it was shown.
-        r.runner.run(vec![speak(1, text_of_len(400)), settle(5)]);
-        advance(ms(11_999)).await;
-        assert!(!drain(&mut r.rx).contains(&settle_fire(5)));
-        advance(ms(1)).await;
-        assert_eq!(drain(&mut r.rx), vec![settle_fire(5)]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_reading_time_counts_from_when_the_reply_was_shown_not_from_the_speech_end() {
+    async fn long_reply_settle_starts_at_speech_end_without_hold() {
         let mut r = rig();
         r.runner.set_media_mode(MediaMode::Held);
-        // 100 chars: 7 s of reading; the (held) speech ends after 8 s.
-        r.runner.run(vec![speak(1, text_of_len(100))]);
+        // 400 characters, spoken for 8 s (held media): the settle is the plain
+        // 1.5 s from the moment the speech ends, never a reading time.
+        r.runner.run(vec![speak(1, text_of_len(400))]);
         advance(ms(8_000)).await;
         r.runner.run(vec![settle(6)]);
-        advance(ms(2999)).await;
+        advance(ms(1499)).await;
         assert!(!drain(&mut r.rx).contains(&settle_fire(6)));
         advance(ms(1)).await;
         assert!(drain(&mut r.rx).contains(&settle_fire(6)));
     }
 
     #[tokio::test(start_paused = true)]
-    async fn speech_that_ends_before_the_reading_time_waits_for_the_rest() {
-        let mut r = rig();
-        r.runner.set_media_mode(MediaMode::Held);
-        // 150 chars: 9.75 s of reading, the speech ends after 4 s -> hide at 9.75 s.
-        r.runner.run(vec![speak(1, text_of_len(150))]);
-        advance(ms(4_000)).await;
-        r.runner.run(vec![settle(6)]);
-        advance(ms(5_749)).await;
-        assert!(!drain(&mut r.rx).contains(&settle_fire(6)));
-        advance(ms(1)).await;
-        assert!(drain(&mut r.rx).contains(&settle_fire(6)));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_template_reply_keeps_the_plain_3_s_settle() {
-        let mut r = rig();
-        r.runner.run(vec![
-            speak(1, Say::Template(Template::ActionDone)),
-            settle(5),
-        ]);
-        advance(ms(3000)).await;
-        assert!(drain(&mut r.rx).contains(&settle_fire(5)));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_reading_time_belongs_to_one_reply_only() {
+    async fn a_long_reply_with_no_voice_settles_at_once_plus_1_5_s() {
         let mut r = rig();
         r.runner.run(vec![speak(1, text_of_len(400)), settle(5)]);
-        advance(ms(12_000)).await;
-        drain(&mut r.rx);
-        // A later settle that no long reply precedes is the plain 3 s again.
-        r.runner.run(vec![settle(6)]);
-        advance(ms(3000)).await;
-        assert!(drain(&mut r.rx).contains(&settle_fire(6)));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_timer_of_another_kind_does_not_consume_the_reading_hold() {
-        let mut r = rig();
-        r.runner.run(vec![
-            speak(1, text_of_len(400)),
-            Effect::StartTimer {
-                kind: TimerKind::Llm,
-                token: 9,
-            },
-            settle(5),
-        ]);
-        advance(ms(11_999)).await;
+        advance(ms(1499)).await;
         assert!(!drain(&mut r.rx).contains(&settle_fire(5)));
         advance(ms(1)).await;
         assert!(drain(&mut r.rx).contains(&settle_fire(5)));
     }
 
     #[tokio::test(start_paused = true)]
-    async fn stopping_the_speech_clears_the_reading_hold() {
+    async fn a_new_activation_cancels_the_pending_settle() {
         let mut r = rig();
         r.runner
-            .run(vec![speak(1, text_of_len(400)), Effect::StopSpeaking]);
-        r.runner.run(vec![settle(5)]);
-        advance(ms(3000)).await;
-        assert!(drain(&mut r.rx).contains(&settle_fire(5)));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_new_speak_replaces_the_reading_hold_of_the_older_one() {
-        let mut r = rig();
-        r.runner.set_media_mode(MediaMode::Held);
-        r.runner.run(vec![speak(1, text_of_len(400))]);
+            .run(vec![speak(1, Say::Text("Done".into())), settle(5)]);
         advance(ms(1000)).await;
-        // A short final reply takes over: its Settle is the plain 3 s.
-        r.runner
-            .run(vec![speak(2, Say::Text("Done".into())), settle(5)]);
-        advance(ms(3000)).await;
-        assert!(drain(&mut r.rx).contains(&settle_fire(5)));
+        // The reducer cancels the settle when the next activation starts.
+        r.runner.run(vec![Effect::CancelTimer {
+            kind: TimerKind::Settle,
+        }]);
+        advance(ms(5000)).await;
+        assert!(!drain(&mut r.rx).contains(&settle_fire(5)));
+    }
+
+    // --- dev log: reply text goes to the debug log only (design L5) -------
+
+    type Lines = Arc<Mutex<Vec<String>>>;
+
+    fn with_log(r: &mut Rig) -> Lines {
+        let lines: Lines = Arc::default();
+        let sink = lines.clone();
+        let log: SpeakLog = Arc::new(move |line| sink.lock().unwrap().push(line));
+        r.runner = EffectRunner::new(r.runner.sink.clone(), r.host.clone(), r.requests.clone())
+            .with_speak_log(log);
+        lines
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_confirmation_prompt_never_gets_a_reading_hold() {
+    #[cfg(debug_assertions)]
+    async fn speak_logs_reply_text_to_dev_log_in_debug_only() {
         let mut r = rig();
+        let lines = with_log(&mut r);
         r.runner.run(vec![
-            Effect::Speak {
-                id: 1,
-                kind: ReplyKind::ConfirmPrompt,
-                say: text_of_len(400),
-            },
-            settle(5),
+            speak(1, Say::Text("Opening Notepad".into())),
+            speak(2, Say::Template(Template::ActionDone)),
         ]);
-        advance(ms(3000)).await;
-        assert!(drain(&mut r.rx).contains(&settle_fire(5)));
+        let lines = lines.lock().unwrap().clone();
+        assert_eq!(lines.len(), 2, "one line per Speak: {lines:?}");
+        assert!(lines[0].contains("Opening Notepad"), "{lines:?}");
+        assert!(lines[1].contains(template_caption(Template::ActionDone)));
     }
 
-    // --- timers (task 1.14: settle fires at 3 s) -------------------------
+    #[tokio::test(start_paused = true)]
+    #[cfg(not(debug_assertions))]
+    async fn speak_logs_reply_text_to_dev_log_in_debug_only() {
+        let mut r = rig();
+        let lines = with_log(&mut r);
+        r.runner
+            .run(vec![speak(1, Say::Text("Opening Notepad".into()))]);
+        assert!(
+            lines.lock().unwrap().is_empty(),
+            "release builds never log text"
+        );
+    }
+
+    // --- timers (task 1.14: settle fires at 1.5 s) -------------------------
 
     #[tokio::test(start_paused = true)]
-    async fn settle_timer_fires_at_exactly_3_s_with_its_token() {
+    async fn settle_timer_fires_at_exactly_1_5_s_with_its_token() {
         let mut r = rig();
         r.runner.run(vec![Effect::StartTimer {
             kind: TimerKind::Settle,
             token: 7,
         }]);
-        advance(ms(2999)).await;
-        assert!(drain(&mut r.rx).is_empty(), "fired before 3 s");
+        advance(ms(1499)).await;
+        assert!(drain(&mut r.rx).is_empty(), "fired before 1.5 s");
         advance(ms(1)).await;
         assert_eq!(
             drain(&mut r.rx),

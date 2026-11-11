@@ -88,7 +88,10 @@ fn the_window_fits_the_notch_with_room_for_overshoot_and_pulse() {
         ts_const(MOTION_TS, "NOTCH_W"),
         ts_const(MOTION_TS, "NOTCH_H"),
     );
-    assert!(w >= nw + 2.0 * 40.0, "{w} leaves no side room for the notch");
+    assert!(
+        w >= nw + 2.0 * 40.0,
+        "{w} leaves no side room for the notch"
+    );
     assert!(h >= nh + 40.0, "{h} leaves no room below for the overshoot");
     // The stylesheet centers the notch with half of its width.
     assert!(
@@ -145,6 +148,17 @@ fn hide_delay_parsed_from_motion_ts_within_exit_plus_100() {
     );
     // The frontend declares the same delay.
     assert_eq!(ts_const(MOTION_TS, "HIDE_DELAY_MS"), delay);
+}
+
+/// The hide that follows the settle waits for the exit animation, no longer
+/// and no shorter than the frontend says (design L7).
+#[test]
+fn exit_hold_matches_motion_hide_delay() {
+    assert_eq!(ts_const(MOTION_TS, "HIDE_DELAY_MS"), HIDE_DELAY_MS as f64);
+    assert_eq!(
+        niva_core::state_machine::TimerKind::Settle.duration(),
+        Some(std::time::Duration::from_millis(1_500))
+    );
 }
 
 #[test]

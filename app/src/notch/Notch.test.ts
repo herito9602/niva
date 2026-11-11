@@ -13,12 +13,13 @@ const css: string = readFileSync(new URL("./notch.css", import.meta.url), "utf8"
 const render = (view: ViewPayload | null, phase: "hidden" | "in" | "out" = "in") =>
   renderToStaticMarkup(createElement(Notch, { view, phase }));
 
-const reply: ViewPayload = {
+// A payload from before the trim, still carrying text: the notch must draw none of it.
+const reply = {
   state: "success",
   caption: "Opening Notepad",
   confirm: { id: 3, prompt: "Close Spotify?", confirmLabel: "Confirm", cancelLabel: "Cancel" },
   reminder: { id: 1, text: "Call mom" },
-};
+} as unknown as ViewPayload;
 
 describe("Notch markup", () => {
   it("renders_one_waveform_canvas_in_118x30_shell", () => {
@@ -42,7 +43,7 @@ describe("Notch markup", () => {
   });
 
   it("no_buttons_and_no_text_in_markup", () => {
-    const html = render({ state: "confirmation-needed", caption: "Shut down?", confirm: reply.confirm });
+    const html = render({ ...reply, state: "confirmation-needed" });
     expect(html).not.toMatch(/<(button|input|a|img|svg|p|h1|h2)\b/);
     // The only text node is the visually hidden state name.
     const text = html.replace(/<[^>]*>/g, "");

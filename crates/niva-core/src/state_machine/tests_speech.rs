@@ -10,11 +10,68 @@ fn done_events(id: u64) -> [Event; 2] {
 }
 
 #[test]
-fn speak_started_changes_nothing_in_any_state() {
+fn speak_started_matching_id_sets_audible_speak() {
     for phase in Phase::ALL {
-        let s = speaking(state_in(phase), 7, ReplyKind::Final);
-        assert_ignored(s, Event::SpeakStarted { id: 7 });
+        let talking = speaking(state_in(phase), 7, ReplyKind::Final);
+        let (s, fx) = step(&talking, Event::SpeakStarted { id: 7 });
+        assert_eq!(s.audible_speak, Some(7), "{phase:?}");
+        assert_eq!(s.phase, phase, "state-only update");
+        assert!(fx.is_empty(), "{phase:?}: {fx:?}");
+        assert_eq!(s.speak_id, Some(7));
     }
+}
+
+#[test]
+fn speak_started_mismatched_id_does_not_set_it() {
+    for phase in Phase::ALL {
+        let talking = speaking(state_in(phase), 7, ReplyKind::Final);
+        assert_ignored(talking, Event::SpeakStarted { id: 8 });
+    }
+}
+
+#[test]
+fn speech_is_not_audible_until_speak_started() {
+    let talking = speaking(state_in(Phase::Success), 7, ReplyKind::Final);
+    assert_eq!(talking.audible_speak, None);
+}
+
+/// Every way `speak_id` clears also clears `audible_speak`.
+#[test]
+fn audible_speak_clears_wherever_speak_id_clears() {
+    let audible = |mut s: State| {
+        s.audible_speak = s.speak_id;
+        s
+    };
+    let after_done = |event: Event| {
+        let s = audible(speaking(state_in(Phase::Success), 7, ReplyKind::Final));
+        step(&s, event).0
+    };
+    for s in [
+        after_done(Event::SpeakDone { id: 7 }),
+        after_done(Event::TtsFailed { id: 7 }),
+        after_done(Event::Watchdog {
+            kind: TimerKind::SpeakWatchdog,
+            token: 7,
+        }),
+    ] {
+        assert_eq!(s.speak_id, None);
+        assert_eq!(s.audible_speak, None);
+    }
+    // Leaving the phase (shortcut barge-in, text submitted) clears it too.
+    for event in [Event::Shortcut, Event::TextSubmitted { text: "hi".into() }] {
+        let s = audible(speaking(state_in(Phase::Success), 7, ReplyKind::Final));
+        let (after, _) = step(&s, event.clone());
+        assert_eq!(after.speak_id, None, "{event:?}");
+        assert_eq!(after.audible_speak, None, "{event:?}");
+    }
+    // A new speech starts silent even when the previous one was audible.
+    let s = audible(speaking(
+        state_in(Phase::Thinking),
+        7,
+        ReplyKind::AskFollowUp,
+    ));
+    let (after, _) = step(&s, Event::Shortcut);
+    assert_eq!(after.audible_speak, None);
 }
 
 #[test]
@@ -95,22 +152,26 @@ fn a_finished_follow_up_question_waits_for_text_when_voice_is_down() {
     assert_eq!(fx, vec![start(TimerKind::FollowUp)]);
 }
 
+/// Reminders, "The alert ends with the speech": the pulse never resumes once
+/// the reminder was heard, even if the chime is still playing.
 #[test]
-fn a_finished_alert_speech_waits_for_the_chime() {
-    // Chime still playing: the alert stays up until the chime is done too.
+fn reminder_alert_pulse_does_not_resume_after_speech() {
     let mut start = alert_playing();
     start.chime_id = Some(CHIME_ID);
-    let (s, fx) = step(&start, Event::SpeakDone { id: SPEAK_ID });
-    assert_eq!(s.phase, Phase::ReminderAlert);
-    assert_eq!(s.speak_id, None);
-    assert!(fx.is_empty());
+    for event in done_events(SPEAK_ID) {
+        let (s, _) = step(&start, event.clone());
+        assert_ne!(s.phase, Phase::ReminderAlert, "{event:?}");
+        assert_eq!(s.chime_id, None, "{event:?}");
+        assert_eq!(s.alert_count, 0, "{event:?}");
+    }
 }
 
 #[test]
-fn an_alert_ends_when_its_speech_finishes_after_the_chime() {
+fn reminder_alert_ends_with_speech_then_settles() {
     for event in done_events(SPEAK_ID) {
         let (s, fx) = step(&alert_playing(), event.clone());
-        assert_eq!(s.phase, Phase::Idle, "{event:?}");
+        assert_eq!(s.phase, Phase::Success, "{event:?}");
+        assert_eq!(s.speak_id, None);
         assert_eq!(
             fx,
             vec![
@@ -118,10 +179,13 @@ fn an_alert_ends_when_its_speech_finishes_after_the_chime() {
                     kind: TimerKind::AlertEnd
                 },
                 Effect::StopSpeaking,
-                Effect::HideIsland,
-                Effect::DrainReminders,
+                start(TimerKind::Settle),
             ]
         );
+        // The settle hides the notch like any other result.
+        let (s, fx) = step(&s, fire(&s, TimerKind::Settle));
+        assert_eq!(s.phase, Phase::Idle);
+        assert_eq!(fx, vec![Effect::HideIsland, Effect::DrainReminders]);
     }
 }
 
@@ -275,6 +339,27 @@ fn settle_timeout_goes_idle_and_hides_the_island() {
 }
 
 #[test]
+fn reminder_30s_alert_timer_bounds_unspoken_reminder() {
+    // A reminder that is never spoken (fullscreen, sidecar silent) is bounded
+    // by the 30 s timer.
+    assert_eq!(
+        TimerKind::AlertEnd.duration(),
+        Some(std::time::Duration::from_secs(30))
+    );
+    let (alert, _) = step(
+        &state_in(Phase::Idle),
+        Event::ReminderDue {
+            count: 1,
+            silent: true,
+        },
+    );
+    assert_eq!(alert.speak_id, None);
+    let (s, fx) = step(&alert, fire(&alert, TimerKind::AlertEnd));
+    assert_eq!(s.phase, Phase::Idle);
+    assert!(fx.contains(&Effect::HideIsland));
+}
+
+#[test]
 fn alert_end_goes_idle() {
     let start = state_in(Phase::ReminderAlert);
     let (s, fx) = step(&start, fire(&start, TimerKind::AlertEnd));
@@ -314,7 +399,7 @@ fn the_speak_watchdog_synthesizes_speak_done_in_every_state_that_speaks() {
         &alert_playing(),
         fire(&alert_playing(), TimerKind::SpeakWatchdog),
     );
-    assert_eq!(s.phase, Phase::Idle, "chime already done: the alert ends");
+    assert_eq!(s.phase, Phase::Success, "the alert ends and settles");
 }
 
 #[test]

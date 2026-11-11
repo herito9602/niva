@@ -187,6 +187,31 @@ fn empty_transcript_in_listening_is_an_error_distinct_from_no_speech() {
     );
 }
 
+/// Speech-io "Empty transcript": nothing runs, the error look shows, and it
+/// hides after the speech plus the settle.
+#[test]
+fn empty_transcript_runs_no_tool_and_shows_error_then_hides() {
+    let (s, fx) = step(
+        &state_in(Phase::Listening),
+        Event::EmptyTranscript { id: 1 },
+    );
+    assert_eq!(s.phase, Phase::Error);
+    assert_eq!(s.request_id, None);
+    assert!(
+        !fx.iter()
+            .any(|e| matches!(e, Effect::StartRequest { .. } | Effect::RunTool { .. })),
+        "no request and no tool: {fx:?}"
+    );
+    let speak = s.speak_id.expect("the error is spoken");
+    let (s, fx) = step(&s, Event::SpeakDone { id: speak });
+    assert_eq!(s.phase, Phase::Error);
+    assert_eq!(fx, vec![start(TimerKind::Settle)]);
+    let settle = fire(&s, TimerKind::Settle);
+    let (s, fx) = step(&s, settle);
+    assert_eq!(s.phase, Phase::Idle);
+    assert!(fx.contains(&Effect::HideIsland));
+}
+
 #[test]
 fn empty_transcript_is_ignored_in_the_states_that_never_listen() {
     for phase in [

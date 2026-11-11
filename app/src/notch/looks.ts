@@ -43,9 +43,10 @@ function phaseLook(view: ViewPayload): Look | null {
     case "thinking":
       return LOOKS.thinking;
     case "acting":
-      // A sleep countdown is shown in the confirmation color; plain acting is the thinking color.
-      return view.countdown ? LOOKS.confirmation : LOOKS.thinking;
+      return LOOKS.thinking;
+    case "countdown":
     case "confirmation-needed":
+      // The sleep countdown has a state of its own and is shown like a confirmation.
       return LOOKS.confirmation;
     case "success":
       return LOOKS.success;
