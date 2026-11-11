@@ -30,6 +30,10 @@ Sidecar -> host::
     {"type": "speak_started", "id": 8}
     {"type": "speak_done", "id": 8}
     {"type": "error", "code": "MIC_BUSY", "msg": "...", "id": 7}   # id optional (added)
+    {"type": "level", "src": "tts", "bands": [0, 12, 40, 55, 30, 8, 0]}
+                                             # added: seven 0-100 integers, ~30 per second while
+                                             # Niva speaks, paced to what is audible. Niva's voice
+                                             # only: there is no microphone level, ever.
 
 Ids are the host's unsigned integers and are echoed unchanged.
 """
@@ -212,6 +216,19 @@ def speak_started(speak_id: int) -> dict[str, Any]:
 
 def speak_done(speak_id: int) -> dict[str, Any]:
     return {"type": "speak_done", "id": speak_id}
+
+
+LEVEL_BANDS = 7
+
+
+def level(bands: list[int], src: str = "tts") -> dict[str, Any]:
+    """Seven band levels (0-100) of the voice that is being heard. `src` is always
+    "tts": a microphone level does not exist in this protocol."""
+    if src != "tts":
+        raise ValueError(f"level src must be 'tts', not {src!r}")
+    if len(bands) != LEVEL_BANDS or any(type(b) is not int or not 0 <= b <= 100 for b in bands):
+        raise ValueError(f"level needs {LEVEL_BANDS} integers between 0 and 100")
+    return {"type": "level", "src": src, "bands": list(bands)}
 
 
 def error(code: ErrorCode, msg: str, message_id: int | None = None) -> dict[str, Any]:

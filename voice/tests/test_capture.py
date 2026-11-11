@@ -774,3 +774,13 @@ def test_a_force_end_during_a_pause_transcribes_what_was_said():
     assert wait_until(lambda: len(h.stt.calls) == 1)
     h.engine.on_command(ForceEnd(3))
     assert h.types() == ["speech_start", "transcript"] and h.events[-1]["id"] == 3
+
+
+def test_capture_emits_no_level(h):
+    """No microphone level is ever sent (owner decision 2026-11-10): a whole listen,
+    speech included, produces no `level` message."""
+    h.feed(frames(SILENCE, 5) + frames(SPEECH, 12) + frames(SILENCE, 30))
+    h.engine.on_command(Listen(1, "command"))
+    h.feed(frames(SILENCE, 3) + frames(SPEECH, 12) + frames(SILENCE, 30))
+    assert h.events  # something happened...
+    assert "level" not in h.types()  # ...but never a level

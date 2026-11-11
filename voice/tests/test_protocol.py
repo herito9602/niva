@@ -141,3 +141,31 @@ def test_error_codes_match_the_reducer_wire_names():
     reducer_codes = {"MIC_MISSING", "MIC_BUSY", "CUDA_OOM", "MODEL_LOAD", "PROTOCOL", "INTERNAL"}
     assert reducer_codes <= wire
     assert reducer_codes <= {c.value for c in ErrorCode}
+
+
+# ------------------------------------------------------------------- level
+
+
+def test_level_message_shape():
+    msg = protocol.level([0, 10, 20, 30, 40, 50, 100])
+    assert msg == {"type": "level", "src": "tts", "bands": [0, 10, 20, 30, 40, 50, 100]}
+    assert json.loads(protocol.encode(msg)) == msg
+
+
+def test_level_message_has_no_samples_or_text():
+    msg = protocol.level([1] * 7)
+    assert set(msg) == {"type", "src", "bands"}
+    assert all(type(v) is int for v in msg["bands"])
+    assert len(protocol.encode(msg)) < 80  # seven small integers, never audio
+
+
+@pytest.mark.parametrize("src", ["mic", "tts2", ""])
+def test_level_message_rejects_mic_src(src):
+    with pytest.raises(ValueError):
+        protocol.level([0] * 7, src=src)
+
+
+@pytest.mark.parametrize("bad", [[0] * 6, [0] * 8, [0] * 6 + [101], [0] * 6 + [-1], [0] * 6 + [1.5]])
+def test_level_message_rejects_a_malformed_band_list(bad):
+    with pytest.raises(ValueError):
+        protocol.level(bad)
